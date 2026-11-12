@@ -440,6 +440,7 @@ async fn live_b3_negative_profiles_strict_and_tds() {
             )
             .await
             .unwrap_err();
+            assert_eq!(error.category, ErrorCategory::DataMapping);
             assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{error:?}");
             assert!(report(error.loss_report.as_ref().unwrap())
                 .effective

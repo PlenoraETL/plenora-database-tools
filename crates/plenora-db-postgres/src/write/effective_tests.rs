@@ -3,6 +3,108 @@ use super::*;
 use arrow_array::TimestampMicrosecondArray;
 use arrow_schema::{DataType, Field};
 
+#[test]
+fn jsonb_numbers_preserve_decimal_precision_without_consent() {
+    use plenora_database_core::store_rewrite::StoreRewrite;
+    let mut p = plan(LeafClass::Jsonb, SessionShape::Scalar);
+    p.store.rewrites = vec![StoreRewrite::JsonNumbers];
+    for (text, changed) in [
+        ("1.5", false),
+        ("1.0", false),
+        ("123456789012345678901234567890.123456789", false),
+        (r#"{"a":[1.5,12345678901234567890],"b":"-0 1e2"}"#, false),
+        ("-0", true),
+        ("-0.000", true),
+        ("1e2", true),
+        ("1E-2", true),
+        ("-0.001", false),
+        ("1e400", true),
+    ] {
+        let a = StringArray::from(vec![text]);
+        let result = classify(RuleId::StoreJsonNumbers, &p, &a, 0).unwrap();
+        assert_eq!(result, verdict(changed, Basis::Exact), "{text}");
+        assert_eq!(
+            result
+                .authorize(MappingPolicy::Compatible, LossConsent::Deny, false)
+                .is_err(),
+            changed
+        );
+    }
+    assert!(json_number_changes("[1,]").is_err());
+}
+
+// Enumerare anche i rami conservativi impedisce che una nuova regola entri
+// senza una decisione sul caso ordinario. I rami non raggiungibili dal
+// profilo ammesso non diventano capability per somiglianza.
+#[test]
+fn enumerate_non_exact_registry_rules_against_ordinary_postgres_values() {
+    use plenora_database_core::loss_registry::{Applicability, ClassificationMode};
+    use plenora_database_core::store_rewrite::StoreRewrite;
+    let mut audited = Vec::new();
+    for &id in RuleId::ALL {
+        if matches!(id.definition().applicability, Applicability::Sqlserver)
+            || !matches!(
+                id.definition().mode,
+                ClassificationMode::Mixed | ClassificationMode::Conservative
+            )
+        {
+            continue;
+        }
+        audited.push(id);
+        let sample = match id {
+            RuleId::PgJsonb => Some((LeafClass::Jsonb, "{\"a\":1.5}")),
+            RuleId::PgNumeric => Some((LeafClass::Numeric { precision: 5, scale: 2 }, "1.50")),
+            RuleId::PgTemporal => Some((LeafClass::Session { leaf: SessionLeaf::Timestamp, fraction: 3, reduced: true }, "1970-01-01 00:00:00.001000")),
+            RuleId::StoreJsonNumbers => Some((LeafClass::Jsonb, "1.50")),
+            // Schema mismatch / absent columns / conflicting spatial identity
+            // are not ordinary equivalent copies (selector tested separately).
+            RuleId::PgArrowMismatch | RuleId::PgMissingColumn | RuleId::PgCrs | RuleId::PgSrid
+            // No admitted PG pair emits these rewrites; retain closed fallback.
+            | RuleId::StoreEvery | RuleId::StoreExcessSpaces | RuleId::StoreNonAscii
+            // PostgreSQL canonicalizes this alias to PgPadText (exact).
+            | RuleId::StorePadText => None,
+            _ => panic!("regola non esaminata: {id:?}"),
+        };
+        if let Some((class, text)) = sample {
+            for shape in [SessionShape::Scalar, SessionShape::Array] {
+                if id == RuleId::StoreJsonNumbers && shape == SessionShape::Array {
+                    continue;
+                }
+                let mut p = plan(class, shape);
+                if id == RuleId::StoreJsonNumbers {
+                    p.store.rewrites = vec![StoreRewrite::JsonNumbers];
+                }
+                let value = if shape == SessionShape::Array {
+                    format!("{{\"{}\",NULL}}", text.replace('"', "\\\""))
+                } else {
+                    text.to_owned()
+                };
+                let a = StringArray::from(vec![value]);
+                let result = classify(id, &p, &a, 0).unwrap();
+                assert_eq!(result, verdict(false, Basis::Exact), "{id:?}/{shape:?}");
+                result
+                    .authorize(MappingPolicy::Compatible, LossConsent::Deny, false)
+                    .unwrap();
+            }
+        }
+    }
+    assert_eq!(audited.len(), 12);
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/ammissione_scrittura/postgres.json"
+    ))
+    .unwrap();
+    for server in fixture["misure"].as_array().unwrap() {
+        for pair in server["chiavi"].as_array().unwrap() {
+            for rewrite in pair["riscritture"].as_array().unwrap() {
+                assert_eq!(
+                    rewrite["classe"], "json_numeri",
+                    "aggiornare l'audit dei predicati"
+                );
+            }
+        }
+    }
+}
+
 fn plan(class: LeafClass, shape: SessionShape) -> WriteColumnPlan {
     let mut plan = WriteColumnPlan::compile(&Field::new("v", DataType::Utf8, true)).unwrap();
     plan.session_rule = Some(SessionRule {

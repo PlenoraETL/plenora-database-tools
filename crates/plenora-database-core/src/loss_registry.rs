@@ -118,7 +118,7 @@ rules! {
     (StoreEvery, "store.every", Shared, NativeType, DataLoss, Conservative, Conservative, None, "regola S: la misura della coppia di tipi (regola A) ha trovato valori riscritti al salvataggio"),
     (StoreExcessSpaces, "store.excess_spaces", Shared, NativeType, DataLoss, Conservative, Conservative, None, "regola S: la colonna tronca gli spazi finali oltre la propria lunghezza"),
     (StoreFractionalSeconds, "store.fractional_seconds", Shared, Precision, DataLoss, FractionalSeconds, Exact, None, "regola S: il tipo temporale arrotonda o tronca le cifre frazionarie oltre la propria precisione"),
-    (StoreJsonNumbers, "store.json_numbers", Shared, Precision, DataLoss, JsonNumbers, Conservative, None, "regola S: il tipo JSON del target riscrive la forma dei numeri fuori dagli interi brevi"),
+    (StoreJsonNumbers, "store.json_numbers", Shared, Precision, DataLoss, JsonNumbers, Mixed, None, "regola S: il tipo JSON del target riscrive la forma dei numeri fuori dagli interi brevi"),
     (StoreNegativeZero, "store.negative_zero", Shared, Precision, DataLoss, NegativeZero, Exact, None, "regola S: il tipo numerico salva -0.0 come 0"),
     (StoreNonAscii, "store.non_ascii", Shared, Encoding, DataLoss, NonAscii, Conservative, None, "regola S: il charset della colonna non conserva ogni carattere fuori da ASCII"),
     (StorePadBinary, "store.pad_binary", Shared, NativeType, DataLoss, PadBinary, Exact, None, "regola S: il tipo a lunghezza fissa completa con 0x00 un binario piu corto"),

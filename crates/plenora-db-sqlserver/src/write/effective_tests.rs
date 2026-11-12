@@ -166,6 +166,41 @@ fn xml_warning_is_conservative_even_for_empty_text() {
         Classification::Exact(Basis::Conservative)
     );
 }
+
+#[test]
+fn enumerate_non_exact_sqlserver_rules_for_campaign_values() {
+    use plenora_database_core::loss_registry::{Applicability, ClassificationMode};
+    let mut audited = Vec::new();
+    for &id in RuleId::ALL {
+        if !matches!(id.definition().applicability, Applicability::Sqlserver)
+            || !matches!(
+                id.definition().mode,
+                ClassificationMode::Mixed | ClassificationMode::Conservative
+            )
+        {
+            continue;
+        }
+        audited.push(id);
+        let (native, declaration, value, expected) = match id {
+            RuleId::SsEncoding => ("varchar", "varchar(4)", "abcd", exact()),
+            RuleId::SsTextLimit => ("nvarchar", "nvarchar(4)", "abcd", exact()),
+            // La forma vuota XML si serializza diversamente; non e una copia
+            // testuale ordinaria. La normalizzazione completa resta opaca.
+            RuleId::SsXml => ("xml", "xml", "<a/>", conservative()),
+            _ => panic!("regola non esaminata: {id:?}"),
+        };
+        let c = column(native, declaration);
+        let result = classify(id, &c, &StringArray::from(vec![value]), 0).unwrap();
+        assert_eq!(result, expected);
+        assert_eq!(
+            result
+                .authorize(MappingPolicy::Compatible, LossConsent::Deny, false)
+                .is_ok(),
+            id != RuleId::SsXml
+        );
+    }
+    assert_eq!(audited.len(), 3);
+}
 fn setup(consent: LossConsent) -> (Evaluation, WritePlan, RecordBatch) {
     let operation = WriteOperation {
         target: ObjectRef {

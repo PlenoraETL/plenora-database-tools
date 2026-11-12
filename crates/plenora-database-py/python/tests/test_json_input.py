@@ -390,44 +390,48 @@ def test_json_geoarrow_batches_land_in_postgis() -> None:
         "id BIGINT PRIMARY KEY, shape geometry(Point, 4326) NOT NULL)"
     )
     try:
-        ingress = p.JsonInput(
-            p.JsonSchema(
-                [
-                    p.JsonField("id", int),
-                    p.JsonField(
-                        "shape",
-                        p.JsonGeometry(
-                            4326, geometry_type="point", encoding="ewkb"
+        for encoding in ["wkb", "ewkb"]:
+            ingress = p.JsonInput(
+                p.JsonSchema(
+                    [
+                        p.JsonField("id", int),
+                        p.JsonField(
+                            "shape",
+                            p.JsonGeometry(
+                                4326, geometry_type="point", encoding=encoding
+                            ),
                         ),
-                    ),
-                ]
+                    ]
+                )
             )
-        )
-        outcome = session.copy_from(
-            "public",
-            "_plenora_json_places",
-            ingress.batches(
-                [
-                    {
-                        "id": 1,
-                        "shape": {
-                            "type": "Point",
-                            "coordinates": [9.19, 45.46],
-                        },
-                    }
-                ],
-                batch_size=1,
-            ),
-            mapping_policy="compatible",
-        )
-        assert outcome["status"] == "committed"
-        matching = session.execute_scalar(
-            "SELECT COUNT(*)::BIGINT FROM _plenora_json_places "
-            "WHERE id = 1 AND ST_SRID(shape) = 4326 "
-            "AND abs(ST_X(shape) - 9.19) < 0.000000001 "
-            "AND abs(ST_Y(shape) - 45.46) < 0.000000001"
-        )
-        assert matching == 1
+            outcome = session.copy_from(
+                "public",
+                "_plenora_json_places",
+                ingress.batches(
+                    [
+                        {
+                            "id": 1,
+                            "shape": {
+                                "type": "Point",
+                                "coordinates": [9.19, 45.46],
+                            },
+                        }
+                    ],
+                    batch_size=1,
+                ),
+                mapping_policy="compatible",
+            )
+            assert outcome["status"] == "committed"
+            assert outcome["loss_report"]["effective"] == []
+            assert all(e["would_change"] == 0 for e in outcome["loss_report"]["evaluation"]["entries"])
+            matching = session.execute_scalar(
+                "SELECT COUNT(*)::BIGINT FROM _plenora_json_places "
+                "WHERE id = 1 AND ST_SRID(shape) = 4326 "
+                "AND abs(ST_X(shape) - 9.19) < 0.000000001 "
+                "AND abs(ST_Y(shape) - 45.46) < 0.000000001"
+            )
+            assert matching == 1
+            session.execute_sql("TRUNCATE TABLE _plenora_json_places")
     finally:
         try:
             session.execute_sql("DROP TABLE IF EXISTS _plenora_json_places")

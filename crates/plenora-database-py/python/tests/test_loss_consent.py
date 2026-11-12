@@ -19,16 +19,34 @@ def input_table(values=("ABCDE",)):
     return pa.table({"value": pa.array(values, type=pa.string())})
 
 
-def time_table(provider, values):
-    declaration = "timestamp(3)" if provider == "postgres" else "datetime2(3)"
+def loss_type(provider):
+    # La misura PG timestamp(us)->timestamp(3) rifiuta tutti i campioni.
+    # UTF8->jsonb e ammessa: -0 perde realmente il segno (regola numerica S).
+    return "jsonb" if provider == "postgres" else "datetime2(3)"
+
+
+def stored_loss_expression(provider):
+    return "CAST(value AS text)" if provider == "postgres" else "DATEPART(microsecond, value)"
+
+
+def loss_table(provider, values):
+    if provider == "postgres":
+        field = pa.field("value", pa.string(), metadata={
+            "plenora.postgres.native_type": "jsonb",
+            "plenora.postgres.native_declaration": "jsonb",
+        })
+        samples = {1000: "0", 1001: "-0", 1002: "1.5", None: None}
+        return pa.Table.from_arrays([pa.array([samples[v] for v in values], type=pa.string())],
+                                   schema=pa.schema([field]))
+    declaration = "datetime2(3)"
     field = pa.field("value", pa.timestamp("us"), metadata={
         f"plenora.{provider}.native_declaration": declaration,
     })
     return pa.Table.from_arrays([pa.array(values, type=pa.timestamp("us"))], schema=pa.schema([field]))
 
 
-def time_stream(provider):
-    first, second = time_table(provider, [1000]), time_table(provider, [1001])
+def loss_stream(provider):
+    first, second = loss_table(provider, [1000]), loss_table(provider, [1001])
     sink = pa.BufferOutputStream()
     with pa.ipc.new_stream(sink, first.schema) as writer:
         writer.write_table(first)
@@ -66,8 +84,8 @@ def test_live_loss_consent_sync(provider):
                 assert report["risk"]
                 assert not emitted
             session.execute_ddl(f"TRUNCATE TABLE {target}")
-            # Mai troncare: PG testo e TDS bulk rifiutano anche con consenso.
-            for accept in [False, True]:
+            # SDK seleziona Prepared: SQL Server tronca solo con consenso.
+            for accept in ([False, True] if provider == "postgres" else [False]):
                 with warnings.catch_warnings(record=True) as emitted:
                     warnings.simplefilter("always", p.MappingLossWarning)
                     with pytest.raises(p.PlenoraDataMappingError) as caught:
@@ -77,17 +95,26 @@ def test_live_loss_consent_sync(provider):
                 assert caught.value.loss_report["effective"] == []
                 assert not emitted
                 assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
+            if provider == "sqlserver":
+                with pytest.warns(p.MappingLossWarning):
+                    report = check_outcome(session.copy_from(schema, table, input_table(), mapping_policy=policy, accept_loss=True), changed=True)
+                assert any(e["rule_id"] == "ss.text_limit" and e["committed"] == 1 for e in report["effective"])
+                assert session.execute_scalar(f"SELECT value FROM {target}") == "ABCD"
+                assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 1
+                session.execute_ddl(f"TRUNCATE TABLE {target}")
         session.execute_ddl(f"DROP TABLE {target}")
-        dtype = "timestamp(3)" if provider == "postgres" else "datetime2(3)"
+        dtype = loss_type(provider)
         session.execute_ddl(f"CREATE TABLE {target} (value {dtype} NULL)")
         for policy in ["compatible", "lossy", "native"]:
-            for values in ([1000, None], [None], [], [1000]):
+            for values in ([1000, None], [None], [], [1000], *([[1002]] if provider == "postgres" else [])):
                 with warnings.catch_warnings(record=True) as emitted:
                     warnings.simplefilter("always", p.MappingLossWarning)
-                    check_outcome(session.copy_from(schema, table, time_table(provider, values), mapping_policy=policy))
+                    check_outcome(session.copy_from(schema, table, loss_table(provider, values), mapping_policy=policy))
                     assert not emitted
+                    if values == [1002]:
+                        assert session.execute_scalar(f"SELECT CAST(value AS text) FROM {target}") == "1.5"
                 session.execute_ddl(f"TRUNCATE TABLE {target}")
-            for source in [time_table(provider, [1001]), time_stream(provider)]:
+            for source in [loss_table(provider, [1001]), loss_stream(provider)]:
                 with pytest.raises(p.PlenoraDataMappingError) as caught:
                     session.copy_from(schema, table, source, mapping_policy=policy)
                 assert caught.value.remote_effect == "rolled_back"
@@ -100,19 +127,19 @@ def test_live_loss_consent_sync(provider):
                     warnings.simplefilter(filter_name, p.MappingLossWarning)
                     if filter_name == "error":
                         with pytest.raises(p.MappingLossWarning) as caught:
-                            session.copy_from(schema, table, time_table(provider, [1001]), mapping_policy=policy, accept_loss=True)
+                            session.copy_from(schema, table, loss_table(provider, [1001]), mapping_policy=policy, accept_loss=True)
                         check_outcome(caught.value.write_outcome, changed=True)
                         assert "commit avvenuto" in str(caught.value)
                     else:
-                        check_outcome(session.copy_from(schema, table, time_table(provider, [1001]), mapping_policy=policy, accept_loss=True), changed=True)
+                        check_outcome(session.copy_from(schema, table, loss_table(provider, [1001]), mapping_policy=policy, accept_loss=True), changed=True)
                         assert len(emitted) == (1 if filter_name == "always" else 0)
                 assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == count
-            fraction = "EXTRACT(MICROSECONDS FROM value)" if provider == "postgres" else "DATEPART(microsecond, value)"
-            assert session.execute_scalar(f"SELECT MAX({fraction}) FROM {target}") == 1000
+            fraction = stored_loss_expression(provider)
+            assert session.execute_scalar(f"SELECT MAX({fraction}) FROM {target}") == ("0" if provider == "postgres" else 1000)
             session.execute_ddl(f"TRUNCATE TABLE {target}")
         for accept in [False, True]:
             with pytest.raises(p.PlenoraDataMappingError):
-                session.copy_from(schema, table, time_table(provider, [1000]), mapping_policy="strict", accept_loss=accept)
+                session.copy_from(schema, table, loss_table(provider, [1001]), mapping_policy="strict", accept_loss=accept)
         session.execute_ddl(f"DROP TABLE {target}")
         session.execute_ddl(f"CREATE TABLE {target} (value bigint NULL)")
         exact = session.copy_from(schema, table, pa.table({"value": pa.array([1], type=pa.int64())}), mapping_policy="strict")
@@ -140,8 +167,8 @@ async def test_live_loss_consent_async(provider):
                 assert report["risk"]
                 assert not emitted
             await session.execute_ddl(f"TRUNCATE TABLE {target}")
-            # Mai troncare: PG testo e TDS bulk rifiutano anche con consenso.
-            for accept in [False, True]:
+            # SDK seleziona Prepared: SQL Server tronca solo con consenso.
+            for accept in ([False, True] if provider == "postgres" else [False]):
                 with warnings.catch_warnings(record=True) as emitted:
                     warnings.simplefilter("always", p.MappingLossWarning)
                     with pytest.raises(p.PlenoraDataMappingError) as caught:
@@ -151,17 +178,26 @@ async def test_live_loss_consent_async(provider):
                 assert caught.value.loss_report["effective"] == []
                 assert not emitted
                 assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
+            if provider == "sqlserver":
+                with pytest.warns(p.MappingLossWarning):
+                    report = check_outcome(await session.acopy_from(schema, table, input_table(), mapping_policy=policy, accept_loss=True), changed=True)
+                assert any(e["rule_id"] == "ss.text_limit" and e["committed"] == 1 for e in report["effective"])
+                assert await session.execute_scalar(f"SELECT value FROM {target}") == "ABCD"
+                assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 1
+                await session.execute_ddl(f"TRUNCATE TABLE {target}")
         await session.execute_ddl(f"DROP TABLE {target}")
-        dtype = "timestamp(3)" if provider == "postgres" else "datetime2(3)"
+        dtype = loss_type(provider)
         await session.execute_ddl(f"CREATE TABLE {target} (value {dtype} NULL)")
         for policy in ["compatible", "lossy", "native"]:
-            for values in ([1000, None], [None], [], [1000]):
+            for values in ([1000, None], [None], [], [1000], *([[1002]] if provider == "postgres" else [])):
                 with warnings.catch_warnings(record=True) as emitted:
                     warnings.simplefilter("always", p.MappingLossWarning)
-                    check_outcome(await session.acopy_from(schema, table, time_table(provider, values), mapping_policy=policy))
+                    check_outcome(await session.acopy_from(schema, table, loss_table(provider, values), mapping_policy=policy))
                     assert not emitted
+                    if values == [1002]:
+                        assert await session.execute_scalar(f"SELECT CAST(value AS text) FROM {target}") == "1.5"
                 await session.execute_ddl(f"TRUNCATE TABLE {target}")
-            for source in [time_table(provider, [1001]), time_stream(provider)]:
+            for source in [loss_table(provider, [1001]), loss_stream(provider)]:
                 with pytest.raises(p.PlenoraDataMappingError) as caught:
                     await session.acopy_from(schema, table, source, mapping_policy=policy)
                 assert caught.value.remote_effect == "rolled_back"
@@ -174,19 +210,19 @@ async def test_live_loss_consent_async(provider):
                     warnings.simplefilter(filter_name, p.MappingLossWarning)
                     if filter_name == "error":
                         with pytest.raises(p.MappingLossWarning) as caught:
-                            await session.acopy_from(schema, table, time_table(provider, [1001]), mapping_policy=policy, accept_loss=True)
+                            await session.acopy_from(schema, table, loss_table(provider, [1001]), mapping_policy=policy, accept_loss=True)
                         check_outcome(caught.value.write_outcome, changed=True)
                         assert "commit avvenuto" in str(caught.value)
                     else:
-                        check_outcome(await session.acopy_from(schema, table, time_table(provider, [1001]), mapping_policy=policy, accept_loss=True), changed=True)
+                        check_outcome(await session.acopy_from(schema, table, loss_table(provider, [1001]), mapping_policy=policy, accept_loss=True), changed=True)
                         assert len(emitted) == (1 if filter_name == "always" else 0)
                 assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == count
-            fraction = "EXTRACT(MICROSECONDS FROM value)" if provider == "postgres" else "DATEPART(microsecond, value)"
-            assert await session.execute_scalar(f"SELECT MAX({fraction}) FROM {target}") == 1000
+            fraction = stored_loss_expression(provider)
+            assert await session.execute_scalar(f"SELECT MAX({fraction}) FROM {target}") == ("0" if provider == "postgres" else 1000)
             await session.execute_ddl(f"TRUNCATE TABLE {target}")
         for accept in [False, True]:
             with pytest.raises(p.PlenoraDataMappingError):
-                await session.acopy_from(schema, table, time_table(provider, [1000]), mapping_policy="strict", accept_loss=accept)
+                await session.acopy_from(schema, table, loss_table(provider, [1001]), mapping_policy="strict", accept_loss=accept)
         await session.execute_ddl(f"DROP TABLE {target}")
         await session.execute_ddl(f"CREATE TABLE {target} (value bigint NULL)")
         exact = await session.acopy_from(schema, table, pa.table({"value": pa.array([1], type=pa.int64())}), mapping_policy="strict")
@@ -262,7 +298,7 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
                 assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
         for count, output in enumerate(["json", "markdown", "junit"], 1):
             result = run("strict" if strict_only else "compatible", not strict_only, output)
-            if not strict_only:
+            if not strict_only and provider == "postgres":
                 assert result.returncode != 0
                 assert "loss_report" in result.stdout + result.stderr
                 assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
@@ -272,12 +308,19 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
             if not strict_only:
                 assert "data_loss" in result.stdout
             assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == count
+            if provider == "sqlserver":
+                assert session.execute_scalar(f"SELECT MIN(value) FROM {target}") == "ABCD"
+                assert session.execute_scalar(f"SELECT MAX(value) FROM {target}") == "ABCD"
+                if output == "json":
+                    document = json.loads(result.stdout)
+                    report = check_outcome(document.get("result", document), changed=True)
+                    assert any(e["rule_id"] == "ss.text_limit" and e["committed"] == 1 for e in report["effective"])
         if not strict_only:
             session.execute_ddl(f"DROP TABLE {target}")
-            dtype = "timestamp(3)" if provider == "postgres" else "datetime2(3)"
+            dtype = loss_type(provider)
             session.execute_ddl(f"CREATE TABLE {target} (value {dtype} NULL)")
-            def write_times(batches):
-                tables = [time_table(provider, values) for values in batches]
+            def write_loss_batches(batches):
+                tables = [loss_table(provider, values) for values in batches]
                 with pa.ipc.new_file(arrow_path, tables[0].schema) as writer:
                     for data in tables:
                         writer.write_table(data)
@@ -290,7 +333,7 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
                         ([[1000], [1001]], False, False, 0),
                         ([[1001]], True, True, 1),
                     ]:
-                        write_times(batches)
+                        write_loss_batches(batches)
                         result = run(policy, accept, output)
                         assert (result.returncode == 0) == success, result.stdout
                         for key in ["risk", "evaluation", "effective"]:
@@ -308,10 +351,10 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
                                 assert "would_change" in result.stdout
                         assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == count
                         if accept:
-                            fraction = "EXTRACT(MICROSECONDS FROM value)" if provider == "postgres" else "DATEPART(microsecond, value)"
-                            assert session.execute_scalar(f"SELECT MAX({fraction}) FROM {target}") == 1000
+                            fraction = stored_loss_expression(provider)
+                            assert session.execute_scalar(f"SELECT MAX({fraction}) FROM {target}") == ("0" if provider == "postgres" else 1000)
                         session.execute_ddl(f"TRUNCATE TABLE {target}")
-                write_times([[1000]])
+                write_loss_batches([[1001]])
                 assert run("strict", False, output).returncode != 0
                 assert run("strict", True, output).returncode != 0
         session.execute_ddl(f"DROP TABLE {target}")

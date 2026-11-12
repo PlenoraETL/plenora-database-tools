@@ -255,6 +255,14 @@ pub(super) fn classify(
                         .any(|leaf| matches!(leaf.class, LeafClass::Padded { .. }))
                 }))
         {
+            if *rewrite == plenora_database_core::store_rewrite::StoreRewrite::JsonNumbers {
+                let values = texts(array, row, SessionShape::Scalar)?;
+                let mut changed = false;
+                for text in values.iter().flatten() {
+                    changed |= json_number_changes(text)?;
+                }
+                return Ok(verdict(changed, Basis::Exact));
+            }
             if let plenora_database_core::store_rewrite::StoreRewrite::ExcessSpaces { bytes } =
                 rewrite
             {
@@ -402,6 +410,41 @@ fn texts(array: &dyn Array, row: usize, shape: SessionShape) -> Result<Vec<Optio
     } else {
         Ok(vec![Some(text.to_owned())])
     }
+}
+
+// jsonb usa numeric: conserva tutte le cifre e la scala dei decimali,
+// anche oltre f64. Riscrive gli esponenti e il segno dello zero. Non usare
+// serde_json::Value, che passerebbe da f64 perdendo la prova di uguaglianza.
+fn json_number_changes(text: &str) -> Result<bool> {
+    serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| invalid())?;
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut changed = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != b'"' {
+                    index += if bytes[index] == b'\\' { 2 } else { 1 };
+                }
+                index += 1;
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = index;
+                while index < bytes.len()
+                    && matches!(bytes[index], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                {
+                    index += 1;
+                }
+                let number = &bytes[start..index];
+                changed |= number.contains(&b'e')
+                    || number.contains(&b'E')
+                    || (number[0] == b'-' && number[1..].iter().all(|b| matches!(b, b'0' | b'.')));
+            }
+            _ => index += 1,
+        }
+    }
+    Ok(changed)
 }
 
 fn fractional_text(text: &str, fraction: u32) -> bool {

@@ -26,7 +26,7 @@ Generato da `loss_registry.rs` con `scripts/render_loss_registry.py`.
 | store.every | Shared | NativeType | DataLoss | Conservative | Conservative | None |
 | store.excess_spaces | Shared | NativeType | DataLoss | Conservative | Conservative | None |
 | store.fractional_seconds | Shared | Precision | DataLoss | FractionalSeconds | Exact | None |
-| store.json_numbers | Shared | Precision | DataLoss | JsonNumbers | Conservative | None |
+| store.json_numbers | Shared | Precision | DataLoss | JsonNumbers | Mixed | None |
 | store.negative_zero | Shared | Precision | DataLoss | NegativeZero | Exact | None |
 | store.non_ascii | Shared | Encoding | DataLoss | NonAscii | Conservative | None |
 | store.pad_binary | Shared | NativeType | DataLoss | PadBinary | Exact | None |

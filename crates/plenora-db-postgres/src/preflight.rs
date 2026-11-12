@@ -324,7 +324,7 @@ pub async fn write(
             }
             let source_crs = source.metadata().get(protocol::GEOMETRY_CRS_ID);
             let target_crs = target_field.metadata().get(protocol::GEOMETRY_CRS_ID);
-            if source_crs != target_crs && (source_crs.is_some() || target_crs.is_some()) {
+            if crs_changes(source_crs, target_crs, source_srid, target_srid) {
                 losses.push(mapping_loss(
                     field_id,
                     RuleId::PgCrs,
@@ -441,6 +441,19 @@ pub async fn write(
     }
     drop(client);
     Ok((report, admitted, instances, snapshot))
+}
+
+// Un authority ID letto dal catalogo arricchisce uno SRID gia dichiarato:
+// non cambia le coordinate o il riferimento della geometria. Due identita
+// esplicite discordanti restano invece un rischio, anche con SRID uguale.
+fn crs_changes(
+    source: Option<&String>,
+    target: Option<&String>,
+    source_srid: Option<&String>,
+    target_srid: Option<&String>,
+) -> bool {
+    let same_srid = source_srid.is_some_and(|srid| Some(srid) == target_srid);
+    source != target && !(source.is_none() && same_srid)
 }
 
 // Deviazione dichiarata (REJ-003, contracts/adoption-source.json): i rifiuti decisi

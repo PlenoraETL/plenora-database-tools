@@ -1,6 +1,29 @@
 use super::*;
 use plenora_database_core::loss::{LossCategory, LossSeverity};
 
+#[test]
+fn catalog_crs_enrichment_does_not_change_declared_srid() {
+    let srid = "4326".to_owned();
+    let other = "3857".to_owned();
+    let epsg = "EPSG:4326".to_owned();
+    let local = "POSTGIS:4326".to_owned();
+    assert!(!crs_changes(None, Some(&epsg), Some(&srid), Some(&srid)));
+    assert!(!crs_changes(
+        Some(&epsg),
+        Some(&epsg),
+        Some(&srid),
+        Some(&srid)
+    ));
+    assert!(crs_changes(None, Some(&epsg), Some(&other), Some(&srid)));
+    assert!(crs_changes(None, Some(&epsg), None, Some(&srid)));
+    assert!(crs_changes(
+        Some(&local),
+        Some(&epsg),
+        Some(&srid),
+        Some(&srid)
+    ));
+}
+
 /// Un cast limitato puo perdere contenuto: non e soltanto un avviso sugli spazi.
 #[test]
 fn bounded_report_declares_content_loss() {
