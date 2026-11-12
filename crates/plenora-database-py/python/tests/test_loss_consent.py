@@ -394,7 +394,7 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
                                 error = document["error"]
                                 assert error["category"] == "invalid_plan"
                                 assert error["remote_effect"] == "none"
-                                check_empty_report(error["loss_report"])
+                                check_empty_report(error["details"]["loss_report"])
                             elif success:
                                 report = check_outcome(document.get("result", document), changed=accept)
                                 assert report["risk"]
