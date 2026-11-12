@@ -194,6 +194,7 @@ class AsyncSession(_AsyncBuilderFactory):
         mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict:
         """Bulk write async — analogo di `Session.copy_from`. Vedi la
         docstring lì per l'input `source`, i mode, le mapping policy
@@ -211,7 +212,7 @@ class AsyncSession(_AsyncBuilderFactory):
         )
         return await self._native.acopy_from(
             schema, table, ipc_bytes, mode, transaction_profile,
-            mapping_policy, keys, update_columns,
+            mapping_policy, keys, update_columns, accept_loss,
         )
 
     # -------------------- transactions ----------------------------------

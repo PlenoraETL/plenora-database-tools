@@ -230,8 +230,8 @@ const OPERATIONS: &[OperationSpec] = &[
     },
     OperationSpec {
         id: "database.write",
-        input: "plenora-database-write-input-v1",
-        output: "plenora-database-write-result-v1",
+        input: "plenora-database-write-input-v2",
+        output: "plenora-database-write-result-v2",
         input_content_types: WRITE_INPUT,
         output_content_types: JSON,
         side_effect: PublicSideEffect::Remote,
@@ -341,7 +341,11 @@ pub fn public_capabilities(
         })
         .map(|operation| PublicOperation {
             id: operation.id.to_owned(),
-            version: 1,
+            version: if operation.id == "database.write" {
+                2
+            } else {
+                1
+            },
             status: PublicOperationStatus::Available,
             surfaces: vec![surface],
             input: payload(operation.input, operation.input_content_types),
@@ -392,7 +396,11 @@ pub fn rust_surface_bindings() -> RustSurfaceBindings {
             .iter()
             .map(|operation| RustSurfaceBinding {
                 operation: operation.id.to_owned(),
-                version: 1,
+                version: if operation.id == "database.write" {
+                    2
+                } else {
+                    1
+                },
                 entrypoints: operation
                     .rust_entrypoints
                     .iter()

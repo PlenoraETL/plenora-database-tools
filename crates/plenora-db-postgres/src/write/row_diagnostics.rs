@@ -241,6 +241,7 @@ fn commit_unknown_error(
 const fn committed_outcome(execution_id: String, received: u64, inserted: u64) -> WriteOutcome {
     WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id,
         provider: ProviderKind::Postgres,

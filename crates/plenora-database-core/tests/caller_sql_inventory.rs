@@ -84,6 +84,7 @@ fn every_public_provider_method_is_classified() {
     assert_eq!(
         methods,
         [
+            "write_with_consent",
             "kind",
             "test_connection",
             "probe_capabilities",

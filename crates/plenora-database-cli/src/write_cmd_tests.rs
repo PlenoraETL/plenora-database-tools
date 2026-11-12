@@ -57,6 +57,7 @@ async fn dry_run_rejects_a_schema_the_write_would_reject() {
         operation(),
         Box::new(SchemaOnly(schema)),
         DryRun::Offline,
+        false,
     )
     .await
     .expect_err("schema non conforme in dry run");
@@ -99,6 +100,7 @@ async fn dry_run_compiles_the_plan_like_the_write() {
         operation(),
         Box::new(SchemaOnly(Arc::clone(&schema))),
         DryRun::Offline,
+        false,
     )
     .await
     .expect_err("SRID non derivabile in dry run");
@@ -218,6 +220,7 @@ async fn dry_run_judges_every_value_like_the_write() {
         create(),
         stream(&schema, &[&truncated], None),
         DryRun::Offline,
+        false,
     )
     .await
     .expect_err("valore troncato in dry run");
@@ -243,6 +246,7 @@ async fn dry_run_compares_the_value_srid_like_the_write() {
         create(),
         stream(&schema, &[&other_srid], None),
         DryRun::Offline,
+        false,
     )
     .await
     .expect_err("SRID del valore diverso in dry run");
@@ -266,6 +270,7 @@ async fn catalog_dry_run_without_the_dsn_is_a_configuration_error() {
         create(),
         stream(&schema, &[&truncated], None),
         DryRun::Catalog,
+        false,
     )
     .await
     .expect_err("DSN assente");
@@ -331,6 +336,7 @@ async fn dry_run_follows_the_row_scoped_path() {
         operation(),
         stream(&schema, &[&point], Some(2)),
         DryRun::Offline,
+        false,
     )
     .await
     .expect_err("ingresso piu corto del dichiarato");
@@ -341,6 +347,7 @@ async fn dry_run_follows_the_row_scoped_path() {
         operation(),
         stream(&schema, &[&point, &truncated], Some(2)),
         DryRun::Offline,
+        false,
     )
     .await
     .expect_err("valore troncato sul percorso row-scoped");

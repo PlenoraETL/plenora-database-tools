@@ -875,6 +875,7 @@ fn committed_outcome(
     };
     WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id: execution_id.to_owned(),
         provider: ProviderKind::Postgres,

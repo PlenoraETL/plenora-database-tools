@@ -423,3 +423,24 @@ Software proprietario. I termini sono in [`LICENSE`](LICENSE).
 Gli avvisi dei crate Rust viaggiano negli archivi CLI, nei wheel e nel
 sorgente di release. Raccolta offline, confezionamento e controllo degli
 artefatti sono descritti in [`docs/RELEASE.md`](docs/RELEASE.md).
+
+## Scritture Arrow: rapporto e consenso
+
+Dalla release 10.0.0 l'esito e WriteOutcome v3, con `loss_report` del piano
+eseguito (LossReport v2). Lo schema e in `contracts/v2/write-outcome-v3.schema.json`:
+la cartella v2 identifica il bundle esistente, la versione dell'esito e esplicita
+nel nome e nel documento. Il reader Rust accetta ancora v2 senza rapporto;
+non equipara quell'assenza a `losses: []` di un piano preparato.
+
+CLI `database-write-ipc`, `bulk-write`, `postgres-write-ipc` accettano
+`--accept-loss`; la write canonica e il runtime accettano `accept_loss: true`
+nel documento della richiesta. Senza consenso separato dalla policy, DataLoss
+rifiuta l'esecuzione prima degli effetti. Information/Warning non richiedono
+consenso. Il rapporto resta nei formati JSON, Markdown e JUnit, e negli esiti
+parziali/incerti trasportati dall'errore. Un dry-run e una preparazione distinta,
+non il rapporto della successiva esecuzione. SQL nativo e trasformazioni server
+non osservate non sono coperti da un rapporto Arrow vuoto.
+
+Il binding annuncia `database.write@2`, input/result v2; i consumer devono
+negoziare questa versione e validare WriteOutcome v3. Le altre operazioni
+conservano la loro versione. Vedere gli avvisi 8.x e 9.0.0–9.0.3 nel CHANGELOG.

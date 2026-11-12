@@ -14,17 +14,17 @@ python scripts\render_state.py
 
 | crate | versione |
 | --- | --- |
-| `plenora-database-cli` | 9.0.3 |
-| `plenora-database-core` | 9.0.3 |
-| `plenora-database-engine` | 9.0.3 |
-| `plenora-database-py` | 9.0.3 |
-| `plenora-database-sql` | 9.0.3 |
-| `plenora-database-testkit` | 9.0.3 |
-| `plenora-db-db2` | 9.0.3 |
-| `plenora-db-mysql` | 9.0.3 |
-| `plenora-db-oracle` | 9.0.3 |
-| `plenora-db-postgres` | 9.0.3 |
-| `plenora-db-sqlserver` | 9.0.3 |
+| `plenora-database-cli` | 10.0.0 |
+| `plenora-database-core` | 10.0.0 |
+| `plenora-database-engine` | 10.0.0 |
+| `plenora-database-py` | 10.0.0 |
+| `plenora-database-sql` | 10.0.0 |
+| `plenora-database-testkit` | 10.0.0 |
+| `plenora-db-db2` | 10.0.0 |
+| `plenora-db-mysql` | 10.0.0 |
+| `plenora-db-oracle` | 10.0.0 |
+| `plenora-db-postgres` | 10.0.0 |
+| `plenora-db-sqlserver` | 10.0.0 |
 
 ## Contratto attivo
 
@@ -39,6 +39,7 @@ La major attiva e `contracts/v2/`, e contiene:
 - `plan.schema.json`
 - `public-operation-contracts.schema.json`
 - `read-checkpoint.schema.json`
+- `write-outcome-v3.schema.json`
 - `write-outcome.schema.json`
 
 Il gate offline verifica che schemi ed esempi usino soltanto la major

@@ -121,6 +121,13 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
     capability_schema = load(contracts / "schemas" / "capabilities-v2.schema.json")
     error_schema = load(contracts / "schemas" / "error-v1.schema.json")
     catalog = load(contracts / "catalogs" / "database-tools-v2.json")
+    # Explicit major migration owned here; pinned copies stay immutable.
+    write = next(item for item in catalog["operations"] if item["id"] == "database.write")
+    if write["version"] != 1 or write["output"]["contract"] != "plenora-database-write-result-v1":
+        raise RuntimeError("riesaminare la migrazione write@2 dopo aggiornamento del pin")
+    write["version"] = 2
+    write["input"]["contract"] = "plenora-database-write-input-v2"
+    write["output"]["contract"] = "plenora-database-write-result-v2"
     shared_schemas = [load(path) for path in (contracts / "schemas").glob("*.json")]
     registry = Registry().with_resources(
         (schema["$id"], Resource.from_contents(schema))

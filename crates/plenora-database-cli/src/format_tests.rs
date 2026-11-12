@@ -4,6 +4,23 @@ use serde_json::json;
 static FORMAT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn loss_report_survives_all_output_renderers() {
+    let value: Value = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/outcome-v3-loss.json"
+    ))
+    .unwrap();
+    for rendered in [
+        serde_json::to_string(&value).unwrap(),
+        render_markdown("write", &value),
+        render_junit("write", &value),
+    ] {
+        assert!(rendered.contains("loss_report"));
+        assert!(rendered.contains("data_loss"));
+        assert!(rendered.contains("precisione ridotta dal piano"));
+    }
+}
+
+#[test]
 fn strip_format_extracts_value_and_returns_remaining_args() {
     let _guard = FORMAT_TEST_LOCK
         .lock()

@@ -6,6 +6,37 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 10.0.0 — non pubblicata
+
+- **Cambio incompatibile di contratto:** WriteOutcome v3 porta il LossReport
+  v2 del piano in `loss_report`. I reader v2 chiusi devono essere aggiornati;
+  i risultati legacy v2 restano leggibili da Rust, distinti dai v3. La release
+  richiede 10.0.0, non 9.1.0 (AGENTS.md, regola 2). `database.write` passa alla
+  versione 2, input/result contract v2; le altre operazioni restano invariate.
+- CLI, SDK sync/async e runtime richiedono consenso separato per DataLoss:
+  `--accept-loss`, `accept_loss=True`, `accept_loss: true` nella richiesta.
+  Strict e i rifiuti non-strict dei provider restano invariati. L'API Rust
+  a due fasi conserva le firme e riporta il rapporto nell'esito.
+- Python esporta `MappingLossWarning` (UserWarning) con `write_outcome`.
+  Anche con warnings-as-errors, l'avviso dichiara il commit gia avvenuto;
+  non suggerisce rollback o retry. Vedere il README SDK per esiti incerti.
+
+**AVVISO utenti 8.x, SQL Server:** la misura del 12/11/2026 su 8.0.4
+ha rilevato, nel percorso Prepared di Rust diretto/Provider, CLI e SDK,
+spazi finali testuali oltre n, zeri finali binari oltre n e padding dei tipi
+fissi alterati e committati senza dichiarazione, con tutte le policy,
+**strict inclusa**. Il rapporto Rust era vuoto. Questo difetto e corretto
+dalla 9.0.0. Il percorso TDS bulk della misura non e affetto: soltanto rifiuti
+o valori esatti. La matrice non misura async, runtime, ORM o portable 8.x.
+
+**AVVISO utenti 9.0.0–9.0.3:** CLI, SDK e runtime scartano il rapporto delle
+perdite ammesse del piano Arrow. Un commit puo quindi modificare valori senza
+renderlo visibile al chiamante; la misura 9.0.3 rileva 72 casi per CLI e SDK
+SQL Server Prepared, nelle policy compatible/lossy/native. Strict 9.0.3
+non presenta queste alterazioni nella misura. L'API Rust consentiva gia di
+leggere il rapporto prima di consumare il piano. Aggiornare anche i consumer
+del contratto per usare rapporto e consenso della nuova major.
+
 ## 9.0.3 — 2026-11-11
 
 - Un wrapper non PyArrow che espone `__arrow_c_stream__` o `__arrow_c_array__`

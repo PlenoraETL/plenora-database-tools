@@ -59,12 +59,25 @@ pub struct Recovery {
 #[serde(deny_unknown_fields)]
 pub struct WriteOutcome {
     pub schema_version: u32,
+    /// Rapporto del piano eseguito; assente soltanto negli esiti legacy v2.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_report"
+    )]
+    pub loss_report: Option<crate::loss::LossReport>,
     pub status: WriteStatus,
     pub execution_id: String,
     pub provider: ProviderKind,
     pub rows: RowCounts,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Recovery>,
+}
+
+fn present_report<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<crate::loss::LossReport>, D::Error> {
+    crate::loss::LossReport::deserialize(deserializer).map(Some)
 }
 
 /// Le lunghezze massime che `contracts/v2/write-outcome.schema.json`
@@ -89,10 +102,16 @@ impl WriteOutcome {
     /// lunghezze del contratto, campi di recovery troppo lunghi, combinazioni
     /// di stato/recovery incoerenti o conteggi superiori alle righe ricevute.
     pub fn validate(&self) -> crate::Result<()> {
-        if self.schema_version != 2 {
+        if !matches!(
+            (self.schema_version, &self.loss_report),
+            (2, None) | (3, Some(_))
+        ) {
             return Err(crate::DatabaseError::invalid_plan(
                 "esito di scrittura con schema_version non supportata",
             ));
+        }
+        if let Some(report) = &self.loss_report {
+            report.validate()?;
         }
         // `minLength: 1` e `maxLength: 128` contano code point.
         let execution_id_chars = self.execution_id.chars().count();

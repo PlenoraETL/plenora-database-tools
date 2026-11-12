@@ -188,6 +188,8 @@ pub struct WriteRequest {
     #[serde(default)]
     pub provider_arguments: Vec<String>,
     pub operation_path: String,
+    #[serde(default)]
+    pub accept_loss: bool,
 }
 
 macro_rules! target_of {

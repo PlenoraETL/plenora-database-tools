@@ -29,6 +29,12 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+create_exception!(
+    plenora_database._native,
+    MappingLossWarning,
+    pyo3::exceptions::PyUserWarning
+);
+
 // Base + sottoclassi. Il modulo dichiarato deve essere `plenora_database._native`
 // per corrispondere al pymodule di lib.rs.
 create_exception!(plenora_database._native, PlenoraError, PyRuntimeError);
@@ -106,6 +112,10 @@ create_exception!(
 
 /// Registra tutte le classi di eccezione nel pymodule.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "MappingLossWarning",
+        m.py().get_type::<MappingLossWarning>(),
+    )?;
     m.add("PlenoraError", m.py().get_type::<PlenoraError>())?;
     m.add(
         "PlenoraInvalidPlanError",

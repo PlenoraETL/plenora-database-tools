@@ -1149,48 +1149,52 @@ impl Provider for PostgresProvider {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(async move {
-            validate_prepared_budget(&prepared.budget, budget)?;
-            let control = BudgetCancellation::new(cancellation, budget)?;
-            let target = prepared.operation.target.clone();
-            // La regola K: una chiave ripetuta nell'ingresso di una mode per
-            // chiavi rifiuta la scrittura prima del COMMIT. Lo stream della
-            // condizione 2 lo costruisce la transazione, che legge come
-            // l'indice che prova le chiavi tratta i `NULL`
-            // (`write::visibility::null_keys`); qui le verifiche delle chiavi.
-            plenora_database_core::write_keys::validate_input_keys(
-                prepared.operation.mode,
-                &prepared.operation.keys,
-                &input.schema(),
-            )?;
-            let result = write::execute(
-                secret,
-                prepared,
-                input,
-                budget,
-                control.token(),
-                write::WriteRuntime {
-                    statement_timeout_ms: self.statement_timeout_ms,
-                    lock_timeout_ms: self.lock_timeout_ms,
-                    fault_point: self.fault_point,
-                    insert_mode: self.insert_mode,
-                    max_batch_bytes: self.max_batch_bytes,
-                    max_wkb_cell_bytes: self.max_wkb_cell_bytes,
-                    tls_mode: self.tls_mode,
-                    tls_config: self.tls_config.clone(),
-                    network_options: self.network_options,
-                    schema_evolution: self.schema_evolution,
-                    pool: Arc::clone(&self.pool),
-                    metrics: Arc::clone(&self.metrics),
-                    pool_acquire_timeout_ms: self.pool_acquire_timeout_ms,
-                },
-            )
-            .await;
-            if result.is_ok() {
-                self.invalidate_cached_schema(secret, &target);
-            }
-            result
-        })
+        Box::pin(plenora_database_core::prepared_execution::execute(
+            prepared,
+            true,
+            move |prepared| async move {
+                validate_prepared_budget(&prepared.budget, budget)?;
+                let control = BudgetCancellation::new(cancellation, budget)?;
+                let target = prepared.operation.target.clone();
+                // La regola K: una chiave ripetuta nell'ingresso di una mode per
+                // chiavi rifiuta la scrittura prima del COMMIT. Lo stream della
+                // condizione 2 lo costruisce la transazione, che legge come
+                // l'indice che prova le chiavi tratta i `NULL`
+                // (`write::visibility::null_keys`); qui le verifiche delle chiavi.
+                plenora_database_core::write_keys::validate_input_keys(
+                    prepared.operation.mode,
+                    &prepared.operation.keys,
+                    &input.schema(),
+                )?;
+                let result = write::execute(
+                    secret,
+                    prepared,
+                    input,
+                    budget,
+                    control.token(),
+                    write::WriteRuntime {
+                        statement_timeout_ms: self.statement_timeout_ms,
+                        lock_timeout_ms: self.lock_timeout_ms,
+                        fault_point: self.fault_point,
+                        insert_mode: self.insert_mode,
+                        max_batch_bytes: self.max_batch_bytes,
+                        max_wkb_cell_bytes: self.max_wkb_cell_bytes,
+                        tls_mode: self.tls_mode,
+                        tls_config: self.tls_config.clone(),
+                        network_options: self.network_options,
+                        schema_evolution: self.schema_evolution,
+                        pool: Arc::clone(&self.pool),
+                        metrics: Arc::clone(&self.metrics),
+                        pool_acquire_timeout_ms: self.pool_acquire_timeout_ms,
+                    },
+                )
+                .await;
+                if result.is_ok() {
+                    self.invalidate_cached_schema(secret, &target);
+                }
+                result
+            },
+        ))
     }
 
     fn open_transaction<'a>(

@@ -23,6 +23,7 @@ fn parses_the_unknown_outcome_example() {
 fn row_accounting_overflow_is_rejected_without_panicking() {
     let outcome = WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id: "overflow".to_owned(),
         provider: ProviderKind::Postgres,
@@ -44,6 +45,7 @@ fn row_accounting_overflow_is_rejected_without_panicking() {
 fn committed_outcome_for_boundaries() -> WriteOutcome {
     WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id: "01J3BOUNDARY".to_owned(),
         provider: ProviderKind::Postgres,

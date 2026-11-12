@@ -306,7 +306,7 @@ pub trait ArtifactResolver: Send + Sync {
 
     /// I dati Arrow legati a questa invocazione di `database.write`.
     ///
-    /// Il documento `plenora-database-write-input-v1` non nomina i dati, come
+    /// Il documento `plenora-database-write-input-v2` non nomina i dati, come
     /// sulla CLI dove arrivano da `--data`: li consegna il trasporto
     /// dell'applicazione insieme al messaggio.
     ///
@@ -679,7 +679,14 @@ impl<'a> RuntimeBinding<'a> {
             .await?;
         let outcome = connected
             .provider
-            .write(&connected.secret, prepared, input, &budget, &token)
+            .write_with_consent(
+                &connected.secret,
+                prepared,
+                input,
+                &budget,
+                &token,
+                request.accept_loss,
+            )
             .await?
             .settle()
             .map_err(Failure::Unsettled)?;

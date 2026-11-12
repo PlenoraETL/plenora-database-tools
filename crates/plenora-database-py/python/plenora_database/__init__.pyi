@@ -278,6 +278,7 @@ class _DatabaseSessionWrapper:
         mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict: ...
     def _execute_portable_rows(self, ast_json: str) -> list[dict]: ...
     def _execute_portable_count(self, ast_json: str) -> int: ...
@@ -350,6 +351,7 @@ class _AsyncDatabaseSessionWrapper:
         mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict: ...
     async def _execute_portable_rows(self, ast_json: str) -> list[dict]: ...
     async def _execute_portable_count(self, ast_json: str) -> int: ...
@@ -589,3 +591,7 @@ async def _create_async_oracle_engine(
 ) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
 
 __all__: list[str]
+
+
+class MappingLossWarning(UserWarning):
+    write_outcome: dict

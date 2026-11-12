@@ -40,6 +40,18 @@
     {
       "file": "unconsumable-plan-offset-without-order.json",
       "schema": "../plan.schema.json"
+    },
+    {
+      "file": "outcome-v3-committed.json",
+      "schema": "../write-outcome-v3.schema.json"
+    },
+    {
+      "file": "outcome-v3-unknown.json",
+      "schema": "../write-outcome-v3.schema.json"
+    },
+    {
+      "file": "outcome-v3-loss.json",
+      "schema": "../write-outcome-v3.schema.json"
     }
   ],
   "rejected": [

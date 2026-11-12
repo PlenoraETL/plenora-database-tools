@@ -551,18 +551,22 @@ impl Provider for MysqlProvider {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(async move {
-            // Bordo: l'esito della scrittura porta l'attribuzione del
-            // profilo, sia quando riesce sia quando fallisce. Un outcome
-            // committato che dichiarasse il prodotto sbagliato sarebbe una
-            // riga di contabilita falsa, non un dettaglio diagnostico.
-            let outcome =
-                execute_mysql_write(self, secret, prepared, input, budget, cancellation).await;
-            crate::profile::attributed(self.profile, outcome).map(|mut outcome| {
-                outcome.provider = self.profile.kind();
-                outcome
-            })
-        })
+        Box::pin(plenora_database_core::prepared_execution::execute(
+            prepared,
+            true,
+            move |prepared| async move {
+                // Bordo: l'esito della scrittura porta l'attribuzione del
+                // profilo, sia quando riesce sia quando fallisce. Un outcome
+                // committato che dichiarasse il prodotto sbagliato sarebbe una
+                // riga di contabilita falsa, non un dettaglio diagnostico.
+                let outcome =
+                    execute_mysql_write(self, secret, prepared, input, budget, cancellation).await;
+                crate::profile::attributed(self.profile, outcome).map(|mut outcome| {
+                    outcome.provider = self.profile.kind();
+                    outcome
+                })
+            },
+        ))
     }
 
     fn open_transaction<'a>(

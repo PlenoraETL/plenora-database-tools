@@ -32,6 +32,7 @@ pub mod outcome;
 pub mod parameter_fidelity;
 pub mod plan;
 pub mod portable;
+pub mod prepared_execution;
 pub mod primary_key;
 pub mod protocol;
 pub mod provider;

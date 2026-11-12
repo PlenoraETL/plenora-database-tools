@@ -1,0 +1,190 @@
+{
+  "plenora-database-cli/src/main.rs": {
+    "sites": 1,
+    "role": "public"
+  },
+  "plenora-database-cli/src/write_cmd.rs": {
+    "sites": 1,
+    "role": "public"
+  },
+  "plenora-database-core/src/caller_sql_tests.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-core/src/prepared_execution.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-core/src/provider.rs": {
+    "sites": 5,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-core/src/provider_prepared_write_tests.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-core/tests/prepared_execution.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-core/tests/public_rust_surface_v1.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-engine/examples/bench_core_application.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-engine/src/engine_tests.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-engine/src/runtime_binding.rs": {
+    "sites": 1,
+    "role": "public"
+  },
+  "plenora-database-engine/tests/runtime_vectors.rs": {
+    "sites": 4,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-py/src/family_write.rs": {
+    "sites": 1,
+    "role": "public"
+  },
+  "plenora-database-py/src/write.rs": {
+    "sites": 1,
+    "role": "public"
+  },
+  "plenora-database-testkit/src/nul_fidelity.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-testkit/src/parameter_sweep_transaction_tests.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-database-testkit/src/write_probe.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-db2/src/live_tests.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-db2/src/provider.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-db2/src/spatial_live_tests.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-db2/src/write.rs": {
+    "sites": 4,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-db2/src/write_admission_live_tests.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-db2/src/write_keys_collation_tests.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-db2/src/write_rewrite_live_tests.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-mysql/examples/mysql_performance.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-mysql/src/live_tests.rs": {
+    "sites": 32,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-mysql/src/mariadb_evidence.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-mysql/src/provider.rs": {
+    "sites": 8,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-mysql/src/provider_tests.rs": {
+    "sites": 4,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-oracle/src/live_tests.rs": {
+    "sites": 6,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-oracle/src/number_live_tests.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-oracle/src/provider.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-oracle/src/write.rs": {
+    "sites": 6,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-oracle/src/write_admission_live_tests.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-oracle/src/write_rewrite_live_tests.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/examples/postgres_performance.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/src/lib.rs": {
+    "sites": 6,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/src/target_schema.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/src/test_suite.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/src/write.rs": {
+    "sites": 2,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/src/write_admission_live_tests.rs": {
+    "sites": 3,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/tests/golden_write_bulk.rs": {
+    "sites": 7,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-postgres/tests/golden_write_replace.rs": {
+    "sites": 8,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-sqlserver/src/live_tests.rs": {
+    "sites": 5,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-sqlserver/src/provider.rs": {
+    "sites": 4,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-sqlserver/src/write_semantics_r4_live_tests.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  },
+  "plenora-db-sqlserver/src/write/mod.rs": {
+    "sites": 1,
+    "role": "two_phase_or_probe"
+  }
+}

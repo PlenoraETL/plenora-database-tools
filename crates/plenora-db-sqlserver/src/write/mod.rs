@@ -465,7 +465,10 @@ pub async fn write_prepared(
     input: Box<dyn BatchStream>,
     cancellation: &CancellationToken,
 ) -> Result<WriteOutcome> {
-    write_prepared_inner(prepared, input, cancellation, None).await
+    let report = prepared.loss_report().clone();
+    plenora_database_core::prepared_execution::authorize(&report, true)?;
+    let result = write_prepared_inner(prepared, input, cancellation, None).await;
+    plenora_database_core::prepared_execution::attach(report, result)
 }
 
 #[cfg(test)]
@@ -475,7 +478,10 @@ pub async fn write_prepared_with_fault(
     cancellation: &CancellationToken,
     fault: WriteFaultPoint,
 ) -> Result<WriteOutcome> {
-    write_prepared_inner(prepared, input, cancellation, Some(fault)).await
+    let report = prepared.loss_report().clone();
+    plenora_database_core::prepared_execution::authorize(&report, true)?;
+    let result = write_prepared_inner(prepared, input, cancellation, Some(fault)).await;
+    plenora_database_core::prepared_execution::attach(report, result)
 }
 
 #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
@@ -725,6 +731,7 @@ async fn write_prepared_inner(
         };
         let outcome = WriteOutcome {
             schema_version: 2,
+            loss_report: None,
             status: WriteStatus::Committed,
             execution_id,
             provider: ProviderKind::Sqlserver,
@@ -866,6 +873,7 @@ fn unknown_commit_outcome(
 ) -> Result<WriteOutcome> {
     let outcome = WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::OutcomeUnknown,
         execution_id,
         provider: ProviderKind::Sqlserver,

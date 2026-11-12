@@ -88,7 +88,7 @@ Il contenuto per esito:
 
 - Le operazioni JSON restituiscono il documento della CLI: `verified` e la
   discovery runtime per `test_connection`; il documento d'ispezione; l'esito
-  `plenora-database-write-result-v1`; il riepilogo di `database.query`
+  `plenora-database-write-result-v2`; il riepilogo di `database.query`
   (batch, righe e campi, senza valori).
 - `database.read` scrive lo stream Arrow IPC nel sink dell'host, con lo
   stesso budget della CLI ristretto alla deadline. Il risultato ha content
@@ -140,3 +140,24 @@ risultato query e applicato prima della consegna; l'host puo restringerlo con
 `RuntimeBinding::with_query_payload_limit` e dichiara il proprio limite nel
 suo manifest. Lo schema degli attributi v1 resta invariato: la mancata
 pubblicazione del limite in discovery e una deviazione esplicita.
+
+## Scritture Arrow: rapporto e consenso
+
+Dalla release 10.0.0 l'esito e WriteOutcome v3, con `loss_report` del piano
+eseguito (LossReport v2). Lo schema e in `contracts/v2/write-outcome-v3.schema.json`:
+la cartella v2 identifica il bundle esistente, la versione dell'esito e esplicita
+nel nome e nel documento. Il reader Rust accetta ancora v2 senza rapporto;
+non equipara quell'assenza a `losses: []` di un piano preparato.
+
+CLI `database-write-ipc`, `bulk-write`, `postgres-write-ipc` accettano
+`--accept-loss`; la write canonica e il runtime accettano `accept_loss: true`
+nel documento della richiesta. Senza consenso separato dalla policy, DataLoss
+rifiuta l'esecuzione prima degli effetti. Information/Warning non richiedono
+consenso. Il rapporto resta nei formati JSON, Markdown e JUnit, e negli esiti
+parziali/incerti trasportati dall'errore. Un dry-run e una preparazione distinta,
+non il rapporto della successiva esecuzione. SQL nativo e trasformazioni server
+non osservate non sono coperti da un rapporto Arrow vuoto.
+
+Il binding annuncia `database.write@2`, input/result v2; i consumer devono
+negoziare questa versione e validare WriteOutcome v3. Le altre operazioni
+conservano la loro versione. Vedere gli avvisi 8.x e 9.0.0–9.0.3 nel CHANGELOG.

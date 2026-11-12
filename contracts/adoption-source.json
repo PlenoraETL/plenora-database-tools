@@ -27,6 +27,13 @@
   ],
   "deviations": [
     {
+      "rule": "SURF-007",
+      "surface": "runtime",
+      "observed_behavior": "Release 10.0.0 explicitly migrates database.write from operation 1 to operation 2 with input/result v2 and WriteOutcome v3. The pinned catalog still declares write@1; the local migration is checked explicitly, never presented as pin conformance for write@1. CLI, Python SDK and Rust share the migration.",
+      "tracking": "contracts/v2/write-outcome-v3.schema.json",
+      "detectable_before_invocation": true
+    },
+    {
       "rule": "ARROW-STORE-REWRITE-PREVALIDATED",
       "surface": "rust",
       "observed_behavior": "Coordinator decision 2026-11-10: preserve StoreRewrite::rewrites and rewrites_in_unit bool signatures. Rule: callers supply an array already fully validated and an in-range row. Scope: direct Rust calls to these two helpers; operational inputs pass through RewriteGuard::check, enforced by scripts/check_arrow_ingress.py. Hazard: a direct caller violating the precondition can observe invalid data or panic; bool cannot report category and phase. Reentry: fallible signatures in the next major release.",

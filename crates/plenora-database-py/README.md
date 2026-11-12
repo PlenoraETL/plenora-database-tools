@@ -722,12 +722,24 @@ Mode:
 Transaction profile: `single_transaction` (default) / `chunk_committed` /
 `staged_swap` / `best_effort_ddl`.
 Mapping policy obbligatoria: `compatible` / `strict` / `lossy` / `native`.
-`strict` boccia ogni loss anche minore (es. Arrow nullable → PG NOT NULL);
-`compatible` tollera le loss non-DataLoss — scelta consigliata per input
-pyarrow tipici (dove i campi sono nullable per default).
+`strict` rifiuta DataLoss; Information e Warning restano nel rapporto.
+`compatible`, `lossy` e `native` possono ammettere anche DataLoss: per eseguirle
+serve inoltre `accept_loss=True`. Il default e `False`: il rifiuto avviene
+prima dell'esecuzione del piano, con categoria `data_mapping`, fase `prepare`.
+Questa opzione non apre le policy non strict nei provider che le rifiutano.
 
-L'outcome è un dict con struttura `WriteOutcome` del core (status,
-rows.confirmed / .inserted / .failed / .skipped, recovery).
+L'esito e un dict WriteOutcome v3: `loss_report` contiene il LossReport v2 del
+piano eseguito, anche quando `losses` e vuoto. Un errore di preparazione non
+produce un esito e non equivale a un rapporto vuoto. Il rapporto descrive il
+piano, non un confronto generale con i valori salvati da trigger o SQL nativo.
+
+`MappingLossWarning`, esportata dal package e sottoclasse di `UserWarning`,
+segnala Warning e DataLoss presenti nell'esito. Il warning porta
+`write_outcome`: con un filtro warnings-as-errors, l'eccezione conserva lo
+stesso documento e dichiara che il commit e gia avvenuto. Non implica rollback
+ne autorizza un retry. Gli esiti incerti/parziali conservano il rapporto in
+`details["write_outcome"]` dell'errore di scrittura; con filtro error il warning
+e la causa dell'errore primario, senza nascondere lo stato incerto.
 
 Nel binding Python, `copy_from` e `acopy_from` serializzano l'intero input in
 un buffer Arrow IPC in memoria prima di inviarlo al Rust, anche quando la

@@ -311,6 +311,7 @@ class DatabaseSession:
         mapping_policy: str = "strict",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict: ...
 
 # ============================ AsyncDatabaseSession ==============================
@@ -381,6 +382,7 @@ class AsyncDatabaseSession:
         mapping_policy: str = "strict",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> Any: ...  # awaitable → dict
 # ============================ Session (sync) ============================
 
@@ -470,6 +472,7 @@ class Session:
         mapping_policy: str = "compatible",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict: ...
 
 # ============================ Transaction (sync) ============================
@@ -610,6 +613,7 @@ class AsyncSession:
         mapping_policy: str = "compatible",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> Any: ...  # awaitable → dict
 
 
@@ -750,3 +754,7 @@ class PlenoraInternalError(PlenoraError): ...
 class PlenoraCommitOutcomeUnknownError(PlenoraInternalError):
     automatic_retry_allowed: bool  # sempre False per outcome unknown
     recovery_action: str  # istruzione human-readable
+
+
+class MappingLossWarning(UserWarning):
+    write_outcome: dict

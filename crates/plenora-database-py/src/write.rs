@@ -27,6 +27,10 @@ use arrow_ipc::reader::StreamReader;
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::{UnsettledWrite, WriteOutcome};
+
+#[cfg(test)]
+#[path = "write_loss_tests.rs"]
+mod loss_tests;
 use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
 use plenora_database_core::{CancellationToken, DatabaseError};
@@ -332,6 +336,7 @@ async fn do_copy_from_async(
     keys: Vec<String>,
     update_columns: Vec<String>,
     ipc_bytes: Vec<u8>,
+    accept_loss: bool,
     cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let (input_schema, batches, declared_rows) = decode_ipc_stream(&ipc_bytes)?;
@@ -354,7 +359,14 @@ async fn do_copy_from_async(
         .prepare_write(&secret, &operation, input_schema, &budget, &cancellation)
         .await?;
     let outcome = provider
-        .write(&secret, prepared, Box::new(stream), &budget, &cancellation)
+        .write_with_consent(
+            &secret,
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+            accept_loss,
+        )
         .await?;
     Ok(outcome)
 }
@@ -379,6 +391,7 @@ pub(crate) fn copy_from_sync(
     mapping_policy: &str,
     keys: Vec<String>,
     update_columns: Vec<String>,
+    accept_loss: bool,
     cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(mode)?;
@@ -401,6 +414,7 @@ pub(crate) fn copy_from_sync(
             keys,
             update_columns,
             ipc_owned,
+            accept_loss,
             cancellation,
         )
         .await
@@ -426,6 +440,7 @@ pub(crate) async fn copy_from_async(
     mapping_policy: String,
     keys: Vec<String>,
     update_columns: Vec<String>,
+    accept_loss: bool,
     cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(&mode)?;
@@ -442,6 +457,7 @@ pub(crate) async fn copy_from_async(
         keys,
         update_columns,
         ipc_bytes,
+        accept_loss,
         cancellation,
     )
     .await
@@ -463,9 +479,47 @@ pub(crate) fn outcome_into_py<'py>(
     outcome: &WriteOutcome,
 ) -> PyResult<Bound<'py, PyDict>> {
     match outcome.clone().settle() {
-        Ok(settled) => outcome_to_pydict(py, &settled),
-        Err(unsettled) => Err(unsettled_into_py_err(py, &unsettled)),
+        Ok(settled) => {
+            let document = outcome_to_pydict(py, &settled)?;
+            warn_loss(py, &settled, &document)?;
+            Ok(document)
+        }
+        Err(unsettled) => {
+            let error = unsettled_into_py_err(py, &unsettled);
+            if let Some(outcome) = unsettled.outcome() {
+                if let Ok(document) = outcome_to_pydict(py, outcome) {
+                    if let Err(warning) = warn_loss(py, outcome, &document) {
+                        // L'errore di commit resta primario, il filtro error resta visibile.
+                        error.set_cause(py, Some(warning));
+                    }
+                }
+            }
+            Err(error)
+        }
     }
+}
+
+fn warn_loss(py: Python<'_>, outcome: &WriteOutcome, document: &Bound<'_, PyDict>) -> PyResult<()> {
+    if outcome.loss_report.as_ref().is_some_and(|report| {
+        report.losses.iter().any(|loss| {
+            matches!(
+                loss.severity,
+                plenora_database_core::loss::LossSeverity::Warning
+                    | plenora_database_core::loss::LossSeverity::DataLoss
+            )
+        })
+    }) {
+        let message = if outcome.status == plenora_database_core::outcome::WriteStatus::Committed {
+            "scrittura committed con perdite pianificate: consultare write_outcome; il commit e gia avvenuto"
+        } else {
+            "scrittura con perdite pianificate: consultare stato e recovery in write_outcome; non ripetere automaticamente"
+        };
+        let warning = crate::errors::MappingLossWarning::new_err(message);
+        warning.value(py).setattr("write_outcome", document)?;
+        py.import("warnings")?
+            .call_method1("warn", (warning.value(py),))?;
+    }
+    Ok(())
 }
 
 fn unsettled_into_py_err(py: Python<'_>, unsettled: &UnsettledWrite) -> PyErr {
