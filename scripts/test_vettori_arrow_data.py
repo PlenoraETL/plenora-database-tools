@@ -243,6 +243,7 @@ class ScenariDelTarget(unittest.TestCase):
                          "not-null-assente-append", "not-null-assente-truncate",
                          "schema-senza-usage", "replace-senza-insert"} <= nomi)
         self.assertTrue(runner.SCENARI_RLS_DICHIARATA <= nomi)
+        self.assertTrue(runner.SCENARI_DEL_LOCK <= nomi)
 
     def test_la_dsn_del_ruolo_cambia_solo_l_utente(self) -> None:
         self.assertEqual(

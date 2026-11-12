@@ -114,6 +114,30 @@ impl PostgresProvider {
         budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<PostgresWriteDryRun> {
+        self.dry_run_write_with_consent(
+            secret,
+            operation,
+            input,
+            budget,
+            cancellation,
+            plenora_database_core::loss::LossConsent::Deny,
+        )
+        .await
+    }
+
+    /// Giudica la stessa scrittura con consenso esplicito, senza effetti remoti.
+    /// # Errors
+    /// I rifiuti della preparazione e dei valori conservano categoria e fase.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub async fn dry_run_write_with_consent(
+        &self,
+        secret: Option<&SecretString>,
+        operation: &WriteOperation,
+        input: Box<dyn BatchStream>,
+        budget: &ResourceBudget,
+        cancellation: &CancellationToken,
+        consent: plenora_database_core::loss::LossConsent,
+    ) -> Result<PostgresWriteDryRun> {
         let schema = input.schema();
         let mut gate = write::StatementGate::default();
         let mut row_security = write::target::RowSecurity::NotPerformed;
@@ -121,6 +145,8 @@ impl PostgresProvider {
             let mut prepared = self
                 .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
                 .await?;
+            plenora_database_core::prepared_execution::authorize(&prepared.loss_report)?;
+            write::dry_run_profile(operation, consent)?;
             // Il target risolto una volta dalla preparazione (regola T): il
             // dry run legge e pubblica quello che la scrittura scriverebbe.
             let operation = &prepared.operation.clone();
@@ -186,6 +212,7 @@ impl PostgresProvider {
             (state, report, Some(prepared), operation.clone(), null_keys)
         } else {
             let mut state = write::prepare_state(&schema, operation)?;
+            write::dry_run_profile(operation, consent)?;
             write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
             write::assign_dry_run_key_equality(None, &mut state, operation, &schema).await?;
             let offline = plenora_database_core::write_keys::NullKeys::Distinct;
@@ -202,7 +229,7 @@ impl PostgresProvider {
             null_keys,
         )?;
         let control = BudgetCancellation::new(cancellation, budget)?;
-        let verified = write::verify_input(
+        let verified = write::verify_input_with_consent(
             &state,
             operation,
             input.as_mut(),
@@ -214,6 +241,7 @@ impl PostgresProvider {
                 max_wkb_cell_bytes: self.max_wkb_cell_bytes,
             },
             gate,
+            consent,
         )
         .await?;
         // Le prenotazioni del piano restano vive mentre si giudica

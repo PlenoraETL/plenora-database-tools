@@ -199,7 +199,7 @@ impl Evaluation {
     }
 }
 
-pub(super) fn profile(operation: &WriteOperation, consent: LossConsent) -> Result<()> {
+pub fn profile(operation: &WriteOperation, consent: LossConsent) -> Result<()> {
     if operation.mapping_policy != MappingPolicy::Strict
         && !consent.accepted()
         && matches!(

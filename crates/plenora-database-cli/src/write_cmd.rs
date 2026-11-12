@@ -194,7 +194,14 @@ async fn execute_bulk_write(
         let budget = pfm_budget()?;
         let cancel = CancellationToken::new();
         let decided = provider
-            .dry_run_write(secret.as_ref(), &operation, stream, &budget, &cancel)
+            .dry_run_write_with_consent(
+                secret.as_ref(),
+                &operation,
+                stream,
+                &budget,
+                &cancel,
+                plenora_database_core::loss::LossConsent::from_accept_loss(accept_loss),
+            )
             .await?;
         let loss_report = decided
             .loss_report

@@ -576,7 +576,7 @@ fn field_number(field_id: usize) -> Result<u32> {
 }
 
 /// Selector puro usato sia per Create sia per target esistente.
-fn select_leaf_rules(
+pub fn select_leaf_rules(
     policy: MappingPolicy,
     key: bool,
     conditions: impl IntoIterator<Item = (LeafLoss, bool)>,

@@ -68,7 +68,8 @@ use binary_codec::{
     decimal_string, encode_numeric_binary, interval_text, parse_numeric_components,
     PostgresIntervalBinary,
 };
-pub use dry_run::{verify_input, InputLimits, StatementGate};
+pub use dry_run::{verify_input_with_consent, InputLimits, StatementGate};
+pub use effective::profile as dry_run_profile;
 use plan::WriteColumnPlan;
 use prepared_codec::arrow_value;
 use recovery::{
@@ -836,6 +837,32 @@ pub async fn assign_dry_run_session_rules(
         .await?;
     }
     canonical::mark_keys(&mut state.column_plans, schema, operation);
+    if client.is_none() {
+        // Offline conosciamo solo i tipi dichiarati: stessi selettori e
+        // stesso registro del preflight, senza inventare fatti del catalogo.
+        for (index, plan) in state.column_plans.iter().enumerate() {
+            let Some(rule) = &plan.session_rule else {
+                continue;
+            };
+            let leaves = canonical::leaf_losses(rule, &plan.data_type);
+            for rule_id in crate::preflight::select_leaf_rules(
+                operation.mapping_policy,
+                rule.key,
+                leaves.into_iter().map(|leaf| (leaf, true)),
+            ) {
+                state
+                    .loss_instances
+                    .push(plenora_database_core::loss_registry::RuleInstance {
+                        field_id: u32::try_from(index)
+                            .map_err(|_| DatabaseError::resource_limit("troppi campi nel piano"))?,
+                        rule_id,
+                        parameters: plenora_database_core::loss_registry::RuleParameters::default(),
+                        source_type: None,
+                        target_type: None,
+                    });
+            }
+        }
+    }
     canonical::refuse_lossy(&state.column_plans)
 }
 
