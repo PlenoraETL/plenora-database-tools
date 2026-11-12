@@ -201,29 +201,10 @@ pub async fn execute(
     )
     .await;
     let mut result = result;
-    match &result {
-        Ok(outcome) if outcome.status == WriteStatus::Committed => {}
-        Err(error)
-            if matches!(
-                error.remote_effect,
-                plenora_database_core::RemoteEffect::None
-                    | plenora_database_core::RemoteEffect::RolledBack
-            ) =>
-        {
-            evaluation.ledger.rollback();
-        }
-        Ok(_) | Err(_) => evaluation.ledger.uncertain()?,
-    }
-    let report = plenora_database_core::execution_loss::VersionedLossReport::from(
-        if result
-            .as_ref()
-            .is_ok_and(|outcome| outcome.status == WriteStatus::Committed)
-        {
-            evaluation.confirmed
-        } else {
-            evaluation.ledger.report()
-        },
-    );
+    let report = evaluation
+        .ledger
+        .finalize(&result, evaluation.confirmed)?
+        .into();
     match &mut result {
         Ok(outcome) => {
             outcome.schema_version = 3;

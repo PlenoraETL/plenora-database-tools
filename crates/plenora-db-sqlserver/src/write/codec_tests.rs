@@ -558,3 +558,42 @@ fn text_requalification_preserves_conservative_admission() {
         }
     }
 }
+
+#[test]
+fn bulk_overflow_is_rejected_before_tds_while_prepared_keeps_casts() {
+    for binary in [false, true] {
+        let native = if binary { "varbinary" } else { "nvarchar" };
+        let mut plan = text_plan(
+            native,
+            &format!("{native}(4)"),
+            Some("Latin1_General_100_CI_AS"),
+            false,
+        );
+        if binary {
+            plan.columns[0].kind = crate::SqlServerColumnKind::Binary;
+            plan.input_schema = Arc::new(Schema::new(vec![Field::new(
+                "label",
+                DataType::Binary,
+                true,
+            )]));
+        }
+        for overflow in [false, true] {
+            let array: Arc<dyn Array> = if binary {
+                Arc::new(BinaryArray::from(vec![if overflow {
+                    b"abcd\0".as_slice()
+                } else {
+                    b"abcd".as_slice()
+                }]))
+            } else {
+                Arc::new(StringArray::from(vec![if overflow {
+                    "abcd "
+                } else {
+                    "abcd"
+                }]))
+            };
+            let batch = RecordBatch::try_new(plan.input_schema.clone(), vec![array]).unwrap();
+            assert!(bind_row(&plan, &batch, 0).is_ok());
+            assert_eq!(bulk_rows(&plan, &batch).is_err(), overflow);
+        }
+    }
+}

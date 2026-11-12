@@ -230,6 +230,31 @@ impl LossLedger {
         self.retire();
         Ok(())
     }
+    /// Finalizza una singola transazione usando gli stessi assi per esiti ed errori.
+    /// La preview validata prima del COMMIT non e mai pubblicata dopo un rollback.
+    /// # Errors
+    /// Rifiuta contatori incerti non rappresentabili.
+    pub fn finalize(
+        &mut self,
+        result: &Result<crate::outcome::WriteOutcome>,
+        confirmed: ExecutionLossReport,
+    ) -> Result<ExecutionLossReport> {
+        let effect = match result {
+            Ok(outcome) => outcome.remote_effect(),
+            Err(error) => error.remote_effect,
+        };
+        match effect {
+            crate::RemoteEffect::Committed => Ok(confirmed),
+            crate::RemoteEffect::None | crate::RemoteEffect::RolledBack => {
+                self.rollback();
+                Ok(self.report())
+            }
+            crate::RemoteEffect::Partial | crate::RemoteEffect::Unknown => {
+                self.uncertain()?;
+                Ok(self.report())
+            }
+        }
+    }
     pub fn rollback(&mut self) {
         self.pending.clear();
         self.sent.clear();

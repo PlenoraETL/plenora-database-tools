@@ -47,3 +47,22 @@ class ExecutionLossTests(unittest.TestCase):
             else:
                 with self.assertRaises(ValueError):
                     execution_loss_semantics.validate(doc)
+
+    def test_all_migrated_writer_paths_share_ledger_finalization(self):
+        # Eseguito dal job public-contract e da unittest discover in rust-ci.
+        paths = {
+            'plenora-db-sqlserver/src/write/mod.rs': (
+                'execute_prepared_batch(', 'execute_bulk_batch(',
+                'finalize_transaction_target(', 'diagnose_row_scoped_write('),
+            'plenora-db-postgres/src/write.rs': (
+                'copy_batch(', 'copy_binary_batch(', 'validate_prepared_bindings(',
+                'row_diagnostics::execute(',),
+        }
+        for source, routes in paths.items():
+            text = (gate.REPO_ROOT / 'crates' / source).read_text(encoding='utf-8')
+            with self.subTest(source=source):
+                self.assertEqual(text.count('.finalize(&result, evaluation.confirmed)?'), 1)
+                self.assertNotIn('evaluation.ledger.uncertain()', text)
+                self.assertNotIn('evaluation.ledger.rollback()', text)
+                for route in routes:
+                    self.assertIn(route, text)

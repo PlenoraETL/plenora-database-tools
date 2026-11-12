@@ -522,28 +522,10 @@ async fn execute_evaluated(
         fault,
     )
     .await;
-    match &result {
-        Ok(outcome) if outcome.status == WriteStatus::Committed => {}
-        Err(error)
-            if matches!(
-                error.remote_effect,
-                RemoteEffect::None | RemoteEffect::RolledBack
-            ) =>
-        {
-            evaluation.ledger.rollback();
-        }
-        _ => evaluation.ledger.uncertain()?,
-    }
-    let report = plenora_database_core::execution_loss::VersionedLossReport::from(
-        if result
-            .as_ref()
-            .is_ok_and(|o| o.status == WriteStatus::Committed)
-        {
-            evaluation.confirmed
-        } else {
-            evaluation.ledger.report()
-        },
-    );
+    let report = evaluation
+        .ledger
+        .finalize(&result, evaluation.confirmed)?
+        .into();
     match &mut result {
         Ok(outcome) => {
             outcome.schema_version = 3;

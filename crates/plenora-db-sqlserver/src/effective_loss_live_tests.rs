@@ -125,7 +125,14 @@ async fn sql(admin: &mut SqlServerSession, sql: impl Into<String>) -> Vec<Vec<ti
 async fn reset(admin: &mut SqlServerSession, mode: WriteMode, native: &str) {
     sql(admin, "DROP TABLE IF EXISTS plenora_test.b3;").await;
     if mode != WriteMode::Create {
-        sql(admin, format!("CREATE TABLE plenora_test.b3(id int NOT NULL PRIMARY KEY, v {native} NULL); CREATE INDEX b3_v ON plenora_test.b3(v);")).await;
+        sql(
+            admin,
+            format!("CREATE TABLE plenora_test.b3(id int NOT NULL PRIMARY KEY, v {native} NULL); "),
+        )
+        .await;
+        if mode != WriteMode::Replace {
+            sql(admin, "CREATE INDEX b3_v ON plenora_test.b3(v);").await;
+        }
     }
 }
 async fn snapshot(admin: &mut SqlServerSession) -> Vec<String> {
@@ -433,10 +440,10 @@ async fn live_b3_negative_profiles_strict_and_tds() {
             )
             .await
             .unwrap_err();
+            assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{error:?}");
             assert!(report(error.loss_report.as_ref().unwrap())
                 .effective
                 .is_empty());
-            assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
             assert_eq!(
                 sql(&mut admin, "SELECT COUNT_BIG(*) FROM plenora_test.b3").await[0][0]
                     .get::<i64, _>(0),
@@ -637,4 +644,37 @@ async fn live_b3_uncertain_commit_no_match_and_schema_change() {
         sql(&mut admin, "SELECT COUNT_BIG(*) FROM plenora_test.b3").await[0][0].get::<i64, _>(0),
         Some(0)
     );
+}
+
+#[tokio::test]
+async fn live_b3_replace_rejects_unrepresented_index() {
+    let _serial = SERIAL.lock().await;
+    let mut admin = SqlServerSession::open(&config(), &CancellationToken::new())
+        .await
+        .unwrap();
+    for direct in [false, true] {
+        reset(&mut admin, WriteMode::Replace, "datetime2(3)").await;
+        sql(&mut admin, "CREATE INDEX b3_v ON plenora_test.b3(v);").await;
+        sql(
+            &mut admin,
+            "INSERT INTO plenora_test.b3 VALUES(1,'1970-01-01');",
+        )
+        .await;
+        let before = snapshot(&mut admin).await;
+        let rows = contents(&mut admin).await;
+        let error = run(
+            &operation(WriteMode::Replace, MappingPolicy::Compatible),
+            SqlServerInsertMode::Prepared,
+            times(&[Some(1000)], false),
+            LossConsent::Accept,
+            direct,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(snapshot(&mut admin).await, before);
+        assert_eq!(contents(&mut admin).await, rows);
+    }
 }

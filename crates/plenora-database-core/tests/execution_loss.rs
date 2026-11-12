@@ -331,3 +331,104 @@ fn unsettled_error_and_outcome_share_the_execution_report() {
         document["details"]["write_outcome"]["loss_report"]
     );
 }
+
+#[test]
+fn transaction_finalizer_covers_all_writer_paths_and_terminal_axes() {
+    use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
+    use plenora_database_core::plan::ProviderKind;
+    use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect};
+    for path in [
+        "sqlserver prepared",
+        "sqlserver tds bulk",
+        "sqlserver staging",
+        "sqlserver row diagnostics",
+        "postgres copy",
+        "postgres prepared",
+        "postgres staging",
+        "postgres row diagnostics",
+    ] {
+        for effect in [
+            RemoteEffect::None,
+            RemoteEffect::RolledBack,
+            RemoteEffect::Committed,
+            RemoteEffect::Unknown,
+            RemoteEffect::Partial,
+        ] {
+            for as_error in [false, true] {
+                let mut l = ledger();
+                l.begin_batch(0).unwrap();
+                for row in 0..4 {
+                    observe(&mut l, row);
+                }
+                l.sent(0).unwrap();
+                l.applied(0).unwrap();
+                l.sent(1).unwrap();
+                l.applied(1).unwrap();
+                l.discard(1).unwrap(); // no-match o savepoint annullato
+                                       // Una preview non prova che COMMIT sia arrivato al server.
+                let mut preview = l.clone();
+                preview.complete();
+                preview.commit().unwrap();
+                if effect == RemoteEffect::Unknown {
+                    l.sent(2).unwrap();
+                }
+                let result = if as_error || effect == RemoteEffect::None {
+                    let mut error = DatabaseError::new(
+                        ErrorCategory::DataMapping,
+                        ErrorPhase::Write,
+                        None,
+                        "write failed",
+                    );
+                    error.remote_effect = effect;
+                    Err(error)
+                } else {
+                    Ok(WriteOutcome {
+                        schema_version: 2,
+                        loss_report: None,
+                        status: match effect {
+                            RemoteEffect::RolledBack => WriteStatus::RolledBack,
+                            RemoteEffect::Committed => WriteStatus::Committed,
+                            RemoteEffect::Partial => WriteStatus::PartiallyCommitted,
+                            _ => WriteStatus::OutcomeUnknown,
+                        },
+                        execution_id: path.into(),
+                        provider: ProviderKind::Sqlserver,
+                        rows: RowCounts {
+                            received: 4,
+                            confirmed: 0,
+                            inserted: None,
+                            updated: None,
+                            deleted: None,
+                            failed: 0,
+                            skipped: 0,
+                        },
+                        recovery: None,
+                    })
+                };
+                let r = l.finalize(&result, preview.report()).unwrap();
+                r.validate().unwrap();
+                assert_eq!(r.evaluation.entries[0].would_change, 4, "{path}");
+                match effect {
+                    RemoteEffect::None | RemoteEffect::RolledBack => {
+                        assert!(r.effective.is_empty(), "{path}");
+                    }
+                    RemoteEffect::Committed => {
+                        assert_eq!(r.effective[0].committed, 1, "{path}");
+                        assert_eq!(r.effective[0].uncertain, 0);
+                    }
+                    _ => {
+                        assert_eq!(r.effective[0].committed, 0, "{path}");
+                        assert_eq!(
+                            r.effective[0].uncertain,
+                            if effect == RemoteEffect::Unknown {
+                                2
+                            } else {
+                                1
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

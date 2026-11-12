@@ -454,6 +454,20 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                     let values = downcast::<StringArray>(array.as_ref())?;
                     if !values.is_null(row_index) {
                         check_text(plan, column, values.value(row_index))?;
+                        // Il bulk non applica il cast del percorso Prepared: rifiuta
+                        // prima di aprire il request TDS, che puo diventare non drenabile.
+                        if super::plan::text_limit(
+                            &column.native_type,
+                            &column.native_declaration,
+                            column.collation.as_deref(),
+                        )
+                        .is_some_and(|limit| {
+                            limit.max.is_some_and(|max| {
+                                limit.length_unit().count(values.value(row_index)) > max
+                            })
+                        }) {
+                            return Err(mapping_error("testo oltre la capacita TDS bulk"));
+                        }
                     }
                     row.push(
                         (!values.is_null(row_index))
@@ -465,6 +479,12 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                     let values = downcast::<BinaryArray>(array.as_ref())?;
                     if !values.is_null(row_index) {
                         check_binary(plan, column, values.value(row_index))?;
+                        if matches!(
+                            super::effective::binary(column, values.value(row_index).len()),
+                            Classification::WouldChange(_)
+                        ) {
+                            return Err(mapping_error("binario oltre la capacita TDS bulk"));
+                        }
                     }
                     row.push(
                         (!values.is_null(row_index))
