@@ -69,8 +69,8 @@
     },
     "crates/plenora-database-core/src/provider.rs::new#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "3cb32641c0935dc72ff0328421bb10abf47929d82de7ae458e2a94d41dfef6fe",
+      "reason": "PreparedWrite::new riceve schema e rapporto, non celle; inizializza execution_loss a None.",
+      "review_sha256": "c7051205cf49e0250866fd5ed5a90d016518d15ef7adf2d2276e8cd99a01781e",
       "signature": "pub fn new( operation: WriteOperation, input_schema: SchemaRef, loss_report: LossReport, budget: ResourceBudget, operation_lease: ResourceLease, columns_lease: ResourceLease, ) -> Self"
     },
     "crates/plenora-database-core/src/store_rewrite.rs::check#1": {
@@ -217,23 +217,23 @@
     },
     "crates/plenora-database-py/python/plenora_database/__init__.py::_AsyncDatabaseSessionWrapper.acopy_from": {
       "classification": "ingresso guardato",
-      "reason": "Ingresso bulk SDK sync/async: serializzazione centralizzata prima della chiamata nativa.",
-      "review_sha256": "fc5ecc02bc63898fe28b2a79313bea7bf4be7a434f1e065cc1bdfe5ce1ef969d",
+      "reason": "Wrapper async provider-neutral: _to_ipc_bytes nel worker precede _native.acopy_from. PyArrow originali validati full prima di cast/IPC/C; accept_loss non altera il percorso.",
+      "review_sha256": "f9bb076471bb99e32a5043910d26ec85d742ce29e3413f59fc1e72fa9de79c05",
       "required": [
         "_to_ipc_bytes"
       ],
       "proof": "dynamic: python/tests/test_arrow_60_1.py; static: corpo AST revisionato.",
-      "signature": "(self, schema: 'str', table: 'str', source, *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None) -> 'dict'"
+      "signature": "(self, schema: 'str', table: 'str', source, *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None, accept_loss: 'bool' = None) -> 'dict'"
     },
     "crates/plenora-database-py/python/plenora_database/__init__.py::_DatabaseSessionWrapper.copy_from": {
       "classification": "ingresso guardato",
-      "reason": "Ingresso bulk SDK sync/async: serializzazione centralizzata prima della chiamata nativa.",
-      "review_sha256": "490173cf5a4c0614e32af28d8e844e1ed2b6277e3c944d445dab4f84470d0f47",
+      "reason": "Wrapper sync provider-neutral: _to_ipc_bytes precede _native.copy_from; validazione completa degli originali, anche reader e batch tardivi, prima del binding.",
+      "review_sha256": "2b894c799cc4a1e9bdd12236d8480b5e0c6b50e4d2e09e697e2a8ddb5641bc89",
       "required": [
         "_to_ipc_bytes"
       ],
       "proof": "dynamic: python/tests/test_arrow_60_1.py; static: corpo AST revisionato.",
-      "signature": "(self, schema: 'str', table: 'str', source, *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None) -> 'dict'"
+      "signature": "(self, schema: 'str', table: 'str', source, *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None, accept_loss: 'bool' = None) -> 'dict'"
     },
     "crates/plenora-database-py/python/plenora_database/_arrow_io.py::c_stream_from_reader": {
       "classification": "ingresso guardato",
@@ -257,13 +257,13 @@
     },
     "crates/plenora-database-py/python/plenora_database/_async_session.py::AsyncSession.acopy_from": {
       "classification": "ingresso guardato",
-      "reason": "Ingresso bulk SDK sync/async: serializzazione centralizzata prima della chiamata nativa.",
-      "review_sha256": "90d4bba7216ebce8778cf3648eb674f2465b1481c4560bff036203d2b98f82fa",
+      "reason": "AsyncSession PostgreSQL: attende _to_ipc_bytes nel worker prima del binding; consenso inoltrato solo dopo normalizzazione e validazione.",
+      "review_sha256": "18958315717f469632e40ffcf397f18cf35516bc34b6bb2564d68441715f6aa9",
       "required": [
         "_to_ipc_bytes"
       ],
       "proof": "dynamic: python/tests/test_arrow_60_1.py; static: corpo AST revisionato.",
-      "signature": "(self, schema: 'str', table: 'str', source: 'Any', *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None) -> 'dict'"
+      "signature": "(self, schema: 'str', table: 'str', source: 'Any', *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None, accept_loss: 'bool' = None) -> 'dict'"
     },
     "crates/plenora-database-py/python/plenora_database/_async_session.py::_AsyncInspector.describe": {
       "classification": "non riceve dati Arrow esterni",
@@ -297,13 +297,13 @@
     },
     "crates/plenora-database-py/python/plenora_database/_session.py::Session.copy_from": {
       "classification": "ingresso guardato",
-      "reason": "Ingresso bulk SDK sync/async: serializzazione centralizzata prima della chiamata nativa.",
-      "review_sha256": "cf0a5069c732cc67fd8efc5351c13038fc33749b7d9c6deb4b9a7dcf3a57761a",
+      "reason": "Session PostgreSQL: _to_ipc_bytes valida gli originali prima di _native.copy_from; bytes IPC passano al decoder Rust validante.",
+      "review_sha256": "62b22125dd044d46596da45fab6d3641474b118bb5910fe40fab7fea48b91d8f",
       "required": [
         "_to_ipc_bytes"
       ],
       "proof": "dynamic: python/tests/test_arrow_60_1.py; static: corpo AST revisionato.",
-      "signature": "(self, schema: 'str', table: 'str', source: 'Any', *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None) -> 'dict'"
+      "signature": "(self, schema: 'str', table: 'str', source: 'Any', *, mode: 'str' = None, transaction_profile: 'str' = None, mapping_policy: 'str', keys: 'list[str] | None' = None, update_columns: 'list[str] | None' = None, accept_loss: 'bool' = None) -> 'dict'"
     },
     "crates/plenora-database-py/python/plenora_database/_session.py::_Inspector.describe": {
       "classification": "non riceve dati Arrow esterni",
@@ -695,23 +695,23 @@
     },
     "crates/plenora-database-py/src/async_session.rs::acopy_from#1": {
       "classification": "ingresso guardato",
-      "reason": "Binding IPC: delega al decoder comune prima della consegna al provider.",
-      "review_sha256": "7ba1b2d31e4dbf394e140eba5c4d09328e1a7408479d8dadc2931284a973c5db",
+      "reason": "Binding async PostgreSQL: copia bytes IPC e delega a copy_from_async -> do_copy_from_async -> decode_ipc_stream -> validate_batch prima del provider.",
+      "review_sha256": "075dfcae46d313f73c719bb75bb8049ac332aef5a2546eff618aa02da296e54b",
       "required": [
         "copy_from_async("
       ],
       "proof": "static: catena di delega revisionata e fissata dai digest; dynamic: write_ipc_tests.rs sul decoder comune, SDK test_arrow_60_1.py.",
-      "signature": "fn acopy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, ) -> PyResult<Bound<'py, PyAny>>"
+      "signature": "fn acopy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, accept_loss: bool, ) -> PyResult<Bound<'py, PyAny>>"
     },
     "crates/plenora-database-py/src/async_session_family.rs::acopy_from#1": {
       "classification": "ingresso guardato",
-      "reason": "Binding IPC: delega al decoder comune prima della consegna al provider.",
-      "review_sha256": "0307d89c7a46520119c734aac48896b27127e1452c1f8c62cf29f759866b1df5",
+      "reason": "Binding async family: delega a do_copy_from_async_family -> decode_ipc_stream -> validate_batch; nessuna importazione C aggiunta.",
+      "review_sha256": "d1f835aeec42f2434efaac68740ed93b14ccf72c22ee26622298cb2382c14e72",
       "required": [
         "do_copy_from_async_family("
       ],
       "proof": "static: catena di delega revisionata e fissata dai digest; dynamic: write_ipc_tests.rs sul decoder comune, SDK test_arrow_60_1.py.",
-      "signature": "fn acopy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, ) -> PyResult<Bound<'py, PyAny>>"
+      "signature": "fn acopy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, accept_loss: bool, ) -> PyResult<Bound<'py, PyAny>>"
     },
     "crates/plenora-database-py/src/engine.rs::invalidate_metadata#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -745,65 +745,65 @@
     },
     "crates/plenora-database-py/src/family_write.rs::copy_from_sync_family#1": {
       "classification": "ingresso guardato",
-      "reason": "Binding IPC: delega al decoder comune prima della consegna al provider.",
-      "review_sha256": "498c441b06e8e66db20e66f70d3c4f71741b858cb5b58042293bb7fd7fa9a55b",
+      "reason": "Bridge sync family: block_on di do_copy_from_async_family; il decoder IPC valida ogni batch prima di prepare/write.",
+      "review_sha256": "a7f8485bca5c40d05cb334ca87cbeaf64b8ed98dd55f5da0aa758b4f70c8c493",
       "required": [
         "do_copy_from_async_family("
       ],
       "proof": "static: catena di delega revisionata e fissata dai digest; dynamic: write_ipc_tests.rs sul decoder comune, SDK test_arrow_60_1.py.",
-      "signature": "pub(crate) fn copy_from_sync_family( provider: &Arc<dyn Provider>, secret: &SecretString, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Vec<String>, update_columns: Vec<String>, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
+      "signature": "pub(crate) fn copy_from_sync_family( provider: &Arc<dyn Provider>, secret: &SecretString, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Vec<String>, update_columns: Vec<String>, accept_loss: bool, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
     },
     "crates/plenora-database-py/src/family_write.rs::do_copy_from_async_family#1": {
       "classification": "ingresso guardato",
-      "reason": "Il corpo revisionato attraversa la guardia strutturale prima di consumare dati Arrow.",
-      "review_sha256": "fa6076e075494cbea78ecd859158b839671a5397789c62201a40ba5c06fd3b3a",
+      "reason": "Decoder comune decode_ipc_stream prima dello stream e di write_with_consent; framing e validate_batch completi, consenso non bypassa la decodifica.",
+      "review_sha256": "4bd946d712176097f46e8bf5893fe525987ee979be2c382e8976bc43757977c6",
       "required": [
         "decode_ipc_stream("
       ],
       "proof": "static: firma/corpo e dipendenze revisionati; dynamic: write_arrow_ingress_tests.rs per guardie comuni/helper diretti, write_ipc_tests.rs per IPC. Dispatch provider live non provato dinamicamente: richiede fixture DB.",
-      "signature": "pub(crate) async fn do_copy_from_async_family( provider: Arc<dyn Provider>, secret: SecretString, schema_name: String, table_name: String, ipc_bytes: Vec<u8>, mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Vec<String>, update_columns: Vec<String>, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
+      "signature": "pub(crate) async fn do_copy_from_async_family( provider: Arc<dyn Provider>, secret: SecretString, schema_name: String, table_name: String, ipc_bytes: Vec<u8>, mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Vec<String>, update_columns: Vec<String>, accept_loss: bool, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
     },
     "crates/plenora-database-py/src/session.rs::copy_from#1": {
       "classification": "ingresso guardato",
-      "reason": "Binding IPC: delega al decoder comune prima della consegna al provider.",
-      "review_sha256": "c094e989ce866c61e37f10530331c52c9dd79d2ae2a0233e2eaa14c758628af6",
+      "reason": "Binding sync PostgreSQL: copy_from_sync -> do_copy_from_async -> decode_ipc_stream; py.detach non modifica ordine o guardie.",
+      "review_sha256": "f153b9895973a31226fae99d2a0801c9e5b2a5fb4d7447f69dcdcbebc8f203cb",
       "required": [
         "copy_from_sync("
       ],
       "proof": "static: catena di delega revisionata e fissata dai digest; dynamic: write_ipc_tests.rs sul decoder comune, SDK test_arrow_60_1.py.",
-      "signature": "fn copy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, ) -> PyResult<Bound<'py, pyo3::types::PyDict>>"
+      "signature": "fn copy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, accept_loss: bool, ) -> PyResult<Bound<'py, pyo3::types::PyDict>>"
     },
     "crates/plenora-database-py/src/session_family.rs::copy_from#1": {
       "classification": "ingresso guardato",
-      "reason": "Binding IPC: delega al decoder comune prima della consegna al provider.",
-      "review_sha256": "21525f775b884446e42b0ab9784333c872854d0f3a78f53e3af080b68317173d",
+      "reason": "Binding sync family: copy_from_sync_family -> do_copy_from_async_family -> decode_ipc_stream, prima del provider.",
+      "review_sha256": "80264908b4184a86f6d434ce57bd11475ce33089a20727cec473dd234375d707",
       "required": [
         "copy_from_sync_family("
       ],
       "proof": "static: catena di delega revisionata e fissata dai digest; dynamic: write_ipc_tests.rs sul decoder comune, SDK test_arrow_60_1.py.",
-      "signature": "fn copy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, ) -> PyResult<Bound<'py, pyo3::types::PyDict>>"
+      "signature": "fn copy_from<'py>( &self, py: Python<'py>, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Option<Vec<String>>, update_columns: Option<Vec<String>>, accept_loss: bool, ) -> PyResult<Bound<'py, pyo3::types::PyDict>>"
     },
     "crates/plenora-database-py/src/write.rs::copy_from_async#1": {
       "classification": "ingresso guardato",
-      "reason": "Binding IPC: delega al decoder comune prima della consegna al provider.",
-      "review_sha256": "3573bbc66e464fb76473c57db785bbe0b47ed0b4a24808462e9b1ab71d686186",
+      "reason": "Bridge async PostgreSQL: parsing opzioni e do_copy_from_async, che valida IPC prima di creare lo stream.",
+      "review_sha256": "4e1ca15799bed878e68627e2034289da19b3758068ab8eb10ae2a5b5ef1e9002",
       "required": [
         "copy_from_async(",
         "do_copy_from_async("
       ],
       "proof": "static: catena di delega revisionata e fissata dai digest; dynamic: write_ipc_tests.rs sul decoder comune, SDK test_arrow_60_1.py.",
-      "signature": "pub(crate) async fn copy_from_async( provider: Arc<PostgresProvider>, secret: SecretString, schema: String, table: String, ipc_bytes: Vec<u8>, mode: String, transaction_profile: String, mapping_policy: String, keys: Vec<String>, update_columns: Vec<String>, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
+      "signature": "pub(crate) async fn copy_from_async( provider: Arc<PostgresProvider>, secret: SecretString, schema: String, table: String, ipc_bytes: Vec<u8>, mode: String, transaction_profile: String, mapping_policy: String, keys: Vec<String>, update_columns: Vec<String>, accept_loss: bool, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
     },
     "crates/plenora-database-py/src/write.rs::copy_from_sync#1": {
       "classification": "ingresso guardato",
-      "reason": "Binding IPC: delega al decoder comune prima della consegna al provider.",
-      "review_sha256": "02eefb708fb606582930f2b55bd0a65c1d1166d20c03ebe28dac7dd9e5aa82dd",
+      "reason": "Bridge sync PostgreSQL: runtime.block_on di do_copy_from_async; decoder completo prima del provider.",
+      "review_sha256": "5c340246d173be04fbf96c787a4db5d9514223d181551d6f6ba60994973208f7",
       "required": [
         "copy_from_async(",
         "do_copy_from_async("
       ],
       "proof": "static: catena di delega revisionata e fissata dai digest; dynamic: write_ipc_tests.rs sul decoder comune, SDK test_arrow_60_1.py.",
-      "signature": "pub(crate) fn copy_from_sync( provider: &Arc<PostgresProvider>, secret: &SecretString, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Vec<String>, update_columns: Vec<String>, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
+      "signature": "pub(crate) fn copy_from_sync( provider: &Arc<PostgresProvider>, secret: &SecretString, schema: &str, table: &str, ipc_bytes: &[u8], mode: &str, transaction_profile: &str, mapping_policy: &str, keys: Vec<String>, update_columns: Vec<String>, accept_loss: bool, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
     },
     "crates/plenora-database-py/src/write.rs::decode_ipc_stream#1": {
       "classification": "ingresso guardato",
@@ -817,13 +817,13 @@
     },
     "crates/plenora-database-py/src/write.rs::do_copy_from_async#1": {
       "classification": "ingresso guardato",
-      "reason": "Il corpo revisionato attraversa la guardia strutturale prima di consumare dati Arrow.",
-      "review_sha256": "51b1196ec9f6104bbf3757e1d59b281704c0529da626c89ece90aff66c37c5ba",
+      "reason": "decode_ipc_stream valida framing e ogni batch prima di VecBatchStream e prepare_write; write_with_consent aggiunge solo il gate di consenso.",
+      "review_sha256": "549d592f2ae29d733a667b03e20322320fd80a8586dfe13eb247bc8f49ebf1be",
       "required": [
         "decode_ipc_stream("
       ],
       "proof": "static: firma/corpo e dipendenze revisionati; dynamic: write_arrow_ingress_tests.rs per guardie comuni/helper diretti, write_ipc_tests.rs per IPC. Dispatch provider live non provato dinamicamente: richiede fixture DB.",
-      "signature": "async fn do_copy_from_async( provider: Arc<PostgresProvider>, secret: SecretString, schema_name: String, table_name: String, mode: WriteMode, profile: TransactionProfile, mapping_policy: MappingPolicy, keys: Vec<String>, update_columns: Vec<String>, ipc_bytes: Vec<u8>, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
+      "signature": "async fn do_copy_from_async( provider: Arc<PostgresProvider>, secret: SecretString, schema_name: String, table_name: String, mode: WriteMode, profile: TransactionProfile, mapping_policy: MappingPolicy, keys: Vec<String>, update_columns: Vec<String>, ipc_bytes: Vec<u8>, accept_loss: bool, cancellation: CancellationToken, ) -> Result<WriteOutcome, DatabaseError>"
     },
     "crates/plenora-database-py/src/write.rs::make_operation#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -971,8 +971,8 @@
     },
     "crates/plenora-db-db2/src/write_admission_live_tests.rs::write_declared#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness di test o qualifica: fixture e valori delle sonde interni, non ingresso operativo del prodotto.",
-      "review_sha256": "0da2ec99a564b56e1f5f7a73c6df29d61b0a9c555cae705da6e40916076f09fa",
+      "reason": "Helper di fixture Db2 cfg(test): costruisce batch dagli array del test e invoca il provider validante; non e API di prodotto.",
+      "review_sha256": "520aa21c96f8025a06e6efaf2844e417e33bb5f47042f801221ccd161dd6550c",
       "signature": "pub async fn write_declared( provider: &Db2Provider, secret: &SecretString, table: &str, mode: WriteMode, keys: &[&str], ids: ArrayRef, (values, nullable): (ArrayRef, bool), ) -> Result<WriteOutcome, DatabaseError>"
     },
     "crates/plenora-db-db2/src/write_rewrite_live_tests.rs::batch#1": {
@@ -989,8 +989,8 @@
     },
     "crates/plenora-db-db2/src/write_rewrite_live_tests.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness di test o qualifica: fixture e valori delle sonde interni, non ingresso operativo del prodotto.",
-      "review_sha256": "d91efbdc7be9f4e72a5ee67f8fc15bf2ddc88b00cd372969830168a785ce62be",
+      "reason": "Helper di fixture Db2 cfg(test): passa il batch del test a Provider::write; consenso aggiunto, nessuna nuova superficie di prodotto.",
+      "review_sha256": "e6f67b821258d159af13a093a961746b847b8bee31727f77d2fd64895d8b8ef8",
       "signature": "pub async fn write( provider: &Db2Provider, secret: &SecretString, operation: &WriteOperation, batch: RecordBatch, ) -> plenora_database_core::Result<plenora_database_core::outcome::WriteOutcome>"
     },
     "crates/plenora-db-mysql/src/arrow.rs::finish#1": {
@@ -1169,9 +1169,9 @@
     },
     "crates/plenora-db-postgres/src/preflight.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "1f51096431a437c93bc5e2e7566f31d12b53a8868c42e8947aae65efcd5d86c4",
-      "signature": "pub async fn write( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, input_schema: &SchemaRef, ) -> Result<(LossReport, Vec<ColumnRewrites>)>"
+      "reason": "Preflight PostgreSQL riceve solo SchemaRef; produce regole/rapporto/catalog token, senza celle Arrow.",
+      "review_sha256": "2a5c0d95229892f6ee905c6782c32767b7476ec5cb69b99cdd994d4bca675b45",
+      "signature": "pub async fn write( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, input_schema: &SchemaRef, ) -> Result<( LossReport, Vec<ColumnRewrites>, Vec<RuleInstance>, Option<crate::catalog::CatalogSchemaToken>, )>"
     },
     "crates/plenora-db-postgres/src/query_execution.rs::query_stream#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1217,13 +1217,13 @@
     },
     "crates/plenora-db-postgres/src/write.rs::execute#1": {
       "classification": "ingresso guardato",
-      "reason": "Il corpo revisionato attraversa la guardia strutturale prima di consumare dati Arrow.",
-      "review_sha256": "a44d0568f7d6e1bd89267535fc3690ed136d2593fdd94170c11cdb05a01948d4",
+      "reason": "execute ora finalizza il ledger e delega a execute_inner nello stesso file: il validated_batch e nel consumer delegato, prima di evaluation.batch e stamp_declared_srid.",
+      "review_sha256": "a9e6118adf6bf7730badfa6e9378c5d710f3ee74b56aaa08267b9aafe3ab1478",
       "required": [
-        "validated_batch("
+        "execute_inner("
       ],
-      "proof": "static: firma/corpo e dipendenze revisionati; dynamic: write_arrow_ingress_tests.rs per guardie comuni/helper diretti, write_ipc_tests.rs per IPC. Dispatch provider live non provato dinamicamente: richiede fixture DB.",
-      "signature": "pub async fn execute( secret: &SecretString, mut prepared: PreparedWrite, mut input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, runtime: WriteRuntime, ) -> Result<WriteOutcome>"
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne.",
+      "signature": "pub async fn execute( secret: &SecretString, mut prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, runtime: WriteRuntime, consent: plenora_database_core::loss::LossConsent, ) -> Result<WriteOutcome>"
     },
     "crates/plenora-db-postgres/src/write.rs::leaf_losses#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1233,8 +1233,8 @@
     },
     "crates/plenora-db-postgres/src/write.rs::prepare_state#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "c9045b4c28fb163f1848e7880682326971e041fffb507991a14d0622b9cd06ee",
+      "reason": "prepare_state compila SchemaRef e operazione in piani, loss_instances e snapshot; nessun buffer di celle.",
+      "review_sha256": "d04b54a8dd6f4f8b6f6dbcbbb009dfd1935963215f2ecb3df7cbe822455130a3",
       "signature": "pub fn prepare_state( schema: &SchemaRef, operation: &WriteOperation, ) -> Result<PreparedPostgresWrite>"
     },
     "crates/plenora-db-postgres/src/write/admission.rs::apply#1": {
@@ -1281,8 +1281,8 @@
     },
     "crates/plenora-db-postgres/src/write/canonical.rs::check#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Adapter interno a visibilita ristretta: riceve batch dal consumer validato, non e una superficie Rust pubblica. Catena fissata nei support_sources.",
-      "review_sha256": "aefc39de247852b770cfda1d3d31b5c79f2325d73e991f502a4768fa7108e70d",
+      "reason": "canonical::check e pub(super) nel writer privato: check_independent e effective::classify consumano array gia validati dai fetch ordinari/diagnostici o dagli ingressi codec guardati.",
+      "review_sha256": "8d9153cfecff16b7138aa06c5343a8cf425241ea5867a917e61cdb7c026be2ff",
       "signature": "pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Result<()>"
     },
     "crates/plenora-db-postgres/src/write/canonical.rs::mark_keys#1": {
@@ -1345,9 +1345,9 @@
     },
     "crates/plenora-db-postgres/src/write/row_diagnostics.rs::execute#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Adapter interno a visibilita ristretta: riceve batch dal consumer validato, non e una superficie Rust pubblica. Catena fissata nei support_sources.",
-      "review_sha256": "b4ac61985cabd910d93b286a4082fecc4ce98a66d8e0f42a75fe354265d96ae3",
-      "signature": "pub(super) async fn execute( transaction: Transaction<'_>, input: &mut dyn BatchStream, schema: &SchemaRef, operation: &WriteOperation, plans: &[WriteColumnPlan], budget: &ResourceBudget, cancellation: &CancellationToken, runtime: &WriteRuntime, cancel_token: &CancelToken, execution_id: &str, diagnostic_input: DiagnosticInput, paths: &crate::search_path::SessionPath, ) -> Result<WriteOutcome>"
+      "reason": "Dispatcher diagnostico interno PostgreSQL: PostgresRowWriter valida ogni batch in locate prima di schema, evaluation e codec; nessun accesso diretto alle celle nel dispatcher.",
+      "review_sha256": "07463ecfd7fde64f19e712fe2e77a08739ea1659bfe4d591f4ea843a2c557372",
+      "signature": "pub(super) async fn execute( transaction: Transaction<'_>, input: &mut dyn BatchStream, schema: &SchemaRef, operation: &WriteOperation, plans: &[WriteColumnPlan], budget: &ResourceBudget, cancellation: &CancellationToken, runtime: &WriteRuntime, cancel_token: &CancelToken, execution_id: &str, diagnostic_input: DiagnosticInput, paths: &crate::search_path::SessionPath, evaluation: &mut super::effective::Evaluation, ) -> Result<WriteOutcome>"
     },
     "crates/plenora-db-postgres/src/write/row_diagnostics.rs::validate_input#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1435,8 +1435,8 @@
     },
     "crates/plenora-db-postgres/src/write_visibility_live_tests.rs::write_stream#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness di test o qualifica: fixture e valori delle sonde interni, non ingresso operativo del prodotto.",
-      "review_sha256": "784de24346f94a3a94cd16379099e440c5ec0c5a88751d2b3f3ac36e7c21f733",
+      "reason": "Helper cfg(test) PostgreSQL: prepare e Provider::write su stream del fixture; non e ingresso pubblico di prodotto.",
+      "review_sha256": "63c245b9b061af765a9bcd89434d8d8c3872373ced3f68fcf8c0d83ae38cf489",
       "signature": "pub async fn write_stream( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, stream: Box<dyn BatchStream>, ) -> Result<WriteOutcome>"
     },
     "crates/plenora-db-sqlserver/src/arrow.rs::finish#1": {
@@ -1477,8 +1477,8 @@
     },
     "crates/plenora-db-sqlserver/src/write/codec.rs::bulk_rows#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Adapter interno a visibilita ristretta: riceve batch dal consumer validato, non e una superficie Rust pubblica. Catena fissata nei support_sources.",
-      "review_sha256": "e4ac07446f4cb23ca0dbd5c91c7bccd284344b7eb8edd7e576db6dbc99bea082",
+      "reason": "bulk_rows e pub(super) nel writer privato SQL Server: riceve batch dal consumer validato; nuovi controlli testo/binario precedono TDS senza introdurre un ingresso esterno.",
+      "review_sha256": "7819d2cdf75511c7cc9b790958c64541b4e9af0f33eb8aa1ab2eea671352660b",
       "signature": "pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<Vec<TokenRow<'a>>>"
     },
     "crates/plenora-db-sqlserver/src/write/codec.rs::inspect_batch#1": {
@@ -1525,23 +1525,23 @@
     },
     "crates/plenora-db-sqlserver/src/write/mod.rs::write_prepared#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega al consumer write/dry-run protetto dalla guardia comune per ogni fetch.",
-      "review_sha256": "30657226c72d31efeb1f19c1208a81f4b0cf9b759df33002c757417633b99db9",
+      "reason": "write_prepared delega ora a execute_evaluated, che finalizza il ledger attorno a write_prepared_inner; validated_batch resta prima di evaluation.batch e TDS/Prepared.",
+      "review_sha256": "807e930f00ec6746a0714004457310fc85f0ab5149886e32e8808efef7c6fdb2",
       "required": [
-        "write_prepared_inner("
+        "execute_evaluated("
       ],
-      "proof": "static: corpo e modulo delegato revisionati; dynamic: guardia comune FFI. Dispatch DB non eseguito senza fixture live.",
-      "signature": "pub async fn write_prepared( prepared: PreparedSqlServerWrite, input: Box<dyn BatchStream>, cancellation: &CancellationToken, ) -> Result<WriteOutcome>"
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne.",
+      "signature": "pub async fn write_prepared( prepared: PreparedSqlServerWrite, input: Box<dyn BatchStream>, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> Result<WriteOutcome>"
     },
     "crates/plenora-db-sqlserver/src/write/mod.rs::write_prepared_with_fault#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega al consumer protetto del provider; il corpo completo e i consumer privati sono fissati nei support_sources.",
-      "review_sha256": "4b0b57b69c79d9ea909d5895701834f33ac4f37e7e6561aa3a97b4e4905b7ecd",
+      "reason": "Variante cfg(test) con fault: stessa catena execute_evaluated -> write_prepared_inner -> validated_batch; il fault non apre percorsi alternativi di importazione.",
+      "review_sha256": "7ffbe6797b2b561efdb818fd445c67c8a1bc8cc1c7986ed472ae8915c4370086",
       "required": [
-        "write_prepared_inner("
+        "execute_evaluated("
       ],
-      "proof": "static: catena del provider revisionata; dynamic: validated_batch con buffer FFI malformati. Nessuna prova end-to-end DB senza fixture live.",
-      "signature": "pub async fn write_prepared_with_fault( prepared: PreparedSqlServerWrite, input: Box<dyn BatchStream>, cancellation: &CancellationToken, fault: WriteFaultPoint, ) -> Result<WriteOutcome>"
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne.",
+      "signature": "pub async fn write_prepared_with_fault( prepared: PreparedSqlServerWrite, input: Box<dyn BatchStream>, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, fault: WriteFaultPoint, ) -> Result<WriteOutcome>"
     },
     "crates/plenora-db-sqlserver/src/write/plan.rs::compile_create#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1575,9 +1575,9 @@
     },
     "crates/plenora-db-sqlserver/src/write/row_diagnostics.rs::new#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Adapter interno a visibilita ristretta: riceve batch dal consumer validato, non e una superficie Rust pubblica. Catena fissata nei support_sources.",
-      "review_sha256": "179de0203da3ea59cad1f39798f4ebe6dff3590c44c5ee214ad5058a7f13254d",
-      "signature": "pub(super) const fn new( pooled: &'a mut PooledSqlServerSession, input: &'a mut dyn BatchStream, plan: &'a WritePlan, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, constraint_column: Option<String>, fault: Option<WriteFaultPoint>, execution_id: &'a str, ) -> Self"
+      "reason": "Costruttore privato del writer diagnostico SQL Server: conserva input e riferimento al valutatore, non legge celle; locate valida prima di evaluation.batch.",
+      "review_sha256": "d34f12bab92b1d4f70c7db7235ddf11f17952bd96c4b0e5c9d96e3b9fb54dce8",
+      "signature": "pub(super) const fn new( pooled: &'a mut PooledSqlServerSession, input: &'a mut dyn BatchStream, plan: &'a WritePlan, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, constraint_column: Option<String>, fault: Option<WriteFaultPoint>, execution_id: &'a str, evaluation: &'a mut super::effective::Evaluation, ) -> Self"
     },
     "crates/plenora-db-sqlserver/src/write/row_diagnostics.rs::validate_input#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -5643,9 +5643,9 @@
     },
     "crates/plenora-database-py/src/arrow_reader.rs::internal_error#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
+      "reason": "Costruttore di errore del reader: aggiunge loss_report None, non riceve Arrow. Il fetch del reader resta validato prima della serializzazione.",
       "signature": "fn internal_error(message: impl Into<String>) -> DatabaseError",
-      "review_sha256": "64c73ecebd6a2ac43b520d6b9fada4095738aeb2f47a24c225070c90b6065996"
+      "review_sha256": "9dda5e969adc26218ac00bf04b57288dbd194e17c7cdda184773088c2d8beae2"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::reader_poisoned#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -6609,15 +6609,15 @@
     },
     "crates/plenora-database-py/src/errors.rs::register#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Costruzione/resa di eccezioni e metadati diagnostici.",
+      "reason": "Registra classi di eccezione e MappingLossWarning nel modulo Python; nessun buffer di celle.",
       "signature": "pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()>",
-      "review_sha256": "857b0adb18dbdfcb0c5af8172d69de657ac09d2878809b96a3d3f81810898e99"
+      "review_sha256": "4f65a2c6ddea40e170a78cab4521db5ba6a2089d8d719f9e81aecdb017d93672"
     },
     "crates/plenora-database-py/src/errors.rs::to_py_err#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Costruzione/resa di eccezioni e metadati diagnostici.",
+      "reason": "Proietta DatabaseError in attributi Python, compreso loss_report; non importa dati Arrow.",
       "signature": "pub fn to_py_err(err: DatabaseError) -> PyErr",
-      "review_sha256": "d4a4e6ab22a1fe9ef634fc68b153970d98ab65fc93f505924412708e76c3fdae"
+      "review_sha256": "d97573f4dbde63cce47c3308da1a325e4ba989be1734bc6505e0f58c0dabb1c8"
     },
     "crates/plenora-database-py/src/errors.rs::bind_error_context#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -6645,9 +6645,9 @@
     },
     "crates/plenora-database-py/src/errors_commit.rs::commit_outcome_unknown#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
+      "reason": "Costruisce errore commit ignoto da provider/categoria, con loss_report None; nessun dato Arrow.",
       "signature": "pub(crate) fn commit_outcome_unknown( provider: ProviderKind, category: ErrorCategory, ) -> DatabaseError",
-      "review_sha256": "446abf2f8149f1fb117a98d7600fccfced7a7eb03c1bc01e8ea29fc2a9ce98fd"
+      "review_sha256": "1e9af14a42afa4d501cc015de8ab430234f18b4c191dcf99608311a143f3403e"
     },
     "crates/plenora-database-py/src/errors_tests.rs::bind_context_extracts_only_structural_metadata#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -7653,9 +7653,9 @@
     },
     "crates/plenora-database-py/src/write.rs::outcome_into_py#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
+      "reason": "Serializza WriteOutcome e warning/errore di commit; nessun ingresso Arrow.",
       "signature": "pub(crate) fn outcome_into_py<'py>( py: Python<'py>, outcome: &WriteOutcome, ) -> PyResult<Bound<'py, PyDict>>",
-      "review_sha256": "93989218ce84923324224ae0832e0d360f25350df9ca498602b8724bf2ce3d7e"
+      "review_sha256": "495571ed2afc9e1f6bd2a04ffb556d9f3610bf8e56407ed8605ee9962b78fb93"
     },
     "crates/plenora-database-py/src/write.rs::unsettled_into_py_err#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -7959,9 +7959,9 @@
     },
     "crates/plenora-db-postgres/src/write/canonical.rs::leaf_losses#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera su schema, tipi, configurazione o risultati di probe; non riceve buffer Arrow esterni. I metodi di ValidatedWriteArray usano il valore gia validato dal costruttore classificato.",
+      "reason": "leaf_losses legge SessionRule e DataType, non Array: selezione di regole da metadati.",
       "signature": "pub(super) fn leaf_losses( rule: &SessionRule, data_type: &DataType, ) -> std::collections::BTreeSet<LeafLoss>",
-      "review_sha256": "9cc90b765866d276ba2b32377d553c1d0c0c1c3931e15567dfdcd48c8569f979"
+      "review_sha256": "26ff718d176f8f61d505df13485f679cce5d9e33deb6223363c5bdf292e3d5c0"
     },
     "crates/plenora-db-postgres/src/write/plan.rs::compile#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8065,9 +8065,9 @@
     },
     "crates/plenora-database-core/src/caller_sql_tests.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness o fixture di prova: dati costruiti dalla suite, non ingresso di prodotto; nessuna qualifica live attribuita.",
-      "signature": "fn write<'a>( &'a self, _secret: &'a SecretString, _prepared: crate::provider::PreparedWrite, _input: Box<dyn crate::provider::BatchStream>, _budget: &'a ResourceBudget, _cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, crate::outcome::WriteOutcome>",
-      "review_sha256": "17e37a1c4ba62de591d22db5af12aadf1ec33e7799ac4c82944b84f707488717"
+      "reason": "Mock cfg(test) caller_sql: ignora _input e restituisce invalid_plan; aggiunto solo _consent.",
+      "signature": "fn write<'a>( &'a self, _secret: &'a SecretString, _prepared: crate::provider::PreparedWrite, _input: Box<dyn crate::provider::BatchStream>, _budget: &'a ResourceBudget, _cancellation: &'a CancellationToken, _consent: crate::loss::LossConsent, ) -> ProviderFuture<'a, crate::outcome::WriteOutcome>",
+      "review_sha256": "5ec071da61f39e6c3c5899d9cf460b91654bb8ce1465465bf058be51fa607595"
     },
     "crates/plenora-database-core/src/error.rs::from#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8107,9 +8107,9 @@
     },
     "crates/plenora-database-core/src/provider.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Dichiarazione astratta del trait Provider: nessun corpo eseguibile; le implementazioni write sono enumerate e classificate separatamente. Non prova implementazioni esterne al workspace.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "7af1c3c3c2d90cd7d3d00679b91bddfbb745b9925cbd86577836c19831fa13d6"
+      "reason": "Firma astratta Provider::write senza corpo; consenso aggiunto, implementazioni enumerate separatamente. Non certifica provider esterni.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: crate::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "5f81a262862b8d19578738748cad333e2d8d07e006c621d435fc79e8910dbd7c"
     },
     "crates/plenora-database-core/src/store_rewrite.rs::schema#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8169,9 +8169,9 @@
     },
     "crates/plenora-database-engine/src/engine_tests.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness o fixture di prova: dati costruiti dalla suite, non ingresso di prodotto; nessuna qualifica live attribuita.",
-      "signature": "fn write<'a>( &'a self, _secret: &'a SecretString, _prepared: PreparedWrite, _input: Box<dyn BatchStream>, _budget: &'a ResourceBudget, _cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "28ad74628dc0854bc94044189849deb57a18bc1002accda56410f4dd8a8fd9c0"
+      "reason": "Mock cfg(test) engine: ignora _input e restituisce Unsupported; nessun consumo Arrow.",
+      "signature": "fn write<'a>( &'a self, _secret: &'a SecretString, _prepared: PreparedWrite, _input: Box<dyn BatchStream>, _budget: &'a ResourceBudget, _cancellation: &'a CancellationToken, _consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "8dbd932d2a076eb08095d68a95608fdfa3218f02845bd1f5a4826d8acc0b4a6d"
     },
     "crates/plenora-database-engine/src/runtime_binding.rs::open_write_input#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8217,9 +8217,9 @@
     },
     "crates/plenora-database-testkit/src/parameter_sweep_transaction_tests.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness o fixture di prova: dati costruiti dalla suite, non ingresso di prodotto; nessuna qualifica live attribuita.",
-      "signature": "fn write<'a>( &'a self, _secret: &'a SecretString, _prepared: PreparedWrite, _input: Box<dyn BatchStream>, _budget: &'a ResourceBudget, _cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "c96d34680efd34cc4fb7748a12465b40dcb829e9d7c899e2a61ca0f0cd00880f"
+      "reason": "Mock cfg(test) parameter sweep: ignora input e rifiuta; aggiunto solo consenso tipizzato.",
+      "signature": "fn write<'a>( &'a self, _secret: &'a SecretString, _prepared: PreparedWrite, _input: Box<dyn BatchStream>, _budget: &'a ResourceBudget, _cancellation: &'a CancellationToken, _consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "ef345f00890a277d8a2b415470969552c8d36a87edefb09fdb1872b2e4ad70e4"
     },
     "crates/plenora-database-testkit/src/write_probe.rs::direct_probe#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8319,13 +8319,14 @@
     },
     "crates/plenora-db-db2/src/provider.rs::write#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega alla catena writer revisionata nei support_sources; il consumo dei batch passa dalla validazione comune.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "9ee669892c1321f4e6c83e2862f49bf975a6b21431fd7c77a050b77947bb2614",
+      "reason": "Provider Db2: execute_with_consent -> guard_input_keys -> execute_write; fetch ordinari e diagnostici restano validated_batch anche quando le chiavi non sono richieste.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "9ae173639892914a7206a44eb5204a76bc3d52387221da56cd0f13defe518fd0",
       "required": [
-        "guard_input_keys("
+        "guard_input_keys(",
+        "execute_write("
       ],
-      "proof": "Statica: delega e corpi writer fissati dal registro. Dinamica delle guardie comuni: write_arrow_ingress_tests.rs. Provider live non eseguito da questa prova."
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne."
     },
     "crates/plenora-db-db2/src/read.rs::schema#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8533,9 +8534,9 @@
     },
     "crates/plenora-db-mysql/src/provider.rs::write#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega alla catena writer revisionata nei support_sources; il consumo dei batch passa dalla validazione comune.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "19ef287a729ebff0f8efb397b86fd525e36b96f526a9dee04a56dc3fab650bd6",
+      "reason": "Provider MySQL: execute_with_consent -> execute_mysql_write; validazione completa per ogni fetch ordinario e diagnostico prima dei codec.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "7c9826c1b5e11f1e708026c4ce0d2ab1a263d9f522feccc8f9c9696d1a081a23",
       "required": [
         "execute_mysql_write("
       ],
@@ -8561,13 +8562,13 @@
     },
     "crates/plenora-db-mysql/src/provider.rs::write#2": {
       "classification": "ingresso guardato",
-      "reason": "Delega alla catena writer revisionata nei support_sources; il consumo dei batch passa dalla validazione comune.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "8ea4c67ca5074cb2ccbe25f966dde3080067220c0708ef2e69c682a16e0cb2e3",
+      "reason": "MariaDB delega a self.0.write (MySQL profilato); sola interruzione di riga dopo self.0. La guardia resta nel consumer MySQL.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "0ad0ee9da10d8995b64180ee145617834d1734f46086e7580d88d543b9a2f149",
       "required": [
-        "self.0.write("
+        "self.0\n            .write(secret, prepared, input, budget, cancellation, consent)"
       ],
-      "proof": "Statica: delega e corpi writer fissati dal registro. Dinamica delle guardie comuni: write_arrow_ingress_tests.rs. Provider live non eseguito da questa prova."
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne."
     },
     "crates/plenora-db-mysql/src/provider_tests.rs::schema#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8649,13 +8650,14 @@
     },
     "crates/plenora-db-oracle/src/provider.rs::write#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega alla catena writer revisionata nei support_sources; il consumo dei batch passa dalla validazione comune.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "d6e75a20e243846aed801cdc1b3312ba8dd23f7c3ea0b54b42ee3257be58cbea",
+      "reason": "Provider Oracle: execute_with_consent -> guard_input_keys -> execute_write; execute_input usa validated_batch anche senza chiavi.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "3df8fffdf9a077e3716bc5a6581b61e2b2e3d89001ef96bc48b7e33abb6ee5a1",
       "required": [
-        "guard_input_keys("
+        "guard_input_keys(",
+        "execute_write("
       ],
-      "proof": "Statica: delega e corpi writer fissati dal registro. Dinamica delle guardie comuni: write_arrow_ingress_tests.rs. Provider live non eseguito da questa prova."
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne."
     },
     "crates/plenora-db-oracle/src/read.rs::schema#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8797,15 +8799,15 @@
     },
     "crates/plenora-db-postgres/src/lib.rs::prepare_write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Riceve solo SchemaRef e metadati di preparazione, senza buffer di celle.",
+      "reason": "Prepara schema, ammissione e rapporto PostgreSQL; nessun buffer di celle, nuovo execution_loss composto da metadati.",
       "signature": "fn prepare_write<'a>( &'a self, secret: &'a SecretString, operation: &'a WriteOperation, input_schema: SchemaRef, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, PreparedWrite>",
-      "review_sha256": "2b3ccf8a833efc83928d39605dd5fdbccd404ef86d807cff2e44761cafc5e68f"
+      "review_sha256": "9468893631a1938d388320bf2f4f08a18234a8a6bec291ba8e28b401869e4cae"
     },
     "crates/plenora-db-postgres/src/lib.rs::write#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega alla catena writer revisionata nei support_sources; il consumo dei batch passa dalla validazione comune.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "9046d73b13e15560f4acde163569710ad7f3f838305a195a48ae1aa697ade655",
+      "reason": "Provider PostgreSQL: write::execute -> execute_inner; validated_batch precede valutazione, trasformazioni e codec, anche nel percorso diagnostico.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "68a676d514d53498e8fb8c09505562ac3b36f50ca1c23f1a410723bf6759e75d",
       "required": [
         "write::execute("
       ],
@@ -9149,9 +9151,9 @@
     },
     "crates/plenora-db-postgres/src/write_admission_live_tests.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness o fixture di prova: dati costruiti dalla suite, non ingresso di prodotto; nessuna qualifica live attribuita.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, plenora_database_core::outcome::WriteOutcome>",
-      "review_sha256": "68ba799cd1808c140617ddd8333f42861795fc98957c1d5536f3d214ec564642"
+      "reason": "Adapter cfg(test) PostgreSQL: nasconde solo declared_input_rows, delega write al provider; la validazione dei batch non dipende dal conteggio dichiarato.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, plenora_database_core::outcome::WriteOutcome>",
+      "review_sha256": "d60cccd2edf21fec62ce560d5c18b40d0d9729b29a711342001e281eabc24ac2"
     },
     "crates/plenora-db-postgres/src/write_admission_live_tests.rs::admission_keys#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9293,15 +9295,15 @@
     },
     "crates/plenora-db-sqlserver/src/provider.rs::prepare_write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Riceve solo SchemaRef e metadati di preparazione, senza buffer di celle.",
+      "reason": "SQL Server prepare_write riceve SchemaRef e produce piano/rapporti; nessun buffer Arrow di celle.",
       "signature": "fn prepare_write<'a>( &'a self, secret: &'a SecretString, operation: &'a WriteOperation, input_schema: plenora_database_core::arrow::SchemaRef, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, PreparedWrite>",
-      "review_sha256": "53d397cda0ac107b169cf25bee966bc4ed53304733f5ab3465c980674d535fc4"
+      "review_sha256": "abdd423f4fb7b64bd150a6f573646b7697e29bdf77b3cec51f52dda470a81f02"
     },
     "crates/plenora-db-sqlserver/src/provider.rs::write#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega alla catena writer revisionata nei support_sources; il consumo dei batch passa dalla validazione comune.",
-      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, mut prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "6c671982dfdfdc91d99fd5a4cc0f09fc377d26bc1150b5f8ed4ad7f5db594c08",
+      "reason": "Provider SQL Server delega write_prepared -> execute_evaluated -> write_prepared_inner; i fetch validano prima di evaluation e codec.",
+      "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "b53e95a42b84aa3d67709c3f58db5f3d7e3c1e916796564293c6f7c085c90cf8",
       "required": [
         "write_prepared("
       ],
@@ -9486,6 +9488,99 @@
       "reason": "Duration di std::time: omonimo conservativamente enumerato dal catalogo upstream, nessun buffer Arrow.",
       "signature": "pub const fn acquire_timeout(&self) -> Duration",
       "review_sha256": "c51c95e958fae89d484aecb069ff1a3346d9d837ccd63cd23d6c85bf0dc5bf71"
+    },
+    "crates/plenora-database-core/src/provider.rs::write_with_consent#1": {
+      "classification": "ingresso guardato",
+      "reason": "Delega senza leggere celle a prepared_execution::execute e poi self.write; le implementazioni Provider del workspace validano ogni fetch. Non attesta implementazioni Provider esterne al workspace.",
+      "signature": "fn write_with_consent<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, accept_loss: bool, ) -> ProviderFuture<'a, WriteOutcome>",
+      "review_sha256": "a6fd5f20cf15b60fbbc31f5a49bda15a1dc5532ab9e971fda8d6df658cc72f7c",
+      "required": [
+        "self.write("
+      ],
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne."
+    },
+    "crates/plenora-database-core/src/store_rewrite.rs::classify#1": {
+      "classification": "ingresso guardato",
+      "reason": "Ingresso pubblico Array: validate_full precede len, is_null, value e rewrites_in_unit; rifiuta anche row fuori limite e tipo non ammesso.",
+      "signature": "pub fn classify( self, array: &dyn Array, row: usize, unit: TextLengthUnit, ) -> Result<crate::loss_ledger::Classification>",
+      "review_sha256": "6d888ad0dabeed7bee85ecb2d673169218c8fa67b18289e31bd2d5d736fb0f73",
+      "required": [
+        "validate_full(",
+        "row >= array.len()"
+      ],
+      "proof": "Revisione statica di corpo, deleghe e support_sources; prove dinamiche comuni write_arrow_ingress_tests.rs, decoder write_ipc_tests.rs e SDK test_arrow_60_1.py. Nessuna attestazione live dei provider o di implementazioni esterne."
+    },
+    "crates/plenora-database-py/src/errors_tests.rs::prepared_error_exposes_loss_report_without_changing_remote_axes#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Test cfg(test) di proiezione DatabaseError con rapporto JSON incorporato; nessun array in ingresso.",
+      "signature": "fn prepared_error_exposes_loss_report_without_changing_remote_axes()",
+      "review_sha256": "ccbf994a31b11063153804f4eeb9cba9470e1aa23e16849616b3308d349409c7"
+    },
+    "crates/plenora-database-py/src/write.rs::warn_loss#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Legge solo WriteOutcome e contatori effective del rapporto; pubblica MappingLossWarning, senza leggere buffer Arrow.",
+      "signature": "fn warn_loss(py: Python<'_>, outcome: &WriteOutcome, document: &Bound<'_, PyDict>) -> PyResult<()>",
+      "review_sha256": "25bd0bd2ba1afa46c271eedb7f80f182eeb0dd886335a1cbfc80e654b3d963ce"
+    },
+    "crates/plenora-database-py/src/write_loss_tests.rs::measured_report#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Helper di test: clona e valida ExecutionLossReport, senza dati Arrow.",
+      "signature": "fn measured_report(report: &ExecutionLossReport, basis: Basis) -> ExecutionLossReport",
+      "review_sha256": "df4cbf8767ee0799ad44b3b428480976674880093f1fbb988611251b746839ae"
+    },
+    "crates/plenora-database-py/src/write_loss_tests.rs::warning_filters_preserve_the_committed_outcome#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Test cfg(test) di filtri warning e outcome da fixture JSON; nessun ingresso Arrow operativo.",
+      "signature": "fn warning_filters_preserve_the_committed_outcome()",
+      "review_sha256": "5273c12708571190c9fde2db7b56e353c5627ffa5942cd73c419bc4be3e58c59"
+    },
+    "crates/plenora-db-postgres/src/effective_loss_live_tests.rs::next_batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Stream del fixture live PostgreSQL: restituisce batch dalla coda del test; non importa dati esterni di prodotto.",
+      "signature": "fn next_batch<'a>( &'a mut self, _: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>",
+      "review_sha256": "7eb43cf95a00b85aa0ba166dd384505c073c61b130568b76c26ce7518712af03"
+    },
+    "crates/plenora-db-postgres/src/effective_loss_live_tests.rs::schema#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Stream del fixture live PostgreSQL: restituisce soltanto lo SchemaRef.",
+      "signature": "fn schema(&self) -> SchemaRef",
+      "review_sha256": "ef6716a3965d505e28f994395998fe219a96974c27830e6b5d730012bc392e1b"
+    },
+    "crates/plenora-db-postgres/src/write/effective.rs::batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Evaluation e confinato nel modulo write privato PostgreSQL. batch riceve gli originali dopo validated_batch e controllo schema in execute_inner o PostgresRowWriter::locate; nessun ingresso pubblico indipendente.",
+      "signature": "pub fn batch( &mut self, batch: &RecordBatch, plans: &[WriteColumnPlan], operation: &WriteOperation, ) -> Result<bool>",
+      "review_sha256": "54e4b9f4685bec490d8771fb223c01e1cd9f61ad19b75b519084ee9d4e8e3c67"
+    },
+    "crates/plenora-db-postgres/src/write/effective.rs::classify#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Classificatore pub(super) nel modulo effective privato PostgreSQL: chiamato da Evaluation::batch e canonical::check dopo la validazione del consumer; i richiami nei test usano array costruiti localmente.",
+      "signature": "pub(super) fn classify( rule: RuleId, plan: &WriteColumnPlan, array: &dyn Array, row: usize, ) -> Result<Classification>",
+      "review_sha256": "ac422f2e6aa333b2b3cbfe72b7ce4f6c01f92eb8499db089eca4c9724b57c862"
+    },
+    "crates/plenora-db-sqlserver/src/effective_loss_live_tests.rs::next_batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Stream del fixture live SQL Server: pop_front di batch costruiti dal test, non ingresso di prodotto.",
+      "signature": "fn next_batch<'a>( &'a mut self, _: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>",
+      "review_sha256": "7eb43cf95a00b85aa0ba166dd384505c073c61b130568b76c26ce7518712af03"
+    },
+    "crates/plenora-db-sqlserver/src/effective_loss_live_tests.rs::schema#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Stream del fixture live SQL Server: sola restituzione dello SchemaRef.",
+      "signature": "fn schema(&self) -> SchemaRef",
+      "review_sha256": "ef6716a3965d505e28f994395998fe219a96974c27830e6b5d730012bc392e1b"
+    },
+    "crates/plenora-db-sqlserver/src/write/effective.rs::batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Evaluation nel modulo write privato SQL Server: consumer ordinario e diagnostico chiamano validated_batch prima di batch e bind_row. Nessuna esportazione pubblica del valutatore.",
+      "signature": "pub fn batch(&mut self, batch: &RecordBatch, plan: &WritePlan) -> Result<()>",
+      "review_sha256": "44da74a62c1f4e33e035ebf9627eb30001a7157e948b13c875b93c4a981cd5f6"
+    },
+    "crates/plenora-db-sqlserver/src/write/effective.rs::classify#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Classificatore pub(super) SQL Server: Evaluation::batch lo chiama su batch gia validati dal consumer; accessi String/Binary/temporali non sono ingressi pubblici autonomi.",
+      "signature": "pub(super) fn classify( rule: RuleId, column: &WriteColumnPlan, array: &dyn Array, row: usize, ) -> Result<Classification>",
+      "review_sha256": "e032f8b35e972858a551793f4c7d34e41ec24ec1ad77d593cd82a0d6815c2584"
     }
   },
   "support_sources": {
@@ -9494,8 +9589,8 @@
       "reason": "Corpo e deleghe private della catena operativa revisionati."
     },
     "crates/plenora-database-core/src/store_rewrite.rs": {
-      "review_sha256": "5a6117db6408fb07fdadd2df58ed102c8732f0213d007b96a72c22057bd13f47",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "review_sha256": "ee3e53aa700ceec4d33119973acbb67dca2f808521674947138b9a7ce7428f9c",
+      "reason": "RewriteGuard::check valida il batch; StoreRewrite::classify valida ArrayData full prima dei valori. Il consenso non sostituisce la validazione."
     },
     "crates/plenora-database-core/src/write_keys.rs": {
       "review_sha256": "79aacac5635486c7bfb5f85c8445cbf2c81453a4908619c15dfa457580b662ed",
@@ -9506,56 +9601,56 @@
       "reason": "Corpo e deleghe private della catena operativa revisionati."
     },
     "crates/plenora-database-engine/src/public_ops.rs": {
-      "review_sha256": "5fe8a291c8cc818082cc5b7fe9e01e908a8c47e3c5333f20b8b813be605fbabd",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "review_sha256": "f6ad494e4e1c6f54f55e7bcfaf5d5a6174332fba86a66f7dfa910c7e35008d73",
+      "reason": "WriteRequest aggiunge accept_loss e rifiuta il flag nei provider_arguments; summarize_stream conserva validated_batch."
     },
     "crates/plenora-database-engine/src/runtime_binding.rs": {
-      "review_sha256": "9ea87e842c1bbce827c8da252f5303aa1a8c0cf762ff8a0a2e5f98cd70935f98",
-      "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
+      "review_sha256": "84201dbbbb618cf0c3e7a54bd0e36f377280462ce579047b144bb5fc7f9cac0d",
+      "reason": "write applica validated_input allo stream del resolver prima di prepare/write_with_consent; gli output passano da validated_batch."
     },
     "crates/plenora-db-postgres/src/write.rs": {
-      "review_sha256": "23b2ee7119adf978340d7ecec218824f84444062736451517b55527e7558ef22",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "review_sha256": "67e0f1198027c236d3bd1a85f52fbe0c3894d9b964a4e812ce179753d72faa01",
+      "reason": "execute -> execute_inner: validated_batch prima di evaluation.batch, stamp_declared_srid e codec; percorso diagnostico delegato al writer registrato."
     },
     "crates/plenora-db-postgres/src/write/dry_run.rs": {
       "review_sha256": "417c02fbc4635189eaaecfbb2a0c77465324ecd2593cdf556d45d777619904cb",
       "reason": "Corpo e deleghe private della catena operativa revisionati."
     },
     "crates/plenora-db-postgres/src/write/row_diagnostics.rs": {
-      "review_sha256": "c4459e90d6ea0acd94b85cd59896ea98d849019f9061e3bbbbd08fe7ada5f152",
-      "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
+      "review_sha256": "ed21e0bde1540460772d47d84b0d5434d8f0dbea626face900a07455cd9b534e",
+      "reason": "locate e drain validano ogni originale con validated_batch; schema e evaluation.batch seguono la guardia."
     },
     "crates/plenora-db-sqlserver/src/read.rs": {
       "review_sha256": "37168b4d8bf64e99708059a79d2eb8d5e12217e95259b8f8d3ae4cfede2ef835",
       "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
     },
     "crates/plenora-db-sqlserver/src/write/mod.rs": {
-      "review_sha256": "f9904dd4f8a3023938e0bb6eac0ea1a0124f36a559a20f451b3ab146ce9d1837",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "review_sha256": "0d1ba37056a68ff4e7025dabc9af15aa66118a9defb7dc12964d1c97ef615ccd",
+      "reason": "write_prepared -> execute_evaluated -> write_prepared_inner: validated_batch prima di evaluation.batch e invio; diagnostica delegata al modulo registrato."
     },
     "crates/plenora-db-sqlserver/src/write/row_diagnostics.rs": {
-      "review_sha256": "439ff687aa85c18fb06fb23f74f7b3e5e46e3764b405f770d0021a1c1f1402d2",
-      "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
+      "review_sha256": "776c57774be859bc55ace5acd6fb1a8ae418a2030470d97f00681982da09f23e",
+      "reason": "locate e drain usano validated_batch; evaluation.batch precede bind/invio e segue la validazione."
     },
     "crates/plenora-db-mysql/src/provider.rs": {
-      "review_sha256": "b29ddf37d555d5cf53d4fa727ae153fcdf2a52c40813801ab787030cef5dfb32",
-      "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
+      "review_sha256": "ee1a4f1e9fc17403984b9c09d7d031fd6abfa19b50c03908222b8d19285f83c9",
+      "reason": "MySQL e MariaDB delegano al consumer execute_mysql_write con validated_batch prima dei codec; consenso non bypassa il fetch validante."
     },
     "crates/plenora-db-mysql/src/row_diagnostics.rs": {
-      "review_sha256": "de277755acf016216dec33a50e70be9de8614e32b735407b37dc032ff1fc1910",
-      "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
+      "review_sha256": "1df2cf75dcf75d3b75ed61bfabe5249c99e4d79b4316fdb18752e97006a5172b",
+      "reason": "Unica variazione funzionale del diff inventariato: loss_report None nell errore. Fetch e drain conservano validated_batch."
     },
     "crates/plenora-db-db2/src/row_diagnostics.rs": {
-      "review_sha256": "e6f35092dd59ac35780fee4902cd8cb72f39c4d2e6aab6d6f1107ee540f86483",
-      "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
+      "review_sha256": "543a223e1468fd2d589d85fc315232be5735cc9da9d56c5c9a7f82ca9617afbb",
+      "reason": "Aggiunto loss_report None nell errore; locate e drain restano protetti da validated_batch."
     },
     "crates/plenora-db-db2/src/write.rs": {
-      "review_sha256": "85388ddf57f75d613d8904c2ee169bf20011ac4a36095e5f234fbe0e7437a86d",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "review_sha256": "d923bce12b839002401d62500314fbd16478ed0c8ab1019c8fc4f29681c9cc3e",
+      "reason": "Aggiunto loss_report agli outcome; execute_input conserva validated_batch prima del consumo, con o senza chiavi."
     },
     "crates/plenora-db-oracle/src/write.rs": {
-      "review_sha256": "be36ba34f646e679ad083766e9d341d316da7901d1012c48eef34cedd62b3099",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "review_sha256": "c8a07513fcb0e621adfe1eca318ff9207092ba756380b633722ad45c0c381b6b",
+      "reason": "Aggiunto loss_report agli outcome; execute_input conserva validated_batch; input diagnostico attraversa write_input registrato."
     },
     "crates/plenora-db-oracle/src/write_input.rs": {
       "review_sha256": "a8291c64f4717970a33c93d671cb67e5821cc144da471b62a3b95423a5000b2d",
@@ -9566,64 +9661,64 @@
       "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
     },
     "crates/plenora-database-cli/src/main.rs": {
-      "review_sha256": "056d83bee3fd1b245f844ef4244334a36caf2f476ab2ee57b0c12fb1f4f9d843",
-      "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
+      "review_sha256": "36f14303a36bc2ecabe7ed6887a1ae3bcdfcbabe4f7cb21a9e804c4e3c8d7d08",
+      "reason": "write e database-write-ipc passano da IpcFileBatchStream e provider validanti; dry-run e output usano validated_batch. accept_loss e un argomento distinto dai dati."
     },
     "crates/plenora-database-cli/src/query_cmd.rs": {
       "review_sha256": "983ffb53ddcc281b04c0f58f45a125bc87540b168f18f2ddaf65ba48d1917af2",
       "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
     },
     "crates/plenora-database-py/src/arrow_reader.rs": {
-      "review_sha256": "a12f51920df62f1d3c7815bcdb53ab69ad3a0e626d94468cde9ffede9f2235b4",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "a03fb4a6408a16f4fba0c91fa1fcb0b5e64d46a733412dd7dae1ad3f9cd60c88",
+      "reason": "Aggiunto loss_report None in internal_error; batch originali validati dal fetch prima di IPC/esportazione C attraverso _arrow_io."
     },
     "crates/plenora-database-py/src/family_write.rs": {
-      "review_sha256": "6ff81aec5a815039f25c44b1f8127969bfcff86c39278f79e297e5b604441dce",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "c8110eae0b9a3a76076d827b338ab48fe65f1021602a9d45a501fe8352a5fa23",
+      "reason": "Sync/async family decodificano IPC con decode_ipc_stream prima di write_with_consent; nessun nuovo import C."
     },
     "crates/plenora-database-py/src/write.rs": {
-      "review_sha256": "f7f06be2113e31e6a5ffd5187fd667e6ba6b4470d21eed5224a79a7fca5765d8",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "23008cc65d2e06c3c4ae3a4caa6f4cbd595088d6bffd05d801cece566dd588ab",
+      "reason": "decode_ipc_stream controlla framing e validate_batch prima di VecBatchStream; consenso e warning operano sul piano/outcome, non rimuovono guardie."
     },
     "crates/plenora-database-py/python/plenora_database/_arrow_io.py": {
       "review_sha256": "ba28ab3c2c276e8b71e57ba6d69bcd12129ca3381e273a836eba787c4f4a882e",
       "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
     },
     "crates/plenora-database-py/python/plenora_database/_async_session.py": {
-      "review_sha256": "469a518dbf9ba8c475cb54a3893dd072bcb721ed1b8f409e17317c4e56ad3bc0",
-      "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
+      "review_sha256": "0d8b28bb312109864f7a36f494332db28789e027b95512a26b668e944ce5bc74",
+      "reason": "acopy_from attende _to_ipc_bytes prima della chiamata nativa; batch originali validati full in _arrow_io."
     },
     "crates/plenora-database-py/python/plenora_database/_session.py": {
-      "review_sha256": "bbbc0d1c62f5303847f0c0fc92c13be90b74b2a501f58af8f20d496e462961b4",
-      "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
+      "review_sha256": "645f201c047158488e052d2160dbb884b9058354d402d902c3757cd9c7d4f415",
+      "reason": "copy_from normalizza e valida attraverso _to_ipc_bytes prima del binding; accept_loss inoltrato senza bypass."
     },
     "crates/plenora-database-py/python/plenora_database/__init__.py": {
-      "review_sha256": "bf82a4976ebad8d7c532e200bd661687862015a5aec03d054e37cb7305b562c0",
-      "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
+      "review_sha256": "7a5369f5b7053a4cff21b8583df644ec272955645a3f7f6abd27e2712d0c8c17",
+      "reason": "Entrambi i wrapper provider-neutral chiamano _to_ipc_bytes prima del nativo; re-export e warning non importano Arrow."
     },
     "crates/plenora-database-engine/src/runtime.rs": {
       "review_sha256": "b8976d52b5c316bf8a3055c20a18a68456014b724165699ee25a464e863f1327",
       "reason": "Corpo e deleghe private della catena operativa revisionati."
     },
     "crates/plenora-database-py/src/async_session.rs": {
-      "review_sha256": "2035b0f61f4c97e9d31a8cfa7d850957b0e434d381dcf950bc0b6a282b20f299",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "dde1b5732d415351dd2b1e89d445e7900a995e62235b0b8593c0eea5a0630390",
+      "reason": "acopy_from -> copy_from_async -> decoder IPC validante; aggiunto accept_loss senza cambiare ordine."
     },
     "crates/plenora-database-py/src/async_session_family.rs": {
-      "review_sha256": "c8b6052df65b078c9082ccb07212963ba49e8b47fc13eb9e8d64ad2e6c2e6d3c",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "3632a8d06340a76fa05e0c404817ec4ffc2f06611f8ff713b04cac613a9d23c6",
+      "reason": "acopy_from -> do_copy_from_async_family -> decoder IPC validante prima del provider."
     },
     "crates/plenora-database-py/src/session.rs": {
-      "review_sha256": "84f546202f2248309fc7d7120dcf9d528112fa755e46e4220a850bf1fb37174d",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "044450027899ec4ab8beb73ae10c542880f14cc96e2de0d70a0c724e0da656de",
+      "reason": "copy_from -> copy_from_sync -> decoder IPC validante; detach conserva la sequenza."
     },
     "crates/plenora-database-py/src/session_family.rs": {
-      "review_sha256": "f5f494071aaa1862a4a40777c13d3b236bf613a6e3ceddb56ed6798cf625c187",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "6ea5a004824cbb40a54e695efd35a8febc7e8177851c0c3a4f925a3bfea41e32",
+      "reason": "copy_from -> copy_from_sync_family -> decoder IPC validante prima del provider."
     },
     "crates/plenora-db-postgres/src/lib.rs": {
-      "review_sha256": "e12b5ee88895fa984a76764efb282c3884a3e766707dc7079780f1b24de6c0a5",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "review_sha256": "bfa484e280b7af0d55126467accd3f6e3c4a6eb909bdf2b009ef7581f12c2ef8",
+      "reason": "prepare compila metadati; write delega a execute/execute_inner e relativi fetch validanti. Il consenso non cambia i dati."
     },
     "crates/plenora-database-py/src/async_session_ops.rs": {
       "review_sha256": "0761d53ca477a5cd35f53896c0f3d17830c92864b3e254f420db6637d31b2896",
@@ -9646,12 +9741,12 @@
       "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
     },
     "crates/plenora-database-py/src/errors.rs": {
-      "review_sha256": "5188d741f798b346efb4588d81433e0410f43933ed984c76860242d755cb70c2",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "dd309085afbc0dd7f3737a4ddd76f36eee28b9086f5bb2bc847782ce4119fa4a",
+      "reason": "Registra MappingLossWarning e proietta rapporti di errore; nessuna importazione Arrow."
     },
     "crates/plenora-database-py/src/errors_commit.rs": {
-      "review_sha256": "51b2cab49e2cea96a880f7f9dd64d0ca5899f2a766f396f068aa66fa1c71bd27",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "17a03e07178e5eaa90038c29747a1ea7b6a927fbba78cf47e35c51f4b1b3df6e",
+      "reason": "Errore commit ignoto inizializza loss_report None, senza array o celle."
     },
     "crates/plenora-database-py/src/family_arrow_reader.rs": {
       "review_sha256": "4c366e79a3f45d26372e61c188f796ed50950ca8eca0b7be474861447bca11b6",
@@ -9748,6 +9843,22 @@
     "crates/plenora-database-py/python/plenora_database/spatial.py": {
       "review_sha256": "9a76031dceac90aefa418101b1850f25153c5d3b9550e71333ea8c08c1606cc1",
       "reason": "Pins the standard-library Union re-export together with the reviewed spatial constructors."
+    },
+    "crates/plenora-db-postgres/src/write/effective.rs": {
+      "reason": "Evaluation e confinato nel modulo write privato PostgreSQL. batch riceve gli originali dopo validated_batch e controllo schema in execute_inner o PostgresRowWriter::locate; nessun ingresso pubblico indipendente. Classificatore pub(super) nel modulo effective privato PostgreSQL: chiamato da Evaluation::batch e canonical::check dopo la validazione del consumer; i richiami nei test usano array costruiti localmente.",
+      "review_sha256": "b7acfedc422f609e22ff240828b8292846e223cb62d9e9d11473168e3aa587a4"
+    },
+    "crates/plenora-db-sqlserver/src/write/effective.rs": {
+      "reason": "Evaluation nel modulo write privato SQL Server: consumer ordinario e diagnostico chiamano validated_batch prima di batch e bind_row. Nessuna esportazione pubblica del valutatore. Classificatore pub(super) SQL Server: Evaluation::batch lo chiama su batch gia validati dal consumer; accessi String/Binary/temporali non sono ingressi pubblici autonomi.",
+      "review_sha256": "04d0ace6d014e259a2b088f5d0b53d5f4d243d3b602cf58b9e8598898f513911"
+    },
+    "crates/plenora-db-postgres/src/write/canonical.rs": {
+      "reason": "canonical::check e pub(super) nel writer privato: check_independent e effective::classify consumano array gia validati dai fetch ordinari/diagnostici o dagli ingressi codec guardati.",
+      "review_sha256": "34d5ddce27756ce92346e28d6e08babbd5969b635b7fd0a89d868d673fc5a717"
+    },
+    "crates/plenora-database-core/src/prepared_execution.rs": {
+      "reason": "execute/execute_with_consent autorizzano report e invocano la closure una volta; non ricevono ne leggono buffer Arrow, validazione affidata ai consumer registrati.",
+      "review_sha256": "cc135f872bf6ad3eef456a7ce2f20cfa9a1874674665ea456b85405b47fe99e4"
     }
   },
   "evidence_sources": {
@@ -9764,8 +9875,8 @@
       "reason": "Matrice SDK sync/async e reader originali: eseguita dal job sdk-offline."
     },
     ".github/workflows/rust-ci.yml": {
-      "review_sha256": "79379e3ee2181e36c04b1dafca127b15e5861511c105fd6d3e5f4d238c9c862c",
-      "reason": "Esecuzione dei gate statici, test Rust (con PyArrow per FFI Windows) e suite SDK."
+      "review_sha256": "68c4a2056468134a5f6a41a65c09091702f663fbc108eaa23c314be33322e269",
+      "reason": "Conserva gate statico, self-test inventario, catalogo Arrow, test Rust e suite SDK su Windows/Linux; aggiunge unittest execution_loss senza rimuovere prove ingress."
     },
     ".github/scripts/offline_suite.sh": {
       "review_sha256": "53f7414fb12a5e1858f65f17cacce8b46f6761f83afc71ac804dcb729c7f79e7",
