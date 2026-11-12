@@ -65,11 +65,11 @@ pub fn attach(report: LossReport, result: Result<WriteOutcome>) -> Result<WriteO
     match result {
         Ok(mut outcome) => {
             outcome.schema_version = 3;
-            outcome.loss_report = Some(report);
+            outcome.loss_report.get_or_insert(report);
             Ok(outcome)
         }
         Err(mut error) => {
-            error.loss_report = Some(Box::new(report));
+            error.loss_report.get_or_insert_with(|| Box::new(report));
             Err(error)
         }
     }

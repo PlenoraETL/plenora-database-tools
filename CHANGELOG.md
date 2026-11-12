@@ -8,6 +8,11 @@ riassumono le note di quelle release.
 
 ## 10.0.0 — non pubblicata
 
+- PostgreSQL: scelta di garanzia «mai troncare» per il testo oltre la
+  lunghezza della colonna, anche con consenso e per gli spazi finali.
+  Le foglie testuali limitate senza controllo esatto sono rifiutate.
+  Il rapporto dell'esecutore non viene piu sovrascritto dai confini esterni.
+  La separazione rischio/perdita effettiva resta da implementare.
 - **Cambio incompatibile di contratto:** WriteOutcome v3 porta il LossReport
   v2 del piano in `loss_report`. I reader v2 chiusi devono essere aggiornati;
   i risultati legacy v2 restano leggibili da Rust, distinti dai v3. La release

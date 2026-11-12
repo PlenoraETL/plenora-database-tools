@@ -727,6 +727,9 @@ Mapping policy obbligatoria: `compatible` / `strict` / `lossy` / `native`.
 serve inoltre `accept_loss=True`. Il default e `False`: il rifiuto avviene
 prima dell'esecuzione del piano, con categoria `data_mapping`, fase `prepare`.
 Questa opzione non apre le policy non strict nei provider che le rifiutano.
+Per PostgreSQL non autorizza la troncatura del testo, inclusi gli spazi
+finali oltre la lunghezza: la scelta e «mai troncare». Il consenso sulle
+sole perdite effettive non e ancora implementato.
 
 L'esito e un dict WriteOutcome v3: `loss_report` contiene il LossReport v2 del
 piano eseguito, anche quando `losses` e vuoto. Un errore di preparazione non

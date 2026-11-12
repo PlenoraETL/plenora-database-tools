@@ -125,6 +125,12 @@ provano la semantica del target. Il controllo e le regressioni sono in
 
 ## Scritture Arrow: rapporto e consenso
 
+Decisione PostgreSQL: il consenso non autorizza la troncatura del testo.
+Per la guardia per valore e i casi conservativi annidati, vedere
+`write/canonical.rs` e `write/canonical_tests.rs` del provider PostgreSQL.
+Questa scelta non completa il passaggio al consenso sulle sole perdite
+effettive: il confine comune descritto sotto resta quello del piano.
+
 Dalla release 10.0.0 l'esito e WriteOutcome v3, con `loss_report` del piano
 eseguito (LossReport v2). Lo schema e in `contracts/v2/write-outcome-v3.schema.json`:
 la cartella v2 identifica il bundle esistente, la versione dell'esito e esplicita

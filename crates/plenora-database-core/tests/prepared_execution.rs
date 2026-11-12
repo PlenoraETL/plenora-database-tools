@@ -192,3 +192,51 @@ fn errors_after_preparation_keep_report_and_all_remote_axes() {
         );
     }
 }
+
+#[test]
+fn nested_boundaries_preserve_executor_report() {
+    use plenora_database_core::DatabaseError;
+    let outer = LossReport {
+        schema_version: 2,
+        policy: MappingPolicy::Compatible,
+        losses: vec![],
+    };
+    let mut executed = outer.clone();
+    executed.losses.push(MappingLoss {
+        field_id: 0,
+        category: LossCategory::Precision,
+        severity: LossSeverity::DataLoss,
+        reason: "rapporto prodotto dall'esecutore".into(),
+        source_type: None,
+        target_type: None,
+    });
+    for source in [
+        include_str!("../../../contracts/v2/examples/outcome-committed.json"),
+        include_str!("../../../contracts/v2/examples/outcome-unknown.json"),
+    ] {
+        let mut outcome: WriteOutcome = serde_json::from_str(source).unwrap();
+        outcome.loss_report = Some(executed.clone());
+        let outcome = prepared_execution::attach(outer.clone(), Ok(outcome)).unwrap();
+        assert_eq!(outcome.loss_report.as_ref(), Some(&executed));
+        outcome.validate().unwrap();
+    }
+    for effect in [
+        RemoteEffect::None,
+        RemoteEffect::RolledBack,
+        RemoteEffect::Committed,
+        RemoteEffect::Partial,
+        RemoteEffect::Unknown,
+    ] {
+        let mut error = DatabaseError::new(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Write,
+            Some(ProviderKind::Postgres),
+            "scrittura rifiutata",
+        );
+        error.remote_effect = effect;
+        error.loss_report = Some(Box::new(executed.clone()));
+        let error = prepared_execution::attach(outer.clone(), Err(error)).unwrap_err();
+        assert_eq!(error.loss_report.as_deref(), Some(&executed));
+        assert_eq!(error.remote_effect, effect);
+    }
+}

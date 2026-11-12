@@ -267,6 +267,15 @@ fn lossy() -> DatabaseError {
     )
 }
 
+fn bounded_refusal() -> DatabaseError {
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        "scrittura rifiutata: PostgreSQL non ammette troncatura del testo, anche con consenso",
+    )
+}
+
 /// L'elenco chiuso dei simboli interni delle funzioni d'ingresso la cui
 /// lettura del testo non dipende dalla sessione: testo, booleani, numeri
 /// (`numeric_in` non usa `lc_numeric`), `uuid`, `json`/`jsonb`, indirizzi,
@@ -882,13 +891,12 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
     }
     let Some(leaf) = rule.single() else {
         // Un composto, un multirange o un array di range: soltanto testo,
-        // e con `Strict` senza lunghezze massime da verificare per campo.
+        // senza lunghezze massime da verificare per campo. Senza un controllo
+        // esatto delle foglie, nessuna politica autorizza la troncatura.
         let text_only = rule.leaves.iter().all(|leaf| match leaf.class {
-            LeafClass::Text { max_chars } => !((rule.strict || rule.key) && max_chars.is_some()),
+            LeafClass::Text { max_chars } => max_chars.is_none(),
             LeafClass::Uuid | LeafClass::Parsed => !rule.key,
-            LeafClass::Padded { .. } | LeafClass::Jsonb | LeafClass::Rounding => {
-                !(rule.strict || rule.key)
-            }
+            LeafClass::Jsonb | LeafClass::Rounding => !(rule.strict || rule.key),
             _ => false,
         });
         return if text_only {
@@ -902,7 +910,11 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
                     | LeafClass::Rounding
             )
         }) {
-            Err(lossy())
+            Err(if rule.strict || rule.key {
+                lossy()
+            } else {
+                bounded_refusal()
+            })
         } else {
             Err(refused())
         };
@@ -977,7 +989,7 @@ fn check_key(rule: &SessionRule, array: &dyn Array, row: usize) -> Result<()> {
     Ok(())
 }
 
-/// Una foglia di testo: con `Strict`, la lunghezza massima (regola P) e,
+/// Una foglia di testo: con ogni politica, la lunghezza massima (regola P) e,
 /// per `char(n)`, la lunghezza piena (regola S: un testo piu corto si
 /// completerebbe con spazi). In una chiave, con ogni politica: un testo che
 /// il server troncherebbe o completerebbe non e una chiave.
@@ -988,7 +1000,7 @@ fn check_text(
     array: &dyn Array,
     row: usize,
 ) -> Result<()> {
-    if !(rule.strict || rule.key) {
+    if array.is_null(row) {
         return Ok(());
     }
     let Some(limit) = max_chars else {
@@ -1000,8 +1012,14 @@ fn check_text(
     let verdict = |text: &str| {
         let chars = text.chars().count();
         if chars > limit {
-            Some(if rule.key { rewritten(true) } else { lossy() })
-        } else if padded_to.is_some_and(|full| chars < full) {
+            Some(if rule.key {
+                rewritten(true)
+            } else if rule.strict {
+                lossy()
+            } else {
+                bounded_refusal()
+            })
+        } else if (rule.strict || rule.key) && padded_to.is_some_and(|full| chars < full) {
             Some(rewritten(rule.key))
         } else {
             None

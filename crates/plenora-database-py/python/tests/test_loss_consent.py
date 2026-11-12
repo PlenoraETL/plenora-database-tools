@@ -43,15 +43,25 @@ def test_live_loss_consent_sync(provider):
                 assert caught.value.remote_effect == "none"
                 assert caught.value.phase == "prepare"
             assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
-        with pytest.warns(p.MappingLossWarning):
-            check_outcome(session.copy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True))
-        assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 1
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", p.MappingLossWarning)
-            with pytest.raises(p.MappingLossWarning) as caught:
-                session.copy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True)
-            check_outcome(caught.value.write_outcome)
-        assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 2
+        if provider == "postgres":
+            with warnings.catch_warnings(record=True) as emitted:
+                warnings.simplefilter("always", p.MappingLossWarning)
+                with pytest.raises(p.PlenoraDataMappingError) as caught:
+                    session.copy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True)
+            assert caught.value.remote_effect == "rolled_back"
+            assert caught.value.loss_report is not None
+            assert not emitted
+            assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
+        else:
+            with pytest.warns(p.MappingLossWarning):
+                check_outcome(session.copy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True))
+            assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 1
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", p.MappingLossWarning)
+                with pytest.raises(p.MappingLossWarning) as caught:
+                    session.copy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True)
+                check_outcome(caught.value.write_outcome)
+            assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 2
         session.execute_ddl(f"DROP TABLE {target}")
         session.execute_ddl(f"CREATE TABLE {target} (value bigint NULL)")
         exact = session.copy_from(schema, table, pa.table({"value": pa.array([1], type=pa.int64())}), mapping_policy="strict")
@@ -79,9 +89,19 @@ async def test_live_loss_consent_async(provider):
                 assert caught.value.remote_effect == "none"
                 assert caught.value.phase == "prepare"
             assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
-        with pytest.warns(p.MappingLossWarning):
-            check_outcome(await session.acopy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True))
-        assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 1
+        if provider == "postgres":
+            with warnings.catch_warnings(record=True) as emitted:
+                warnings.simplefilter("always", p.MappingLossWarning)
+                with pytest.raises(p.PlenoraDataMappingError) as caught:
+                    await session.acopy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True)
+            assert caught.value.remote_effect == "rolled_back"
+            assert caught.value.loss_report is not None
+            assert not emitted
+            assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
+        else:
+            with pytest.warns(p.MappingLossWarning):
+                check_outcome(await session.acopy_from(schema, table, input_table(), mapping_policy="compatible", accept_loss=True))
+            assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 1
         await session.execute_ddl(f"DROP TABLE {target}")
         await session.execute_ddl(f"CREATE TABLE {target} (value bigint NULL)")
         exact = await session.acopy_from(schema, table, pa.table({"value": pa.array([1], type=pa.int64())}), mapping_policy="strict")
@@ -142,10 +162,16 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
             for policy in ["strict", "compatible"]:
                 result = run(policy, False)
                 assert result.returncode != 0
-                assert "loss_report" not in result.stdout
+                if policy == "compatible":
+                    assert "loss_report" in result.stdout + result.stderr
                 assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
         for count, output in enumerate(["json", "markdown", "junit"], 1):
             result = run("strict" if strict_only else "compatible", not strict_only, output)
+            if provider == "postgres" and not strict_only:
+                assert result.returncode != 0
+                assert "loss_report" in result.stdout + result.stderr
+                assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
+                continue
             assert result.returncode == 0, "scrittura CLI rifiutata"
             assert "loss_report" in result.stdout
             if not strict_only:
