@@ -547,9 +547,9 @@ async fn live_p_spazi_finali_oltre_la_lunghezza() {
                     || stored != before
                 {
                     difformi.push(format!(
-                        "{column} {policy:?} {profile:?}: write={}, dry={:?}, unchanged={}",
-                        rows_of(&written),
-                        dry.as_ref().err().map(|error| error.category),
+                        "colonna=at ({column}) {policy:?} {profile:?}: write={:?}, dry={:?}, unchanged={}",
+                        written.as_ref().err().map(|error| (error.category, error.phase, &error.message)),
+                        dry.as_ref().err().map(|error| (error.category, error.phase, &error.message)),
                         stored == before
                     ));
                 }

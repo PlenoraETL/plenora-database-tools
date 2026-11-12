@@ -415,12 +415,15 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
                         })
                     })
                 };
+                // Un solo budget per prepare e write: il motore rifiuta un
+                // budget sostituito fra le due fasi (validate_prepared_budget).
+                let write_budget = budget();
                 let prepared = Provider::prepare_write(
                     &provider,
                     &secret,
                     &append,
                     text_row(1, value).schema(),
-                    &budget(),
+                    &write_budget,
                     &CancellationToken::new(),
                 )
                 .await;
@@ -442,37 +445,51 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
                         &CancellationToken::new(),
                     )
                     .await
-                    .expect_err("dry run senza consenso");
+                    .expect_err(&format!("dry_run_write: {policy:?}/{profile:?}/v ({column}): atteso rifiuto senza consenso"));
                 let denied_write = Provider::write(
                     &provider,
                     &secret,
                     prepared.expect("preparazione"),
                     text_row(1, value),
-                    &budget(),
+                    &write_budget,
                     &CancellationToken::new(),
                     plenora_database_core::loss::LossConsent::Deny,
                 )
                 .await
-                .expect_err("scrittura senza consenso");
-                for error in [&denied_dry, &denied_write] {
-                    assert_eq!(error.category, ErrorCategory::DataMapping);
-                    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+                .expect_err(&format!("Provider::write Deny: {policy:?}/{profile:?}/v ({column}): atteso rifiuto senza consenso"));
+                for (path, error) in [
+                    ("dry_run_write", &denied_dry),
+                    ("Provider::write Deny", &denied_write),
+                ] {
+                    let context = format!("{path}: policy={policy:?}, profilo={profile:?}, colonna=v ({column}), messaggio={}", error.message);
+                    assert_eq!(error.category, ErrorCategory::DataMapping, "{context}");
+                    assert_eq!(
+                        error.phase,
+                        plenora_database_core::ErrorPhase::Write,
+                        "{context}"
+                    );
                     let Some(
                         plenora_database_core::execution_loss::VersionedLossReport::Execution(
                             report,
                         ),
                     ) = error.loss_report.as_deref()
                     else {
-                        panic!("rapporto esecutivo assente")
+                        panic!("{context}: rapporto esecutivo assente")
                     };
-                    assert!(!report.risk.is_empty());
-                    assert!(report.effective.is_empty());
+                    assert!(!report.risk.is_empty(), "{context}: rischio assente");
+                    assert!(
+                        report.effective.is_empty(),
+                        "{context}: perdite effettive senza scrittura"
+                    );
                     if committed.is_some() {
-                        assert!(report
-                            .evaluation
-                            .entries
-                            .iter()
-                            .any(|entry| entry.would_change > 0));
+                        assert!(
+                            report
+                                .evaluation
+                                .entries
+                                .iter()
+                                .any(|entry| entry.would_change > 0),
+                            "{context}: valutazione senza cambiamenti"
+                        );
                     }
                 }
                 assert_eq!(

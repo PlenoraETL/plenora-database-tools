@@ -179,3 +179,116 @@ async fn dry_run_reuses_writer_classification_for_every_policy_path_and_consent(
         }
     }
 }
+
+// I rifiuti R5 devono restare DataMapping anche senza cardinalita dichiarata:
+// il rischio esiste, ma nessuna perdita e effettiva prima dell'invio.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn r5_leaf_refusals_keep_execution_risk_without_effects() {
+    use super::super::canonical::{Leaf, LeafClass, SessionRule, SessionShape};
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for profile in [PostgresInsertMode::Prepared, PostgresInsertMode::CopyText] {
+            for declared in [None, Some(1)] {
+                for (class, rule_id, value) in [
+                    (
+                        LeafClass::Text { max_chars: Some(3) },
+                        RuleId::PgTextLimit,
+                        "ab   ",
+                    ),
+                    (LeafClass::Jsonb, RuleId::PgJsonb, r#"{"a":1,"a":2}"#),
+                ] {
+                    let mut operation =
+                        crate::write_visibility_live_tests::operation("target", WriteMode::Append);
+                    operation.mapping_policy = policy;
+                    let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Utf8, true)]));
+                    let batch = RecordBatch::try_new(
+                        schema.clone(),
+                        vec![Arc::new(StringArray::from(vec![value]))],
+                    )
+                    .unwrap();
+                    let mut state = super::super::prepare_state(&schema, &operation).unwrap();
+                    state.column_plans[0].session_rule = Some(SessionRule {
+                        leaves: vec![Leaf {
+                            class,
+                            shape: SessionShape::Scalar,
+                        }],
+                        strict: false,
+                        key: false,
+                    });
+                    state.loss_instances = vec![RuleInstance {
+                        field_id: 0,
+                        rule_id,
+                        parameters: RuleParameters::default(),
+                        source_type: None,
+                        target_type: None,
+                    }];
+                    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+                    let mut writer = super::super::effective::Evaluation::new(
+                        state.loss_instances.clone(),
+                        &operation,
+                        LossConsent::Deny,
+                        &budget,
+                    )
+                    .unwrap();
+                    writer.bind(&state.column_plans).unwrap();
+                    let written = writer
+                        .batch(&batch, &state.column_plans, &operation)
+                        .unwrap_err();
+                    let mut input = Input {
+                        batches: VecDeque::from([batch]),
+                        schema,
+                        declared,
+                    };
+                    let dry = verify_input_with_consent(
+                        &state,
+                        &operation,
+                        &mut input,
+                        &budget,
+                        &CancellationToken::new(),
+                        InputLimits {
+                            insert_mode: profile,
+                            max_batch_bytes: 1_048_576,
+                            max_wkb_cell_bytes: 1_048_576,
+                        },
+                        StatementGate::default(),
+                        LossConsent::Deny,
+                    )
+                    .await
+                    .unwrap_err();
+                    for (path, error) in [("dry run", &dry), ("writer batch", &written)] {
+                        let context = format!(
+                            "{path}: {policy:?}/{profile:?}/{declared:?}/v/{rule_id:?}: {}",
+                            error.message
+                        );
+                        assert_eq!(error.category, ErrorCategory::DataMapping, "{context}");
+                        assert_eq!(error.phase, ErrorPhase::Write, "{context}");
+                    }
+                    assert_eq!(dry.remote_effect, RemoteEffect::None);
+                    let Some(
+                        plenora_database_core::execution_loss::VersionedLossReport::Execution(
+                            report,
+                        ),
+                    ) = dry.loss_report.as_deref()
+                    else {
+                        panic!("{policy:?}/{profile:?}/{declared:?}/{rule_id:?}: rapporto assente")
+                    };
+                    assert!(!report.risk.is_empty());
+                    assert!(report.effective.is_empty());
+                    assert_eq!(*report, writer.ledger.report());
+                    report.validate().unwrap();
+                    if rule_id == RuleId::PgJsonb {
+                        assert!(report
+                            .evaluation
+                            .entries
+                            .iter()
+                            .any(|entry| entry.would_change == 1));
+                    }
+                }
+            }
+        }
+    }
+}
