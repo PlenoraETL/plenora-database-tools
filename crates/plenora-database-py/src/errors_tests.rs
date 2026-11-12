@@ -31,14 +31,12 @@ fn prepared_error_exposes_loss_report_without_changing_remote_axes() {
         );
         error.remote_effect = RemoteEffect::Unknown;
         error.retry = RetryDisposition::RequiresRecovery;
-        error.loss_report = Some(Box::new(
-            plenora_database_core::loss::LossReport {
-                schema_version: 2,
-                policy: plenora_database_core::loss::MappingPolicy::Compatible,
-                losses: vec![],
-            }
-            .into(),
-        ));
+        let report: plenora_database_core::execution_loss::ExecutionLossReport =
+            serde_json::from_str(include_str!(
+                "../../../contracts/v2/examples/execution-loss-v3.json"
+            ))
+            .unwrap();
+        error.loss_report = Some(Box::new(report.into()));
         let exception = super::to_py_err(error);
         let bound = exception.value(py);
         assert_eq!(

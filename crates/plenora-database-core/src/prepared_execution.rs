@@ -9,7 +9,8 @@ use std::future::Future;
 /// Verifica il rapporto prima di invocare il codice che puo scrivere.
 ///
 /// # Errors
-/// Rifiuta report invalidi e `DataLoss` senza consenso, prima dell'esecuzione.
+/// Rifiuta report invalidi e rischi incompatibili con Strict. I writer migrati
+/// applicano il consenso ai valori; gli altri conservano il gate sul rischio.
 pub async fn execute<F, Fut>(
     prepared: PreparedWrite,
     accept_loss: bool,
@@ -24,7 +25,8 @@ where
 
 /// Ingresso tipizzato degli adapter: non ricostruisce il consenso dal piano.
 /// # Errors
-/// Mantiene il gate legacy finche il provider non e migrato.
+/// Il rapporto esecutivo identifica i writer migrati: solo questi valutano
+/// il consenso sui valori. Gli altri mantengono il gate legacy.
 pub async fn execute_with_consent<F, Fut>(
     prepared: PreparedWrite,
     consent: LossConsent,

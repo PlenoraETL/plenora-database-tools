@@ -500,23 +500,20 @@ pub(crate) fn outcome_into_py<'py>(
 }
 
 fn warn_loss(py: Python<'_>, outcome: &WriteOutcome, document: &Bound<'_, PyDict>) -> PyResult<()> {
-    if outcome.loss_report.as_ref().is_some_and(|report| {
-        report
-            .legacy()
-            .into_iter()
-            .flat_map(|legacy| &legacy.losses)
-            .any(|loss| {
-                matches!(
-                    loss.severity,
-                    plenora_database_core::loss::LossSeverity::Warning
-                        | plenora_database_core::loss::LossSeverity::DataLoss
-                )
-            })
-    }) {
-        let message = if outcome.status == plenora_database_core::outcome::WriteStatus::Committed {
-            "scrittura committed con perdite pianificate: consultare write_outcome; il commit e gia avvenuto"
+    use plenora_database_core::execution_loss::{Basis, VersionedLossReport};
+    let Some(VersionedLossReport::Execution(report)) = outcome.loss_report.as_ref() else {
+        // Un rapporto legacy descrive rischi, non prova perdite committate.
+        return Ok(());
+    };
+    if report.effective.iter().any(|entry| entry.committed > 0) {
+        let conservative = report
+            .effective
+            .iter()
+            .any(|entry| entry.committed > 0 && entry.basis == Basis::Conservative);
+        let message = if conservative {
+            "commit avvenuto con valori trattati conservativamente come perdita: consultare write_outcome; non ripetere automaticamente"
         } else {
-            "scrittura con perdite pianificate: consultare stato e recovery in write_outcome; non ripetere automaticamente"
+            "commit avvenuto con perdite effettive: consultare write_outcome; non ripetere automaticamente"
         };
         let warning = crate::errors::MappingLossWarning::new_err(message);
         warning.value(py).setattr("write_outcome", document)?;

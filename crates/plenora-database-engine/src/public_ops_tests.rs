@@ -123,3 +123,28 @@ fn provider_configuration_cannot_supply_loss_consent() {
         );
     }
 }
+
+#[test]
+fn write_request_consent_is_explicit_and_defaults_to_deny() {
+    let base = serde_json::json!({
+        "provider": "postgres", "secret_environment": "DSN",
+        "provider_arguments": [], "operation_path": "operation.json"
+    });
+    for supplied in [None, Some(false), Some(true)] {
+        let mut document = base.clone();
+        if let Some(value) = supplied {
+            document["accept_loss"] = value.into();
+        }
+        let request: WriteRequest = serde_json::from_value(document).unwrap();
+        assert_eq!(request.accept_loss, supplied.unwrap_or(false));
+    }
+    for invalid in [
+        serde_json::Value::Null,
+        serde_json::json!("true"),
+        serde_json::json!(1),
+    ] {
+        let mut document = base.clone();
+        document["accept_loss"] = invalid;
+        assert!(serde_json::from_value::<WriteRequest>(document).is_err());
+    }
+}

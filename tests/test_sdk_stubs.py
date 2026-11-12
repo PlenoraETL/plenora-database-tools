@@ -365,3 +365,32 @@ class SdkStubsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LossConsentSurfaceTests(unittest.TestCase):
+    def test_every_python_write_surface_defaults_to_deny(self):
+        found = 0
+        for name in ("__init__.py", "__init__.pyi", "_session.py", "_session.pyi",
+                     "_async_session.py", "_async_session.pyi", "_native.pyi"):
+            for node in ast.walk(parse(PACKAGE / name)):
+                if not isinstance(node, Function) or node.name not in ("copy_from", "acopy_from"):
+                    continue
+                defaults = dict(zip(
+                    [arg.arg for arg in node.args.posonlyargs + node.args.args][-len(node.args.defaults):],
+                    node.args.defaults,
+                ))
+                defaults.update(zip([arg.arg for arg in node.args.kwonlyargs], node.args.kw_defaults))
+                with self.subTest(file=name, line=node.lineno):
+                    value = defaults.get("accept_loss")
+                    self.assertIsInstance(value, ast.Constant)
+                    self.assertIs(value.value, False)
+                found += 1
+        self.assertEqual(found, 12)
+
+    def test_native_write_surfaces_default_to_deny(self):
+        root = PACKAGE.parents[1] / "src"
+        for name in ("session.rs", "async_session.rs", "session_family.rs", "async_session_family.rs"):
+            text = (root / name).read_text(encoding="utf-8")
+            with self.subTest(file=name):
+                self.assertEqual(text.count("accept_loss=false"), 1)
+                self.assertIn("accept_loss: bool", text)

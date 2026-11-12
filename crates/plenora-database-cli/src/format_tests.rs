@@ -5,8 +5,12 @@ static FORMAT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn loss_report_survives_all_output_renderers() {
-    let value: Value = serde_json::from_str(include_str!(
+    let mut value: Value = serde_json::from_str(include_str!(
         "../../../contracts/v2/examples/outcome-v3-loss.json"
+    ))
+    .unwrap();
+    value["loss_report"] = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/execution-loss-v3.json"
     ))
     .unwrap();
     for rendered in [
@@ -16,7 +20,16 @@ fn loss_report_survives_all_output_renderers() {
     ] {
         assert!(rendered.contains("loss_report"));
         assert!(rendered.contains("data_loss"));
-        assert!(rendered.contains("precisione ridotta dal piano"));
+        for key in [
+            "risk",
+            "evaluation",
+            "effective",
+            "would_change",
+            "committed",
+            "uncertain",
+        ] {
+            assert!(rendered.contains(key));
+        }
     }
 }
 
@@ -82,14 +95,14 @@ fn junit_wraps_failure_status_as_failure_element() {
 #[test]
 fn prepared_error_report_survives_all_renderers() {
     let mut error = plenora_database_core::DatabaseError::invalid_plan("esecuzione interrotta");
-    error.loss_report = Some(Box::new(
-        plenora_database_core::loss::LossReport {
-            schema_version: 2,
-            policy: plenora_database_core::loss::MappingPolicy::Strict,
-            losses: vec![],
-        }
-        .into(),
-    ));
+    let mut report: plenora_database_core::execution_loss::ExecutionLossReport =
+        serde_json::from_str(include_str!(
+            "../../../contracts/v2/examples/execution-loss-v3.json"
+        ))
+        .unwrap();
+    report.effective.clear();
+    error.loss_report = Some(Box::new(report.into()));
+    error.remote_effect = plenora_database_core::RemoteEffect::RolledBack;
     let value = serde_json::to_value(error.public_projection()).unwrap();
     for rendered in [
         serde_json::to_string(&value).unwrap(),
@@ -97,6 +110,24 @@ fn prepared_error_report_survives_all_renderers() {
         render_junit("write", &value),
     ] {
         assert!(rendered.contains("loss_report"));
-        assert!(rendered.contains("strict"));
+        for key in [
+            "risk",
+            "evaluation",
+            "effective",
+            "rolled_back",
+            "retry",
+            "phase",
+        ] {
+            assert!(rendered.contains(key));
+        }
     }
+}
+
+#[test]
+fn markdown_distinguishes_empty_effective_from_absent_measurement() {
+    let value = json!({"loss_report": {"risk": [], "evaluation": {"complete": false, "entries": []}, "effective": []}});
+    let rendered = render_markdown("write", &value);
+    assert!(rendered.contains("**effective**: []"));
+    assert!(rendered.contains("**entries**: []"));
+    assert!(rendered.contains("**complete**: false"));
 }

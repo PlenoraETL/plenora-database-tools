@@ -724,6 +724,7 @@ class PlenoraError(RuntimeError):
     message: str
     details: dict | None
     diagnostics: dict | list | None
+    loss_report: dict | None
     parameter_index: int | None
     portable_type: str | None
     target_type: str | None
@@ -757,4 +758,5 @@ class PlenoraCommitOutcomeUnknownError(PlenoraInternalError):
 
 
 class MappingLossWarning(UserWarning):
+    """Perdite effettive committate; con filtro error conserva il commit."""
     write_outcome: dict

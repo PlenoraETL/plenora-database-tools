@@ -241,3 +241,64 @@ fn nested_boundaries_preserve_executor_report() {
         assert_eq!(error.remote_effect, effect);
     }
 }
+
+#[test]
+fn migrated_boundary_passes_risk_without_consent_and_preserves_evaluation() {
+    use plenora_database_core::execution_loss::ExecutionLossReport;
+    use plenora_database_core::loss_registry::RuleId;
+    let base: ExecutionLossReport = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/execution-loss-v3.json"
+    ))
+    .unwrap();
+    for rule in [RuleId::SsTextLimit, RuleId::SsOffset] {
+        for policy in [
+            MappingPolicy::Strict,
+            MappingPolicy::Compatible,
+            MappingPolicy::Lossy,
+            MappingPolicy::Native,
+        ] {
+            for accept in [false, true] {
+                let mut measured = base.clone();
+                measured.risk[0] = plenora_database_core::execution_loss::RiskEntry::new(
+                    0, rule, policy, None, None,
+                );
+                measured.evaluation.entries[0].rule_id = rule;
+                measured.policy = policy;
+                measured.effective.clear();
+                measured.evaluation.entries[0].would_change = 0;
+                let planned = ExecutionLossReport::planned(policy, measured.risk.clone()).unwrap();
+                let calls = Cell::new(0);
+                let result = ready(prepared_execution::execute(
+                    prepared(LossReport {
+                        schema_version: 2,
+                        policy,
+                        losses: planned
+                            .risk
+                            .iter()
+                            .map(plenora_database_core::execution_loss::RiskEntry::legacy)
+                            .collect(),
+                    })
+                    .with_execution_loss(planned),
+                    accept,
+                    |_, consent| {
+                        calls.set(calls.get() + 1);
+                        assert_eq!(consent.accepted(), accept);
+                        let mut outcome: WriteOutcome = serde_json::from_str(include_str!(
+                            "../../../contracts/v2/examples/outcome-v3-committed.json"
+                        ))
+                        .unwrap();
+                        outcome.loss_report = Some(measured.clone().into());
+                        async { Ok(outcome) }
+                    },
+                ));
+                if policy == MappingPolicy::Strict && rule == RuleId::SsTextLimit {
+                    assert_eq!(calls.get(), 0);
+                    assert_eq!(result.unwrap_err().category, ErrorCategory::DataMapping);
+                } else {
+                    assert_eq!(calls.get(), 1);
+                    assert_eq!(result.unwrap().loss_report, Some(measured.into()));
+                }
+            }
+        }
+    }
+}
