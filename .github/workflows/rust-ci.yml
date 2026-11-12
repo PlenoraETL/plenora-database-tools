@@ -40,6 +40,8 @@ jobs:
           python-version: '3.12'
       - name: Dipendenze del validatore
         run: python3 -m pip install -r requirements-self-tests.txt
+      - name: Invarianti Rust/JSON del rapporto esecutivo
+        run: python3 -m unittest tests.phase0.test_execution_loss
       - name: Install Rust 1.98.1
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1
         with:

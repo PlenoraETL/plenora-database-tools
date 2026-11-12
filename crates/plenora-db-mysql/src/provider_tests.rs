@@ -584,6 +584,7 @@ async fn write_rejects_a_budget_that_did_not_prepare_it() {
             Box::new(EmptyBatchStream(append_input_schema())),
             &foreign,
             &CancellationToken::new(),
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("budget estraneo");
@@ -621,6 +622,7 @@ async fn write_rejects_a_stream_schema_different_from_prepare() {
             Box::new(EmptyBatchStream(renamed)),
             &budget,
             &CancellationToken::new(),
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("schema stream diverso");

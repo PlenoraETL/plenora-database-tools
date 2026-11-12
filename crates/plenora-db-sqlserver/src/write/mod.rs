@@ -464,13 +464,16 @@ pub async fn write_prepared(
     prepared: PreparedSqlServerWrite,
     input: Box<dyn BatchStream>,
     cancellation: &CancellationToken,
+    consent: plenora_database_core::loss::LossConsent,
 ) -> Result<WriteOutcome> {
     let report = prepared.loss_report().clone();
-    if let Err(mut error) = plenora_database_core::prepared_execution::authorize(&report, true) {
-        error.loss_report = Some(Box::new(report));
+    if let Err(mut error) =
+        plenora_database_core::prepared_execution::authorize_legacy(&report, consent)
+    {
+        error.loss_report = Some(Box::new(report.into()));
         return Err(error);
     }
-    let result = write_prepared_inner(prepared, input, cancellation, None).await;
+    let result = write_prepared_inner(prepared, input, cancellation, consent, None).await;
     plenora_database_core::prepared_execution::attach(report, result)
 }
 
@@ -479,14 +482,17 @@ pub async fn write_prepared_with_fault(
     prepared: PreparedSqlServerWrite,
     input: Box<dyn BatchStream>,
     cancellation: &CancellationToken,
+    consent: plenora_database_core::loss::LossConsent,
     fault: WriteFaultPoint,
 ) -> Result<WriteOutcome> {
     let report = prepared.loss_report().clone();
-    if let Err(mut error) = plenora_database_core::prepared_execution::authorize(&report, true) {
-        error.loss_report = Some(Box::new(report));
+    if let Err(mut error) =
+        plenora_database_core::prepared_execution::authorize_legacy(&report, consent)
+    {
+        error.loss_report = Some(Box::new(report.into()));
         return Err(error);
     }
-    let result = write_prepared_inner(prepared, input, cancellation, Some(fault)).await;
+    let result = write_prepared_inner(prepared, input, cancellation, consent, Some(fault)).await;
     plenora_database_core::prepared_execution::attach(report, result)
 }
 
@@ -495,8 +501,10 @@ async fn write_prepared_inner(
     prepared: PreparedSqlServerWrite,
     input: Box<dyn BatchStream>,
     cancellation: &CancellationToken,
+    consent: plenora_database_core::loss::LossConsent,
     fault: Option<WriteFaultPoint>,
 ) -> Result<WriteOutcome> {
+    plenora_database_core::prepared_execution::authorize_legacy(prepared.loss_report(), consent)?;
     let stream_schema = input.schema();
     if stream_schema.as_ref() != prepared.plan.input_schema.as_ref() {
         return Err(write_error(

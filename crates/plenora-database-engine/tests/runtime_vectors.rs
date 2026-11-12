@@ -315,6 +315,8 @@ impl Provider for Scripted {
         _: Box<dyn BatchStream>,
         _: &'a ResourceBudget,
         _: &'a CancellationToken,
+
+        _consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
         self.calls.record("provider.write");
         let script = self.write;

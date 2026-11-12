@@ -162,6 +162,7 @@ async fn write(
             Box::new(Batches::new(batch)),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }
@@ -522,7 +523,14 @@ async fn live_empty_late_batch_precedes_replace_update_merge_and_array() {
                 rows: 2,
             };
             let error = provider
-                .write(&secret, prepared, Box::new(input), &budget, &cancellation)
+                .write(
+                    &secret,
+                    prepared,
+                    Box::new(input),
+                    &budget,
+                    &cancellation,
+                    plenora_database_core::loss::LossConsent::Accept,
+                )
                 .await
                 .expect_err("vuoto tardivo");
             assert_eq!(error.category, ErrorCategory::DataMapping);

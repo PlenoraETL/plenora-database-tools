@@ -368,6 +368,7 @@ async fn arrow_write(
             Box::new(VecBatchStream::new(vec![batch])),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .map(|outcome| outcome.rows.confirmed)

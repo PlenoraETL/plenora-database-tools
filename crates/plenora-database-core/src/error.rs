@@ -127,7 +127,7 @@ pub struct DatabaseError {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Box<RowDiagnostics>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub loss_report: Option<Box<crate::loss::LossReport>>,
+    pub loss_report: Option<Box<crate::execution_loss::VersionedLossReport>>,
 }
 
 /// Proiezione JSON conforme a `plenora-error-v1`.
@@ -155,7 +155,7 @@ pub struct PublicErrorDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_diagnostics: Option<RowDiagnostics>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub loss_report: Option<crate::loss::LossReport>,
+    pub loss_report: Option<crate::execution_loss::VersionedLossReport>,
 }
 
 /// La categoria pubblica di un'interruzione, secondo la causa che l'ha

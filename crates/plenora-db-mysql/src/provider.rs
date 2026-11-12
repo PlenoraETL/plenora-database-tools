@@ -550,23 +550,28 @@ impl Provider for MysqlProvider {
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
+
+        consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(plenora_database_core::prepared_execution::execute(
-            prepared,
-            true,
-            move |prepared| async move {
-                // Bordo: l'esito della scrittura porta l'attribuzione del
-                // profilo, sia quando riesce sia quando fallisce. Un outcome
-                // committato che dichiarasse il prodotto sbagliato sarebbe una
-                // riga di contabilita falsa, non un dettaglio diagnostico.
-                let outcome =
-                    execute_mysql_write(self, secret, prepared, input, budget, cancellation).await;
-                crate::profile::attributed(self.profile, outcome).map(|mut outcome| {
-                    outcome.provider = self.profile.kind();
-                    outcome
-                })
-            },
-        ))
+        Box::pin(
+            plenora_database_core::prepared_execution::execute_with_consent(
+                prepared,
+                consent,
+                move |prepared, _consent| async move {
+                    // Bordo: l'esito della scrittura porta l'attribuzione del
+                    // profilo, sia quando riesce sia quando fallisce. Un outcome
+                    // committato che dichiarasse il prodotto sbagliato sarebbe una
+                    // riga di contabilita falsa, non un dettaglio diagnostico.
+                    let outcome =
+                        execute_mysql_write(self, secret, prepared, input, budget, cancellation)
+                            .await;
+                    crate::profile::attributed(self.profile, outcome).map(|mut outcome| {
+                        outcome.provider = self.profile.kind();
+                        outcome
+                    })
+                },
+            ),
+        )
     }
 
     fn open_transaction<'a>(
@@ -1754,8 +1759,11 @@ impl Provider for MariadbProvider {
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
+
+        consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        self.0.write(secret, prepared, input, budget, cancellation)
+        self.0
+            .write(secret, prepared, input, budget, cancellation, consent)
     }
 
     fn open_transaction<'a>(

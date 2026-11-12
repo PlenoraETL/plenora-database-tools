@@ -165,7 +165,9 @@ pub async fn execute(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     runtime: WriteRuntime,
+    consent: plenora_database_core::loss::LossConsent,
 ) -> Result<WriteOutcome> {
+    plenora_database_core::prepared_execution::authorize_legacy(&prepared.loss_report, consent)?;
     if cancellation.is_cancelled() {
         runtime.metrics.cancellation();
         return Err(public_error(

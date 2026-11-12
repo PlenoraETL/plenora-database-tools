@@ -339,6 +339,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 prepared,
                 Box::new(MemoryBatchStream::new(Arc::clone(&schema), &batches)),
                 &cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
             )
             .await?;
             let total = started.elapsed().as_micros();
@@ -402,6 +403,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 prepared,
                 Box::new(MemoryBatchStream::new(Arc::clone(&schema), &batches)),
                 &cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
             )
             .await?;
             let total = started.elapsed().as_micros();

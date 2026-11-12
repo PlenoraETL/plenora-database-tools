@@ -1,4 +1,5 @@
 use super::*;
+use crate::loss::{LossCategory, LossSeverity};
 use crate::plan::{ObjectRef, TransactionProfile, WriteMode};
 use arrow_array::{ArrayRef, BinaryArray, Float64Array, Int64Array, StringArray};
 use arrow_schema::{Field, Schema};

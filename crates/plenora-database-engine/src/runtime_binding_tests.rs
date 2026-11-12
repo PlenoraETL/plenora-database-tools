@@ -297,11 +297,14 @@ fn runtime_error_document_preserves_prepared_report() {
     let mut error = DatabaseError::invalid_plan("scrittura interrotta");
     error.remote_effect = RemoteEffect::Unknown;
     error.retry = RetryDisposition::RequiresRecovery;
-    error.loss_report = Some(Box::new(plenora_database_core::loss::LossReport {
-        schema_version: 2,
-        policy: plenora_database_core::loss::MappingPolicy::Strict,
-        losses: vec![],
-    }));
+    error.loss_report = Some(Box::new(
+        plenora_database_core::loss::LossReport {
+            schema_version: 2,
+            policy: plenora_database_core::loss::MappingPolicy::Strict,
+            losses: vec![],
+        }
+        .into(),
+    ));
     let value = error_document(&error);
     assert_eq!(value["remote_effect"], "unknown");
     assert_eq!(value["retry"]["kind"], "requires_recovery");

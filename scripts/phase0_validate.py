@@ -592,7 +592,10 @@ def validate_generated_documents() -> int:
             render as render_microbench,
         )
 
+    from scripts.render_loss_registry import SCHEMA, TABLE, render_schema, render_table
     generated = (
+        (SCHEMA, render_schema, "python scripts/render_loss_registry.py"),
+        (TABLE, render_table, "python scripts/render_loss_registry.py"),
         (TARGET, render, "python scripts/render_state.py"),
         (
             MARIADB_EVIDENCE_TARGET,

@@ -1,0 +1,35 @@
+{
+  "schema_version": 3,
+  "policy": "compatible",
+  "risk": [
+    {
+      "field_id": 0,
+      "rule_id": "ss.text_limit",
+      "category": "precision",
+      "severity": "data_loss",
+      "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+    }
+  ],
+  "evaluation": {
+    "complete": true,
+    "entries": [
+      {
+        "field_id": 0,
+        "rule_id": "ss.text_limit",
+        "basis": "exact",
+        "checked": 2,
+        "would_change": 1
+      }
+    ]
+  },
+  "effective": [
+    {
+      "field_id": 0,
+      "rule_id": "ss.text_limit",
+      "category": "precision",
+      "basis": "exact",
+      "committed": 1,
+      "uncertain": 0
+    }
+  ]
+}

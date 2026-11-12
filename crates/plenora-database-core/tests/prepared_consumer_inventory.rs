@@ -10,6 +10,7 @@ struct Sites {
     write: usize,
     consent: usize,
     overrides: usize,
+    direct: usize,
 }
 
 impl Sites {
@@ -18,6 +19,9 @@ impl Sites {
             "prepare_write" => self.prepare += 1,
             "write" => self.write += 1,
             "write_with_consent" => self.consent += 1,
+            "write_prepared" | "write_prepared_with_fault" | "write_prepared_inner" => {
+                self.direct += 1;
+            }
             _ => {}
         }
     }
@@ -42,9 +46,46 @@ impl<'ast> Visit<'ast> for Sites {
         }
         visit::visit_expr_call(self, node);
     }
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        if node.sig.ident == "write" {
+            struct NoManufacturedConsent;
+            impl<'ast> Visit<'ast> for NoManufacturedConsent {
+                fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+                    let segments: Vec<_> = node
+                        .path
+                        .segments
+                        .iter()
+                        .map(|part| part.ident.to_string())
+                        .collect();
+                    assert!(
+                        !segments.windows(2).any(|pair| pair[0] == "LossConsent"
+                            && ["Accept", "from_accept_loss", "default"]
+                                .contains(&pair[1].as_str())),
+                        "adapter ricostruisce il consenso"
+                    );
+                    visit::visit_expr_path(self, node);
+                }
+            }
+            NoManufacturedConsent.visit_block(&node.block);
+        }
+        visit::visit_impl_item_fn(self, node);
+    }
     fn visit_signature(&mut self, node: &'ast syn::Signature) {
         if node.ident == "write_with_consent" {
             self.overrides += 1;
+        }
+        let prepared = node.inputs.iter().any(|input| matches!(input, syn::FnArg::Typed(arg) if matches!(arg.ty.as_ref(), syn::Type::Path(ty) if ty.path.segments.last().is_some_and(|part| part.ident == "PreparedWrite" || part.ident == "PreparedSqlServerWrite"))));
+        if prepared
+            && [
+                "write",
+                "write_prepared",
+                "write_prepared_with_fault",
+                "write_prepared_inner",
+            ]
+            .iter()
+            .any(|name| node.ident == name)
+        {
+            assert!(node.inputs.iter().any(|input| matches!(input, syn::FnArg::Typed(arg) if matches!(arg.ty.as_ref(), syn::Type::Path(ty) if ty.path.segments.last().is_some_and(|part| part.ident == "LossConsent")))), "consenso obbligatorio assente: {}", node.ident);
         }
         visit::visit_signature(self, node);
     }
@@ -180,4 +221,20 @@ fn syntax_covers_ufcs_spacing_and_every_call_and_override() {
 fn a_write_after_consent_is_still_rejected() {
     let syntax = syn::parse_file("fn consumer(p: &impl Provider) { let a = Provider::prepare_write(p); p.write_with_consent(a); p.write(a); }").unwrap();
     PublicBoundary.visit_file(&syntax);
+}
+
+#[test]
+#[should_panic(expected = "consenso obbligatorio assente")]
+fn direct_writer_cannot_omit_consent() {
+    let mut sites = Sites::default();
+    sites.visit_file(
+        &syn::parse_file("fn write_prepared(prepared: PreparedSqlServerWrite) {}").unwrap(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "adapter ricostruisce il consenso")]
+fn adapter_cannot_replace_deny_with_accept() {
+    let mut sites = Sites::default();
+    sites.visit_file(&syn::parse_file("impl Provider for Adapter { fn write(prepared: PreparedWrite, consent: LossConsent) { provider.write(prepared, LossConsent::Accept); } }").unwrap());
 }

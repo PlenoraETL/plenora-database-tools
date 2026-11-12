@@ -92,7 +92,7 @@
           }
         },
         "loss_report": {
-          "$ref": "loss-report.schema.json"
+          "oneOf": [{"$ref": "execution-loss-report-v3.schema.json"}, {"$ref": "loss-report.schema.json"}]
         }
       }
     },

@@ -1085,6 +1085,7 @@ async fn run_write(
             Box::new(VecBatchStream::new(vec![batch])),
             budget,
             cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }
@@ -1405,7 +1406,14 @@ async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
         },
     };
     let error = provider
-        .write(&secret, prepared, Box::new(input), &budget, &cancellation)
+        .write(
+            &secret,
+            prepared,
+            Box::new(input),
+            &budget,
+            &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
         .expect_err("duplicato row-scoped Db2 live");
 

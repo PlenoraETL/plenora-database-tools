@@ -230,7 +230,7 @@ impl PreparedWrite {
 
 pub trait Provider: Send + Sync {
     /// Esegue un piano con consenso separato dalla policy e conserva il rapporto.
-    /// L'API Rust a due fasi puo continuare a usare `write` dopo aver letto il piano.
+    /// Anche il percorso a due fasi richiede un consenso esplicito.
     fn write_with_consent<'a>(
         &'a self,
         secret: &'a SecretString,
@@ -243,7 +243,9 @@ pub trait Provider: Send + Sync {
         Box::pin(crate::prepared_execution::execute(
             prepared,
             accept_loss,
-            move |prepared| self.write(secret, prepared, input, budget, cancellation),
+            move |prepared, consent| {
+                self.write(secret, prepared, input, budget, cancellation, consent)
+            },
         ))
     }
 
@@ -330,6 +332,8 @@ pub trait Provider: Send + Sync {
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
+
+        consent: crate::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome>;
 
     /// Apre una transazione applicativa multi-statement.

@@ -135,34 +135,38 @@ impl Provider for Db2Provider {
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
+
+        consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(plenora_database_core::prepared_execution::execute(
-            prepared,
-            true,
-            move |prepared| async move {
-                // La regola K: una chiave ripetuta nell'ingresso di una mode per
-                // chiavi rifiuta la scrittura prima del COMMIT.
-                let input = plenora_database_core::write_keys::guard_input_keys(
-                    prepared.operation.mode,
-                    &prepared.operation.keys,
-                    input,
-                    budget,
-                    // Un indice unico Db2 ammette un solo `NULL` per combinazione
-                    // (con `EXCLUDE NULL KEYS` le chiavi tutte `NULL` sarebbero
-                    // distinte: la regola piu stretta, `plenora_database_core::write_keys`).
-                    plenora_database_core::write_keys::NullKeys::Equal,
-                )?;
-                crate::write::execute_write(
-                    &self.config,
-                    secret,
-                    prepared,
-                    input,
-                    budget,
-                    cancellation,
-                )
-                .await
-            },
-        ))
+        Box::pin(
+            plenora_database_core::prepared_execution::execute_with_consent(
+                prepared,
+                consent,
+                move |prepared, _consent| async move {
+                    // La regola K: una chiave ripetuta nell'ingresso di una mode per
+                    // chiavi rifiuta la scrittura prima del COMMIT.
+                    let input = plenora_database_core::write_keys::guard_input_keys(
+                        prepared.operation.mode,
+                        &prepared.operation.keys,
+                        input,
+                        budget,
+                        // Un indice unico Db2 ammette un solo `NULL` per combinazione
+                        // (con `EXCLUDE NULL KEYS` le chiavi tutte `NULL` sarebbero
+                        // distinte: la regola piu stretta, `plenora_database_core::write_keys`).
+                        plenora_database_core::write_keys::NullKeys::Equal,
+                    )?;
+                    crate::write::execute_write(
+                        &self.config,
+                        secret,
+                        prepared,
+                        input,
+                        budget,
+                        cancellation,
+                    )
+                    .await
+                },
+            ),
+        )
     }
 
     fn open_transaction<'a>(

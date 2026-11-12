@@ -52,6 +52,10 @@
     {
       "file": "outcome-v3-loss.json",
       "schema": "../write-outcome-v3.schema.json"
+    },
+    {
+      "file": "execution-loss-v3.json",
+      "schema": "../execution-loss-report-v3.schema.json"
     }
   ],
   "rejected": [

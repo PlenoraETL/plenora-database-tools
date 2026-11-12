@@ -65,7 +65,7 @@ pub struct WriteOutcome {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_report"
     )]
-    pub loss_report: Option<crate::loss::LossReport>,
+    pub loss_report: Option<crate::execution_loss::VersionedLossReport>,
     pub status: WriteStatus,
     pub execution_id: String,
     pub provider: ProviderKind,
@@ -80,8 +80,8 @@ pub struct WriteOutcome {
 
 fn present_report<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> std::result::Result<Option<crate::loss::LossReport>, D::Error> {
-    crate::loss::LossReport::deserialize(deserializer).map(Some)
+) -> std::result::Result<Option<crate::execution_loss::VersionedLossReport>, D::Error> {
+    crate::execution_loss::VersionedLossReport::deserialize(deserializer).map(Some)
 }
 
 /// Le lunghezze massime che `contracts/v2/write-outcome.schema.json`
@@ -299,7 +299,7 @@ impl WriteOutcome {
             provider: Some(self.provider),
             execution_id: Some(self.execution_id.clone()),
             message: message.to_owned(),
-            loss_report: None,
+            loss_report: self.loss_report.clone().map(Box::new),
             diagnostics: None,
         };
         Err(Box::new(UnsettledWrite {

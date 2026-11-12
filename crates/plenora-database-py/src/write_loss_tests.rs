@@ -23,15 +23,19 @@ fn warning_filters_preserve_the_committed_outcome() {
             plenora_database_core::loss::LossSeverity::Warning,
             plenora_database_core::loss::LossSeverity::DataLoss,
         ] {
-            outcome.loss_report.as_mut().unwrap().losses =
-                vec![plenora_database_core::loss::MappingLoss {
-                    field_id: 1,
-                    category: plenora_database_core::loss::LossCategory::Precision,
-                    severity,
-                    reason: "precisione ridotta".into(),
-                    source_type: None,
-                    target_type: None,
-                }];
+            let plenora_database_core::execution_loss::VersionedLossReport::Legacy(report) =
+                outcome.loss_report.as_mut().unwrap()
+            else {
+                panic!("legacy fixture");
+            };
+            report.losses = vec![plenora_database_core::loss::MappingLoss {
+                field_id: 1,
+                category: plenora_database_core::loss::LossCategory::Precision,
+                severity,
+                reason: "precisione ridotta".into(),
+                source_type: None,
+                target_type: None,
+            }];
             let result = outcome_into_py(py, &outcome);
             if severity == plenora_database_core::loss::LossSeverity::Information {
                 assert!(result.is_ok());

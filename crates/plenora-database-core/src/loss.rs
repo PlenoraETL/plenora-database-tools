@@ -174,3 +174,27 @@ fn present_type<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)
 }
+
+/// Consenso esplicito, separato dalla policy e dal piano preparato.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LossConsent {
+    #[default]
+    Deny,
+    Accept,
+}
+
+impl LossConsent {
+    #[must_use]
+    pub const fn from_accept_loss(accept: bool) -> Self {
+        if accept {
+            Self::Accept
+        } else {
+            Self::Deny
+        }
+    }
+
+    #[must_use]
+    pub const fn accepted(self) -> bool {
+        matches!(self, Self::Accept)
+    }
+}

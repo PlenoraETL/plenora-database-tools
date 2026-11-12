@@ -3,9 +3,8 @@ use crate::pool::PooledClient;
 use crate::write::LeafLoss;
 use crate::{PostgresProvider, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
-use plenora_database_core::loss::{
-    LossCategory, LossReport, LossSeverity, MappingLoss, MappingPolicy,
-};
+use plenora_database_core::loss::{LossReport, LossSeverity, MappingLoss, MappingPolicy};
+use plenora_database_core::loss_registry::RuleId;
 use plenora_database_core::plan::{ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::protocol;
@@ -125,7 +124,6 @@ pub async fn write(
             .get(name)
             .is_some_and(|losses| losses.contains(&loss))
     };
-    let strict = operation.mapping_policy == MappingPolicy::Strict;
     // In una chiave un valore riscritto si rifiuta con ogni politica (regola
     // S): non e una perdita da dichiarare.
     let is_key = |name: &str| operation.keys.iter().any(|key| key == name);
@@ -141,23 +139,15 @@ pub async fn write(
                 if provider.schema_evolution == PostgresSchemaEvolution::AddNullableColumns
                     && supports_additive_evolution(operation.mode)
                 {
-                    losses.push(MappingLoss {
-                        field_id: u32::try_from(field_id).map_err(|_| {
-                            DatabaseError::invalid_plan(
-                                "numero colonne oltre il contratto LossReport",
-                            )
-                        })?,
-                        category: LossCategory::NativeType,
-                        severity: LossSeverity::Information,
-                        reason: "colonna aggiunta al target come nullable".to_owned(),
-                        source_type: Some(source.data_type().to_string()),
-                        target_type: Some("nuova colonna nullable".to_owned()),
-                    });
+                    losses.push(RuleId::PgAddNullable.legacy(
+                        field_number(field_id)?,
+                        Some(source.data_type().to_string()),
+                        Some("nuova colonna nullable".to_owned()),
+                    ));
                 } else {
                     losses.push(mapping_loss(
                         field_id,
-                        LossCategory::NativeType,
-                        "colonna sorgente assente nel target",
+                        RuleId::PgMissingColumn,
                         Some(source.data_type().to_string()),
                         None,
                     )?);
@@ -168,8 +158,7 @@ pub async fn write(
             if source.data_type() != target_field.data_type() {
                 losses.push(mapping_loss(
                     field_id,
-                    LossCategory::NativeType,
-                    "tipo Arrow non equivalente al target PostgreSQL",
+                    RuleId::PgArrowMismatch,
                     Some(source.data_type().to_string()),
                     Some(target_field.data_type().to_string()),
                 )?);
@@ -195,13 +184,6 @@ pub async fn write(
                 .into_iter()
                 .find(|declaration| crate::write::reduced_temporal(declaration))
                 .map(str::to_owned);
-            if reduced.is_some() || leaf(source.name(), LeafLoss::ReducedTemporal) {
-                losses.push(reduced_temporal_loss(
-                    field_id,
-                    source,
-                    reduced.or_else(|| target.native_declaration.clone()),
-                )?);
-            }
             // Una lunghezza massima (`varchar(n)`, `char(n)`): il server tronca
             // in silenzio gli spazi finali oltre la lunghezza. Con `Strict` la
             // scrittura rifiuta quei valori uno per uno
@@ -218,13 +200,6 @@ pub async fn write(
                 })
                 || leaf(source.name(), LeafLoss::Bounded)
                 || leaf(source.name(), LeafLoss::Padded);
-            if bounded && !strict {
-                losses.push(bounded_loss(
-                    field_id,
-                    source,
-                    target.native_declaration.clone(),
-                )?);
-            }
             // La regola S: `char(n)` completa con spazi un testo piu corto.
             // Con `Strict` la scrittura lo rifiuta valore per valore (e in una
             // chiave con ogni politica); con le altre politiche si dichiara.
@@ -237,25 +212,11 @@ pub async fn write(
                     base.starts_with("character(") && base.ends_with(')')
                 })
                 || leaf(source.name(), LeafLoss::Padded);
-            if padded && !strict && !is_key(source.name()) {
-                losses.push(padded_loss(
-                    field_id,
-                    source,
-                    target.native_declaration.clone(),
-                )?);
-            }
             // Un numero che arrotonda il testo (`numeric(p,s)`, `real`, `double
             // precision`), a qualunque profondita del tipo: con `Strict` la
             // scrittura rifiuta il valore testuale, con le altre politiche si
             // dichiara qui (`'1.005'` verso un dominio su `numeric(5,2)`
             // diventava `1.01` con il `LossReport` vuoto).
-            if !strict && leaf(source.name(), LeafLoss::Rounding) {
-                losses.push(rounding_loss(
-                    field_id,
-                    source,
-                    target.native_declaration.clone(),
-                )?);
-            }
             // La regola J: `jsonb` normalizza l'oggetto (ordine delle chiavi,
             // spazi) e di una chiave ripetuta tiene l'ultimo valore. Con
             // `Strict` la scrittura rifiuta le chiavi ripetute valore per
@@ -277,12 +238,33 @@ pub async fn write(
                 )
                 .any(|declaration| declaration.trim_end_matches("[]") == "jsonb")
                 || leaf(source.name(), LeafLoss::Jsonb);
-            if jsonb && !strict {
-                losses.push(jsonb_loss(
-                    field_id,
-                    source,
-                    target.native_declaration.clone(),
-                )?);
+            let selected = select_leaf_rules(
+                operation.mapping_policy,
+                is_key(source.name()),
+                [
+                    (
+                        LeafLoss::ReducedTemporal,
+                        reduced.is_some() || leaf(source.name(), LeafLoss::ReducedTemporal),
+                    ),
+                    (LeafLoss::Bounded, bounded),
+                    (LeafLoss::Padded, padded),
+                    (LeafLoss::Rounding, leaf(source.name(), LeafLoss::Rounding)),
+                    (LeafLoss::Jsonb, jsonb),
+                ],
+            );
+            for rule in selected {
+                let target_type = if rule == RuleId::PgTemporal {
+                    reduced
+                        .clone()
+                        .or_else(|| target.native_declaration.clone())
+                } else {
+                    target.native_declaration.clone()
+                };
+                losses.push(rule.legacy(
+                    field_number(field_id)?,
+                    Some(source.data_type().to_string()),
+                    target_type,
+                ));
             }
             if source.is_nullable() && !target.nullable {
                 losses.push(nullability_loss(field_id, operation.mapping_policy)?);
@@ -305,8 +287,7 @@ pub async fn write(
             if source_srid != target_srid && (source_srid.is_some() || target_srid.is_some()) {
                 losses.push(mapping_loss(
                     field_id,
-                    LossCategory::Srid,
-                    "SRID sorgente e target differenti",
+                    RuleId::PgSrid,
                     source_srid.cloned(),
                     target_srid.cloned(),
                 )?);
@@ -316,8 +297,7 @@ pub async fn write(
             if source_crs != target_crs && (source_crs.is_some() || target_crs.is_some()) {
                 losses.push(mapping_loss(
                     field_id,
-                    LossCategory::Crs,
-                    "identificatore CRS sorgente e target differente",
+                    RuleId::PgCrs,
                     source_crs.cloned(),
                     target_crs.cloned(),
                 )?);
@@ -341,26 +321,31 @@ pub async fn write(
                 .or(contract.native_type)
                 .map(str::to_owned);
             let name = source.name().as_str();
-            if leaf(name, LeafLoss::ReducedTemporal) {
-                losses.push(reduced_temporal_loss(field_id, source, declared.clone())?);
-            }
-            if strict {
-                continue;
-            }
-            if leaf(name, LeafLoss::Bounded) || leaf(name, LeafLoss::Padded) {
-                losses.push(bounded_loss(field_id, source, declared.clone())?);
-            }
-            if leaf(name, LeafLoss::Padded) && !is_key(name) {
-                losses.push(padded_loss(field_id, source, declared.clone())?);
-            }
-            if leaf(name, LeafLoss::Rounding) {
-                losses.push(rounding_loss(field_id, source, declared.clone())?);
-            }
             let jsonb = declared
                 .as_deref()
                 .is_some_and(|declaration| declaration.trim_end_matches("[]") == "jsonb");
-            if jsonb || leaf(name, LeafLoss::Jsonb) {
-                losses.push(jsonb_loss(field_id, source, declared)?);
+            for rule in select_leaf_rules(
+                operation.mapping_policy,
+                is_key(name),
+                [
+                    (
+                        LeafLoss::ReducedTemporal,
+                        leaf(name, LeafLoss::ReducedTemporal),
+                    ),
+                    (
+                        LeafLoss::Bounded,
+                        leaf(name, LeafLoss::Bounded) || leaf(name, LeafLoss::Padded),
+                    ),
+                    (LeafLoss::Padded, leaf(name, LeafLoss::Padded)),
+                    (LeafLoss::Rounding, leaf(name, LeafLoss::Rounding)),
+                    (LeafLoss::Jsonb, jsonb || leaf(name, LeafLoss::Jsonb)),
+                ],
+            ) {
+                losses.push(rule.legacy(
+                    field_number(field_id)?,
+                    Some(source.data_type().to_string()),
+                    declared.clone(),
+                ));
             }
         }
     }
@@ -510,107 +495,41 @@ fn field_number(field_id: usize) -> Result<u32> {
         .map_err(|_| DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport"))
 }
 
-/// La regola P: una precisione temporale sotto il microsecondo.
-fn reduced_temporal_loss(
-    field_id: usize,
-    source: &arrow_schema::Field,
-    target_type: Option<String>,
-) -> Result<MappingLoss> {
-    mapping_loss(
-        field_id,
-        LossCategory::Precision,
-        "precisione temporale della colonna sotto il microsecondo: il valore si \
-         arrotonderebbe o troncherebbe",
-        Some(source.data_type().to_string()),
-        target_type,
-    )
-}
-
-/// Una lunghezza massima (`varchar(n)`, `char(n)`), anche dentro un dominio,
-/// un array o un composto.
-fn bounded_loss(
-    field_id: usize,
-    source: &arrow_schema::Field,
-    target_type: Option<String>,
-) -> Result<MappingLoss> {
-    Ok(MappingLoss {
-        field_id: field_number(field_id)?,
-        category: LossCategory::Precision,
-        severity: LossSeverity::DataLoss,
-        reason: "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio".to_owned(),
-        source_type: Some(source.data_type().to_string()),
-        target_type,
-    })
-}
-
-/// `char(n)` completa con spazi un testo piu corto (regola S,
-/// `plenora_database_core::store_rewrite`), anche dentro un dominio, un array
-/// o un composto.
-fn padded_loss(
-    field_id: usize,
-    source: &arrow_schema::Field,
-    target_type: Option<String>,
-) -> Result<MappingLoss> {
-    Ok(MappingLoss {
-        field_id: field_number(field_id)?,
-        category: LossCategory::NativeType,
-        severity: LossSeverity::DataLoss,
-        reason: plenora_database_core::store_rewrite::StoreRewrite::PadText { chars: 0 }
-            .reason()
-            .to_owned(),
-        source_type: Some(source.data_type().to_string()),
-        target_type,
-    })
-}
-
-/// Un numero che arrotonda il testo, anche dentro un dominio, un array, un
-/// range o un composto.
-fn rounding_loss(
-    field_id: usize,
-    source: &arrow_schema::Field,
-    target_type: Option<String>,
-) -> Result<MappingLoss> {
-    Ok(MappingLoss {
-        field_id: field_number(field_id)?,
-        category: LossCategory::Precision,
-        severity: LossSeverity::DataLoss,
-        reason: "un numero del tipo della colonna (numeric con scala, real, double precision) \
-                 arrotonderebbe il valore testuale"
-            .to_owned(),
-        source_type: Some(source.data_type().to_string()),
-        target_type,
-    })
-}
-
-/// La regola J: `jsonb`, anche dentro un dominio, un array o un composto.
-fn jsonb_loss(
-    field_id: usize,
-    source: &arrow_schema::Field,
-    target_type: Option<String>,
-) -> Result<MappingLoss> {
-    Ok(MappingLoss {
-        field_id: field_number(field_id)?,
-        category: LossCategory::NativeType,
-        severity: LossSeverity::Warning,
-        reason: "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza ordine delle \
-                 chiavi e spazi"
-            .to_owned(),
-        source_type: Some(source.data_type().to_string()),
-        target_type,
-    })
+/// Selector puro usato sia per Create sia per target esistente.
+fn select_leaf_rules(
+    policy: MappingPolicy,
+    key: bool,
+    conditions: impl IntoIterator<Item = (LeafLoss, bool)>,
+) -> Vec<RuleId> {
+    conditions
+        .into_iter()
+        .filter_map(|(leaf, present)| {
+            if !present {
+                return None;
+            }
+            let rule = match leaf {
+                LeafLoss::ReducedTemporal => RuleId::PgTemporal,
+                LeafLoss::Bounded => RuleId::PgTextLimit,
+                LeafLoss::Padded => RuleId::PgPadText,
+                LeafLoss::Rounding => RuleId::PgNumeric,
+                LeafLoss::Jsonb => RuleId::PgJsonb,
+            };
+            if (policy == MappingPolicy::Strict && rule != RuleId::PgTemporal)
+                || (key && rule == RuleId::PgPadText)
+            {
+                None
+            } else {
+                Some(rule)
+            }
+        })
+        .collect()
 }
 
 // NOT NULL rifiuta il valore nullo; non converte un valore valido. Strict
 // conserva il precedente rifiuto strutturale, le altre policy non richiedono
 // consenso per un rischio di rifiuto che non altera dati.
 fn nullability_loss(field_id: usize, policy: MappingPolicy) -> Result<MappingLoss> {
-    let mut loss = mapping_loss(
-        field_id,
-        LossCategory::Nullability,
-        "sorgente nullable verso colonna NOT NULL",
-        None,
-        None,
-    )?;
+    let mut loss = mapping_loss(field_id, RuleId::PgNullability, None, None)?;
     if policy != MappingPolicy::Strict {
         loss.severity = LossSeverity::Information;
     }
@@ -619,21 +538,11 @@ fn nullability_loss(field_id: usize, policy: MappingPolicy) -> Result<MappingLos
 
 fn mapping_loss(
     field_id: usize,
-    category: LossCategory,
-    reason: &str,
+    rule: RuleId,
     source_type: Option<String>,
     target_type: Option<String>,
 ) -> Result<MappingLoss> {
-    Ok(MappingLoss {
-        field_id: u32::try_from(field_id).map_err(|_| {
-            DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
-        })?,
-        category,
-        severity: LossSeverity::DataLoss,
-        reason: reason.to_owned(),
-        source_type,
-        target_type,
-    })
+    Ok(rule.legacy(field_number(field_id)?, source_type, target_type))
 }
 
 const fn supports_additive_evolution(mode: WriteMode) -> bool {

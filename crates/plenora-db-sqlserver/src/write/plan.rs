@@ -6,9 +6,8 @@ use plenora_database_core::field_contract::{
     validate_schema_contract, FieldContract as CanonicalFieldContract,
 };
 use plenora_database_core::geometry::Dimensions;
-use plenora_database_core::loss::{
-    LossCategory, LossReport, LossSeverity, MappingLoss, MappingPolicy,
-};
+use plenora_database_core::loss::{LossReport, MappingLoss, MappingPolicy};
+use plenora_database_core::loss_registry::RuleId;
 use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::protocol;
 use plenora_database_core::store_rewrite::{ColumnRewrites, StoreRewrite};
@@ -306,16 +305,13 @@ impl WritePlan {
             .added_columns
             .iter()
             .map(|column| {
-                Ok(MappingLoss {
-                    field_id: u32::try_from(column.input_index).map_err(|_| {
+                Ok(RuleId::SsAddNullable.legacy(
+                    u32::try_from(column.input_index).map_err(|_| {
                         DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
                     })?,
-                    category: LossCategory::NativeType,
-                    severity: LossSeverity::Information,
-                    reason: "colonna aggiunta al target SQL Server come nullable".to_owned(),
-                    source_type: Some(column.source_type.clone()),
-                    target_type: Some(column.native_declaration.clone()),
-                })
+                    Some(column.source_type.clone()),
+                    Some(column.native_declaration.clone()),
+                ))
             })
             .chain(self.precision_losses.iter().cloned().map(Ok))
             .collect::<Result<Vec<_>>>()?;
@@ -1447,31 +1443,27 @@ fn rule_p(
     let strict = operation.mapping_policy == MappingPolicy::Strict;
     let field_id = u32::try_from(column.input_index)
         .map_err(|_| DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport"))?;
-    let loss = |category, severity, reason: &str| MappingLoss {
-        field_id,
-        category,
-        severity,
-        reason: reason.to_owned(),
-        source_type: Some(field.data_type().to_string()),
-        target_type: Some(column.native_declaration.clone()),
+    let loss = |rule: RuleId| {
+        rule.legacy(
+            field_id,
+            Some(field.data_type().to_string()),
+            Some(column.native_declaration.clone()),
+        )
     };
+    losses.extend(select_precision_rules(strict, column).into_iter().map(loss));
+    Ok(())
+}
+
+fn select_precision_rules(strict: bool, column: &WriteColumnPlan) -> Vec<RuleId> {
+    let mut rules = Vec::new();
     if strict {
-        return Ok(());
+        return Vec::new();
     }
     if reduced_temporal(&column.native_type, &column.native_declaration) {
-        losses.push(loss(
-            LossCategory::Precision,
-            LossSeverity::DataLoss,
-            "precisione temporale della colonna sotto il microsecondo",
-        ));
+        rules.push(RuleId::SsTemporal);
     }
     if column.native_type == "xml" {
-        losses.push(loss(
-            LossCategory::NativeType,
-            LossSeverity::Warning,
-            "xml conserva il documento, non il testo: dichiarazione, apici, forma degli \
-             elementi vuoti, sezioni CDATA e riferimenti ai caratteri si normalizzano",
-        ));
+        rules.push(RuleId::SsXml);
     }
     if let Some(limit) = text_limit(
         &column.native_type,
@@ -1479,35 +1471,19 @@ fn rule_p(
         column.collation.as_deref(),
     ) {
         if limit.code_page != CodePage::Unicode {
-            losses.push(loss(
-                LossCategory::Encoding,
-                LossSeverity::Warning,
-                "i caratteri fuori dalla code page della collation diventerebbero '?'",
-            ));
+            rules.push(RuleId::SsEncoding);
         }
         if limit.max.is_some() {
-            losses.push(loss(
-                LossCategory::Precision,
-                LossSeverity::DataLoss,
-                "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
-            ));
+            rules.push(RuleId::SsTextLimit);
         }
     }
     if binary_limit(&column.native_type, &column.native_declaration).is_some() {
-        losses.push(loss(
-            LossCategory::Precision,
-            LossSeverity::DataLoss,
-            "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi byte non nulli",
-        ));
+        rules.push(RuleId::SsBinaryLimit);
     }
     if offset_scale(&column.native_type, &column.native_declaration).is_some() {
-        losses.push(loss(
-            LossCategory::Precision,
-            LossSeverity::Warning,
-            "le cifre frazionarie oltre la scala della colonna si arrotonderebbero",
-        ));
+        rules.push(RuleId::SsOffset);
     }
-    Ok(())
+    rules
 }
 
 pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {

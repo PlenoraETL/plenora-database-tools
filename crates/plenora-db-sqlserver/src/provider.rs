@@ -484,49 +484,54 @@ impl Provider for SqlServerProvider {
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
+
+        consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(plenora_database_core::prepared_execution::execute(
-            prepared,
-            true,
-            move |mut prepared| async move {
-                validate_prepared_budget(&prepared.budget, budget)?;
-                ensure_not_cancelled(cancellation, ErrorPhase::Write)?;
-                self.validate_source(&prepared.operation.target)?;
-                let input_schema = input.schema();
-                if input_schema.as_ref() != prepared.input_schema.as_ref() {
-                    return Err(DatabaseError::invalid_plan(
-                        "schema stream diverso dallo schema preparato",
-                    ));
-                }
-                if let Some(input_total) = input.declared_input_rows() {
-                    crate::write::validate_diagnostic_request(
-                        &prepared.input_schema,
-                        &input_schema,
-                        &prepared.operation,
-                        self.insert_mode,
-                        input_total,
-                        input.row_diagnostics_policy(),
-                    )?;
-                }
-                let driver_state = prepared
-                    .take_driver_state::<SqlServerPreparedState>()
-                    .ok_or_else(|| {
-                        DatabaseError::invalid_plan(
-                            "stato prepared write SQL Server assente o incompatibile",
-                        )
-                    })?;
-                let execution_fingerprint: [u8; 32] =
-                    Sha256::digest(secret.expose().as_bytes()).into();
-                if driver_state.secret_fingerprint != execution_fingerprint {
-                    return Err(DatabaseError::invalid_plan(
-                        "il secret di write non coincide con quello usato in prepare_write",
-                    ));
-                }
-                let result = write_prepared(driver_state.driver, input, cancellation).await;
-                drop(prepared);
-                result
-            },
-        ))
+        Box::pin(
+            plenora_database_core::prepared_execution::execute_with_consent(
+                prepared,
+                consent,
+                move |mut prepared, consent| async move {
+                    validate_prepared_budget(&prepared.budget, budget)?;
+                    ensure_not_cancelled(cancellation, ErrorPhase::Write)?;
+                    self.validate_source(&prepared.operation.target)?;
+                    let input_schema = input.schema();
+                    if input_schema.as_ref() != prepared.input_schema.as_ref() {
+                        return Err(DatabaseError::invalid_plan(
+                            "schema stream diverso dallo schema preparato",
+                        ));
+                    }
+                    if let Some(input_total) = input.declared_input_rows() {
+                        crate::write::validate_diagnostic_request(
+                            &prepared.input_schema,
+                            &input_schema,
+                            &prepared.operation,
+                            self.insert_mode,
+                            input_total,
+                            input.row_diagnostics_policy(),
+                        )?;
+                    }
+                    let driver_state = prepared
+                        .take_driver_state::<SqlServerPreparedState>()
+                        .ok_or_else(|| {
+                            DatabaseError::invalid_plan(
+                                "stato prepared write SQL Server assente o incompatibile",
+                            )
+                        })?;
+                    let execution_fingerprint: [u8; 32] =
+                        Sha256::digest(secret.expose().as_bytes()).into();
+                    if driver_state.secret_fingerprint != execution_fingerprint {
+                        return Err(DatabaseError::invalid_plan(
+                            "il secret di write non coincide con quello usato in prepare_write",
+                        ));
+                    }
+                    let result =
+                        write_prepared(driver_state.driver, input, cancellation, consent).await;
+                    drop(prepared);
+                    result
+                },
+            ),
+        )
     }
 
     fn run_ddl<'a>(

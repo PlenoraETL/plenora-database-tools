@@ -501,13 +501,17 @@ pub(crate) fn outcome_into_py<'py>(
 
 fn warn_loss(py: Python<'_>, outcome: &WriteOutcome, document: &Bound<'_, PyDict>) -> PyResult<()> {
     if outcome.loss_report.as_ref().is_some_and(|report| {
-        report.losses.iter().any(|loss| {
-            matches!(
-                loss.severity,
-                plenora_database_core::loss::LossSeverity::Warning
-                    | plenora_database_core::loss::LossSeverity::DataLoss
-            )
-        })
+        report
+            .legacy()
+            .into_iter()
+            .flat_map(|legacy| &legacy.losses)
+            .any(|loss| {
+                matches!(
+                    loss.severity,
+                    plenora_database_core::loss::LossSeverity::Warning
+                        | plenora_database_core::loss::LossSeverity::DataLoss
+                )
+            })
     }) {
         let message = if outcome.status == plenora_database_core::outcome::WriteStatus::Committed {
             "scrittura committed con perdite pianificate: consultare write_outcome; il commit e gia avvenuto"

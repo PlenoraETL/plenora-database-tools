@@ -82,11 +82,14 @@ fn junit_wraps_failure_status_as_failure_element() {
 #[test]
 fn prepared_error_report_survives_all_renderers() {
     let mut error = plenora_database_core::DatabaseError::invalid_plan("esecuzione interrotta");
-    error.loss_report = Some(Box::new(plenora_database_core::loss::LossReport {
-        schema_version: 2,
-        policy: plenora_database_core::loss::MappingPolicy::Strict,
-        losses: vec![],
-    }));
+    error.loss_report = Some(Box::new(
+        plenora_database_core::loss::LossReport {
+            schema_version: 2,
+            policy: plenora_database_core::loss::MappingPolicy::Strict,
+            losses: vec![],
+        }
+        .into(),
+    ));
     let value = serde_json::to_value(error.public_projection()).unwrap();
     for rendered in [
         serde_json::to_string(&value).unwrap(),

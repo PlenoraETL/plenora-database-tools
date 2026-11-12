@@ -171,7 +171,13 @@ async fn keys_only_upsert(
         SqlServerInsertMode::Prepared,
     )
     .await?;
-    write_prepared(prepared, Box::new(input), &cancellation).await
+    write_prepared(
+        prepared,
+        Box::new(input),
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
 }
 
 /// Una chiave ripetuta nell'ingresso di Update, Upsert e `DeleteByKeys`
@@ -254,7 +260,13 @@ async fn append_timestamp(
     let prepared =
         prepare_write_with_mode(&pool, &target, schema, &budget, &cancellation, insert_mode)
             .await?;
-    write_prepared(prepared, Box::new(input), &cancellation).await
+    write_prepared(
+        prepared,
+        Box::new(input),
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
 }
 
 async fn stored_timestamps(admin: &mut SqlServerSession) -> Vec<String> {
@@ -411,7 +423,13 @@ async fn live_due_chiavi_null_sono_ripetute_per_l_indice_unico() {
                 SqlServerInsertMode::Prepared,
             )
             .await?;
-            write_prepared(prepared, Box::new(input), &cancellation).await
+            write_prepared(
+                prepared,
+                Box::new(input),
+                &cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
+            )
+            .await
         }
         .await;
         let (rows, _) = observe(&mut admin).await;

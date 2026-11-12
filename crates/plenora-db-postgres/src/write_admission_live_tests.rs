@@ -154,6 +154,8 @@ impl Provider for PathProvider {
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
+
+        consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, plenora_database_core::outcome::WriteOutcome> {
         let input: Box<dyn BatchStream> = if self.hide_rows {
             Box::new(Undeclared(input))
@@ -161,7 +163,7 @@ impl Provider for PathProvider {
             input
         };
         self.inner
-            .write(secret, prepared, input, budget, cancellation)
+            .write(secret, prepared, input, budget, cancellation, consent)
     }
 
     fn run_ddl<'a>(

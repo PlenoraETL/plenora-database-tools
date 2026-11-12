@@ -127,7 +127,13 @@ async fn run(
     };
     let losses = prepared.loss_report().losses.clone();
     (
-        write_prepared(prepared, Box::new(rows), &cancellation).await,
+        write_prepared(
+            prepared,
+            Box::new(rows),
+            &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
+        .await,
         losses,
     )
 }

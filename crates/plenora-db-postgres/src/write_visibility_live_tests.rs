@@ -213,7 +213,16 @@ pub async fn write_stream(
         &cancellation,
     )
     .await?;
-    Provider::write(provider, secret, prepared, stream, &budget, &cancellation).await
+    Provider::write(
+        provider,
+        secret,
+        prepared,
+        stream,
+        &budget,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
 }
 
 pub async fn dry_run(

@@ -507,6 +507,7 @@ async fn write_once(
             )),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await?;
     let execute_micros = execute_started.elapsed().as_micros();

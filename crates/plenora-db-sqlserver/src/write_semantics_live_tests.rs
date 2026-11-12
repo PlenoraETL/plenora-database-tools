@@ -136,7 +136,13 @@ async fn write(
         insert_mode,
     )
     .await?;
-    write_prepared(prepared, Box::new(input), &cancellation).await
+    write_prepared(
+        prepared,
+        Box::new(input),
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
 }
 
 const RESET: &str = "DROP TABLE IF EXISTS [plenora_test].[semantica]; \

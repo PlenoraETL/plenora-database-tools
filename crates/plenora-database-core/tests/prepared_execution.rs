@@ -89,7 +89,8 @@ fn consent_matrix_rejects_before_invoking_executor_and_preserves_reports() {
                     let result = ready(prepared_execution::execute(
                         prepared(report.clone()),
                         accept,
-                        |_| {
+                        |_, consent| {
+                            assert_eq!(consent.accepted(), accept);
                             calls.set(calls.get() + 1);
                             async {
                                 let mut outcome: WriteOutcome = serde_json::from_str(include_str!(
@@ -114,7 +115,7 @@ fn consent_matrix_rejects_before_invoking_executor_and_preserves_reports() {
                         let outcome = result.unwrap();
                         outcome.validate().unwrap();
                         assert_eq!(outcome.schema_version, 3);
-                        assert_eq!(outcome.loss_report, Some(report));
+                        assert_eq!(outcome.loss_report, Some(report.into()));
                     }
                 }
             }
@@ -138,10 +139,10 @@ fn empty_is_not_absent_and_uncertain_outcomes_keep_the_report() {
         let outcome = ready(prepared_execution::execute(
             prepared(report.clone()),
             false,
-            |_| async { Ok(old) },
+            |_, _consent| async { Ok(old) },
         ))
         .unwrap();
-        assert_eq!(outcome.loss_report, Some(report));
+        assert_eq!(outcome.loss_report, Some(report.into()));
         outcome.validate().unwrap();
         let document = serde_json::to_value(&outcome).unwrap();
         assert_eq!(document["loss_report"]["losses"], serde_json::json!([]));
@@ -178,10 +179,10 @@ fn errors_after_preparation_keep_report_and_all_remote_axes() {
         let error = ready(prepared_execution::execute(
             prepared(report.clone()),
             true,
-            |_| async { Err(original.clone()) },
+            |_, _consent| async { Err(original.clone()) },
         ))
         .unwrap_err();
-        assert_eq!(error.loss_report.as_deref(), Some(&report));
+        assert_eq!(error.loss_report.as_deref(), Some(&report.clone().into()));
         assert_eq!(error.remote_effect, original.remote_effect);
         assert_eq!(error.retry, original.retry);
         assert_eq!(error.phase, original.phase);
@@ -215,9 +216,9 @@ fn nested_boundaries_preserve_executor_report() {
         include_str!("../../../contracts/v2/examples/outcome-unknown.json"),
     ] {
         let mut outcome: WriteOutcome = serde_json::from_str(source).unwrap();
-        outcome.loss_report = Some(executed.clone());
+        outcome.loss_report = Some(executed.clone().into());
         let outcome = prepared_execution::attach(outer.clone(), Ok(outcome)).unwrap();
-        assert_eq!(outcome.loss_report.as_ref(), Some(&executed));
+        assert_eq!(outcome.loss_report.as_ref(), Some(&executed.clone().into()));
         outcome.validate().unwrap();
     }
     for effect in [
@@ -234,9 +235,9 @@ fn nested_boundaries_preserve_executor_report() {
             "scrittura rifiutata",
         );
         error.remote_effect = effect;
-        error.loss_report = Some(Box::new(executed.clone()));
+        error.loss_report = Some(Box::new(executed.clone().into()));
         let error = prepared_execution::attach(outer.clone(), Err(error)).unwrap_err();
-        assert_eq!(error.loss_report.as_deref(), Some(&executed));
+        assert_eq!(error.loss_report.as_deref(), Some(&executed.clone().into()));
         assert_eq!(error.remote_effect, effect);
     }
 }

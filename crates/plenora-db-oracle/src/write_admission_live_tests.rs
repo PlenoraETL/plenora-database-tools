@@ -387,6 +387,7 @@ async fn audit_write_declared(
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }
