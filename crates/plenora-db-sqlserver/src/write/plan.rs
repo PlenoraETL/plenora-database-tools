@@ -305,6 +305,11 @@ impl WritePlan {
         operation: &WriteOperation,
     ) -> Result<Vec<plenora_database_core::loss_registry::RuleInstance>> {
         use plenora_database_core::loss_registry::{RuleInstance, RuleParameters};
+        // La sonda raw misura il server; il replay conserva tutte le guardie.
+        #[cfg(test)]
+        if plenora_database_testkit::write_probe::is_raw_probe(&self.object) {
+            return Ok(Vec::new());
+        }
         let mut instances = Vec::new();
         for column in &self.columns {
             let field_id = u32::try_from(column.input_index)

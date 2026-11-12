@@ -15,6 +15,8 @@ fn unrelated_public_messages_do_not_invent_bind_metadata() {
     assert_eq!(bind_error_context("operazione PostgreSQL fallita"), None);
 }
 
+// extension-module non collega libpython nei binari di test Unix.
+#[cfg(windows)]
 #[test]
 fn prepared_error_exposes_loss_report_without_changing_remote_axes() {
     use plenora_database_core::{

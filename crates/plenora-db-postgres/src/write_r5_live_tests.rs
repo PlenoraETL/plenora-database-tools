@@ -356,7 +356,7 @@ const LOSSY_TYPES: &str = "CREATE DOMAIN {s}.dn AS numeric(5,2); \
 /// prepare e nel dry run, e la scrittura committava `1.01`, `{1.01}`,
 /// `1.6777216e+07` e il composto arrotondato e troncato. Ora ogni foglia che
 /// `Strict` rifiuterebbe ha la sua perdita nel `LossReport`; il valore
-/// passa, come la politica chiede. Dal 25/10 (regola A) il testo verso una
+/// passa con consenso, salvo il testo oltre capacita che PostgreSQL rifiuta. Dal 25/10 (regola A) il testo verso una
 /// foglia numerica, gli array e i composti non sono coppie misurate: si
 /// rifiutano nel preflight con ogni politica, e le perdite delle foglie si
 /// provano sui domini delle foglie misurate (`varchar(3)`, `jsonb`).
@@ -369,10 +369,10 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
     let _serial = SERIAL.lock().await;
     let secret = SecretString::new(dsn);
     let admin = PostgresProvider::connect(&secret).await.expect("client");
-    // (tipo della colonna, valore, motivi attesi, valore committato)
-    let cases: &[(&str, &str, &[&str], &str)] = &[
-        ("{s}.dv", "ab   ", &[BOUNDED], "ab "),
-        ("{s}.dj", "{\"a\":1,\"a\":2}", &[JSONB], "{\"a\": 2}"),
+    // (tipo della colonna, valore, motivi attesi, valore committato o rifiuto)
+    let cases: &[(&str, &str, &[&str], Option<&str>)] = &[
+        ("{s}.dv", "ab   ", &[BOUNDED], None),
+        ("{s}.dj", "{\"a\":1,\"a\":2}", &[JSONB], Some("{\"a\": 2}")),
     ];
     // Le coppie non misurate: rifiutate nel preflight con ogni politica.
     let unmeasured: &[(&str, &str)] = &[
@@ -433,7 +433,12 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
                 }
                 let dry = dry_run_stream(&provider, &secret, &append, text_row(1, value)).await;
                 match &dry {
-                    Ok(dry) if dry.loss_report.as_ref().is_some_and(declared) => {}
+                    // PostgreSQL non tronca nemmeno un dominio varchar con consenso.
+                    Err(error)
+                        if committed.is_none() && error.category == ErrorCategory::DataMapping => {}
+                    Ok(dry)
+                        if committed.is_some()
+                            && dry.loss_report.as_ref().is_some_and(declared) => {}
                     other => difformi.push(format!(
                         "{policy:?} {profile:?} {column} dry run: {:?}",
                         other.as_ref().map(|dry| &dry.loss_report)
@@ -441,7 +446,16 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
                 }
                 let written = write_stream(&provider, &secret, &append, text_row(1, value)).await;
                 let stored = texts(&admin, "SELECT v::text FROM pln_regola_r.p").await;
-                if written.is_err() || stored != [*committed] {
+                let valid = committed.map_or_else(
+                    || {
+                        written
+                            .as_ref()
+                            .is_err_and(|error| error.category == ErrorCategory::DataMapping)
+                            && stored.is_empty()
+                    },
+                    |value| written.is_ok() && stored == [value],
+                );
+                if !valid {
                     difformi.push(format!(
                         "{policy:?} {profile:?} {column}: {} -> {stored:?}",
                         outcome_of(&written)

@@ -378,6 +378,11 @@ pub(super) fn bind_column(
 /// comando bulk, così un errore di mapping non lascia un flusso TDS parziale.
 #[allow(clippy::too_many_lines)]
 pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<Vec<TokenRow<'a>>> {
+    // La misura raw del server resta distinta dal replay delle guardie del writer.
+    #[cfg(test)]
+    let raw_probe = plenora_database_testkit::write_probe::is_raw_probe(&plan.object);
+    #[cfg(not(test))]
+    let raw_probe = false;
     let mut rows = Vec::with_capacity(batch.num_rows());
     for row_index in 0..batch.num_rows() {
         let mut row = TokenRow::with_capacity(plan.columns.len());
@@ -456,16 +461,18 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                         check_text(plan, column, values.value(row_index))?;
                         // Il bulk non applica il cast del percorso Prepared: rifiuta
                         // prima di aprire il request TDS, che puo diventare non drenabile.
-                        if super::plan::text_limit(
-                            &column.native_type,
-                            &column.native_declaration,
-                            column.collation.as_deref(),
-                        )
-                        .is_some_and(|limit| {
-                            limit.max.is_some_and(|max| {
-                                limit.length_unit().count(values.value(row_index)) > max
+                        if !raw_probe
+                            && super::plan::text_limit(
+                                &column.native_type,
+                                &column.native_declaration,
+                                column.collation.as_deref(),
+                            )
+                            .is_some_and(|limit| {
+                                limit.max.is_some_and(|max| {
+                                    limit.length_unit().count(values.value(row_index)) > max
+                                })
                             })
-                        }) {
+                        {
                             return Err(mapping_error("testo oltre la capacita TDS bulk"));
                         }
                     }
@@ -479,10 +486,12 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                     let values = downcast::<BinaryArray>(array.as_ref())?;
                     if !values.is_null(row_index) {
                         check_binary(plan, column, values.value(row_index))?;
-                        if matches!(
-                            super::effective::binary(column, values.value(row_index).len()),
-                            Classification::WouldChange(_)
-                        ) {
+                        if !raw_probe
+                            && matches!(
+                                super::effective::binary(column, values.value(row_index).len()),
+                                Classification::WouldChange(_)
+                            )
+                        {
                             return Err(mapping_error("binario oltre la capacita TDS bulk"));
                         }
                     }

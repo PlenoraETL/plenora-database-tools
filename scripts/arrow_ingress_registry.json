@@ -1478,7 +1478,7 @@
     "crates/plenora-db-sqlserver/src/write/codec.rs::bulk_rows#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "bulk_rows e pub(super) nel writer privato SQL Server: riceve batch dal consumer validato; nuovi controlli testo/binario precedono TDS senza introdurre un ingresso esterno.",
-      "review_sha256": "7819d2cdf75511c7cc9b790958c64541b4e9af0f33eb8aa1ab2eea671352660b",
+      "review_sha256": "0125a181ed2bb872fe20e68b5aa2957c3b07b5d404b0a6024d490df3418a1c9e",
       "signature": "pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<Vec<TokenRow<'a>>>"
     },
     "crates/plenora-db-sqlserver/src/write/codec.rs::inspect_batch#1": {
@@ -9530,9 +9530,9 @@
     },
     "crates/plenora-database-py/src/write_loss_tests.rs::warning_filters_preserve_the_committed_outcome#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Test cfg(test) di filtri warning e outcome da fixture JSON; nessun ingresso Arrow operativo.",
+      "reason": "Test cfg(test, windows) dei filtri warning e outcome JSON: verifica commit esatto/conservativo, rischio senza commit, esito incerto e commit parziale; nessun ingresso Arrow operativo.",
       "signature": "fn warning_filters_preserve_the_committed_outcome()",
-      "review_sha256": "5273c12708571190c9fde2db7b56e353c5627ffa5942cd73c419bc4be3e58c59"
+      "review_sha256": "5f81c5745aa04d5f0c35ccc02dfbef6dfdde522c8ee3271b3e05eb5d149eaade"
     },
     "crates/plenora-db-postgres/src/effective_loss_live_tests.rs::next_batch#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9677,7 +9677,7 @@
       "reason": "Sync/async family decodificano IPC con decode_ipc_stream prima di write_with_consent; nessun nuovo import C."
     },
     "crates/plenora-database-py/src/write.rs": {
-      "review_sha256": "23008cc65d2e06c3c4ae3a4caa6f4cbd595088d6bffd05d801cece566dd588ab",
+      "review_sha256": "e9d3226a7967c6a43c4fa0c1acc2f55e2d1a38fe7161dda614949f0267c5197b",
       "reason": "decode_ipc_stream controlla framing e validate_batch prima di VecBatchStream; consenso e warning operano sul piano/outcome, non rimuovono guardie."
     },
     "crates/plenora-database-py/python/plenora_database/_arrow_io.py": {

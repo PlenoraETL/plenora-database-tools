@@ -28,7 +28,9 @@ use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::{UnsettledWrite, WriteOutcome};
 
+// Come i test ingress: extension-module collega libpython solo su Windows.
 #[cfg(test)]
+#[cfg(windows)]
 #[path = "write_loss_tests.rs"]
 mod loss_tests;
 use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};

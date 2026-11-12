@@ -416,6 +416,17 @@ fn server_probe_does_not_apply_production_precision_guards() {
         allow_partial: false,
     };
     plan.admit(&operation, &[], "16").unwrap();
+    assert!(plan.loss_instances(&operation).unwrap().is_empty());
+    let batch = RecordBatch::try_new(
+        Arc::clone(&plan.input_schema),
+        vec![Arc::new(StringArray::from(vec!["abc   "]))],
+    )
+    .unwrap();
+    assert!(bulk_rows(&plan, &batch).is_ok());
+    plan.object = "production".to_owned();
+    assert!(!plan.loss_instances(&operation).unwrap().is_empty());
+    assert!(bulk_rows(&plan, &batch).is_err());
+    plan.object = plenora_database_testkit::write_probe::PROBE_TABLE.to_owned();
     assert!(check_text(&plan, &plan.columns[0], "abc   ").is_ok());
     plan.columns[0].native_type = "varbinary".to_owned();
     plan.columns[0].native_declaration = "varbinary(1)".to_owned();
