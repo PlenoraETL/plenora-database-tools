@@ -99,7 +99,7 @@ rules! {
     (PgAddNullable, "pg.add_nullable", Postgres, NativeType, Information, NoChange, NoChange, None, "colonna aggiunta al target come nullable"),
     (PgArrowMismatch, "pg.arrow_mismatch", Postgres, NativeType, DataLoss, Conservative, Conservative, None, "tipo Arrow non equivalente al target PostgreSQL"),
     (PgCrs, "pg.crs", Postgres, Crs, DataLoss, Conservative, Conservative, None, "identificatore CRS sorgente e target differente"),
-    (PgJsonb, "pg.jsonb", Postgres, NativeType, Warning, PgJson, Exact, None, "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza ordine delle chiavi e spazi"),
+    (PgJsonb, "pg.jsonb", Postgres, NativeType, Warning, PgJson, Mixed, None, "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza ordine delle chiavi e spazi"),
     (PgMissingColumn, "pg.missing_column", Postgres, NativeType, DataLoss, Conservative, Conservative, None, "colonna sorgente assente nel target"),
     (PgNullability, "pg.nullability", Postgres, Nullability, DataLoss, NoChange, NoChange, None, "sorgente nullable verso colonna NOT NULL"),
     (PgNumeric, "pg.numeric", Postgres, Precision, DataLoss, PgNumeric, Mixed, None, "un numero del tipo della colonna (numeric con scala, real, double precision) arrotonderebbe il valore testuale"),
@@ -161,7 +161,7 @@ impl RuleId {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RuleParameters {
     pub length: Option<u64>,
-    pub precision: Option<u8>,
+    pub precision: Option<u32>,
     pub scale: Option<i32>,
     pub text_unit: Option<crate::store_rewrite::TextLengthUnit>,
     pub shape: ValueShape,

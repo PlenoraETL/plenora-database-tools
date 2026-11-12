@@ -94,6 +94,7 @@ pub(super) async fn execute(
     execution_id: &str,
     diagnostic_input: DiagnosticInput,
     paths: &crate::search_path::SessionPath,
+    evaluation: &mut super::effective::Evaluation,
 ) -> Result<WriteOutcome> {
     let constraint_column = diagnostic_input.policy.constraint_column.clone();
     let mut tracker =
@@ -109,6 +110,7 @@ pub(super) async fn execute(
         runtime,
         constraint_column,
         paths,
+        evaluation,
     )
     .await;
     let mut writer = match writer {
@@ -139,6 +141,9 @@ pub(super) async fn execute(
                 applied,
             );
             if let Err(error) = outcome.validate() {
+                return Err(rollback_error(transaction, error, execution_id).await);
+            }
+            if let Err(error) = writer.evaluation.prepare_commit() {
                 return Err(rollback_error(transaction, error, execution_id).await);
             }
             let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
@@ -294,6 +299,8 @@ struct PostgresRowWriter<'transaction, 'input> {
     input: &'input mut dyn BatchStream,
     schema: &'input SchemaRef,
     plans: &'input [WriteColumnPlan],
+    operation: &'input WriteOperation,
+    evaluation: &'input mut super::effective::Evaluation,
     budget: &'input ResourceBudget,
     cancellation: &'input CancellationToken,
     runtime: &'input WriteRuntime,
@@ -313,13 +320,14 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
         transaction: Transaction<'transaction>,
         input: &'input mut dyn BatchStream,
         schema: &'input SchemaRef,
-        operation: &WriteOperation,
+        operation: &'input WriteOperation,
         plans: &'input [WriteColumnPlan],
         budget: &'input ResourceBudget,
         cancellation: &'input CancellationToken,
         runtime: &'input WriteRuntime,
         constraint_column: Option<String>,
         paths: &crate::search_path::SessionPath,
+        evaluation: &'input mut super::effective::Evaluation,
     ) -> std::result::Result<Self, Box<(Transaction<'transaction>, DatabaseError)>> {
         let (sql, indexes) =
             match diagnostic_statement(operation, schema, plans, runtime.insert_mode) {
@@ -392,6 +400,8 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
             input,
             schema,
             plans,
+            operation,
+            evaluation,
             budget,
             cancellation,
             runtime,
@@ -455,12 +465,17 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
                 continue;
             }
             let resources = reserve_write_batch(&batch, self.plans, self.runtime, self.budget)?;
+            self.evaluation.batch(&batch, self.plans, self.operation)?;
             resources.commit()?;
-            self.batch = Some(super::stamp_declared_srid(
+            let batch =
+                super::stamp_declared_srid(&batch, self.plans, self.budget.limits().nesting_depth)?;
+            super::validate_prepared_bindings(
                 &batch,
                 self.plans,
-                self.budget.limits().nesting_depth,
-            )?);
+                &self.indexes,
+                self.statement.params(),
+            )?;
+            self.batch = Some(batch);
         }
     }
 }
@@ -498,6 +513,7 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
                 .iter()
                 .map(|value| value.as_ref() as &(dyn ToSql + Sync))
                 .collect::<Vec<_>>();
+            self.evaluation.sent(offset)?;
             let result = select_with_cancellation(
                 self.transaction()?.execute(&self.statement, &refs),
                 self.cancellation,
@@ -512,6 +528,7 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
                 // Fino al 25/10 lo 0 usciva `protocol` e la scrittura non
                 // partiva.
                 Some(Ok(affected @ (0 | 1))) => {
+                    self.evaluation.applied(offset, affected)?;
                     let overflow = || {
                         diagnostic_error(
                             ErrorCategory::ResourceLimit,
@@ -525,6 +542,7 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
                 Some(Ok(affected)) => Err(invalid_affected_rows(affected)),
                 Some(Err(error)) => {
                     if let Some(cause) = row_rejection_cause(&error) {
+                        self.evaluation.applied(offset, 0)?;
                         Ok(RowApplication::Rejected(RowRejection {
                             cause: cause.to_owned(),
                             column: self.constraint_column.clone(),
@@ -557,7 +575,10 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
                 {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
                     Ok(Some(_)) => return Err(input_beyond_declared_error()),
-                    Ok(None) => return Ok(()),
+                    Ok(None) => {
+                        self.evaluation.ledger.complete();
+                        return Ok(());
+                    }
                     Err(error) => return Err(provider_write_error(error)),
                 }
             }

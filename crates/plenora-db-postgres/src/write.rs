@@ -48,6 +48,7 @@ pub mod binary_codec;
 mod canonical;
 pub use canonical::{reduced_temporal, LeafLoss};
 mod dry_run;
+mod effective;
 mod intermediate;
 mod plan;
 mod prepared_codec;
@@ -103,6 +104,11 @@ pub struct WriteRuntime {
 }
 
 pub struct PreparedPostgresWrite {
+    operation: WriteOperation,
+    input_schema: SchemaRef,
+    pub(crate) covered: bool,
+    pub(crate) loss_instances: Vec<plenora_database_core::loss_registry::RuleInstance>,
+    pub(crate) snapshot: Option<crate::catalog::CatalogSchemaToken>,
     column_plans: Vec<WriteColumnPlan>,
 }
 
@@ -111,6 +117,11 @@ pub fn prepare_state(
     operation: &WriteOperation,
 ) -> Result<PreparedPostgresWrite> {
     Ok(PreparedPostgresWrite {
+        operation: operation.clone(),
+        input_schema: schema.clone(),
+        covered: false,
+        loss_instances: Vec::new(),
+        snapshot: None,
         column_plans: compile_schema_plan(schema, operation)?,
     })
 }
@@ -161,13 +172,99 @@ fn compile_schema_plan(
 pub async fn execute(
     secret: &SecretString,
     mut prepared: PreparedWrite,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     runtime: WriteRuntime,
     consent: plenora_database_core::loss::LossConsent,
 ) -> Result<WriteOutcome> {
-    plenora_database_core::prepared_execution::authorize_legacy(&prepared.loss_report, consent)?;
+    let state = prepared
+        .take_driver_state::<PreparedPostgresWrite>()
+        .ok_or_else(|| {
+            DatabaseError::invalid_plan("stato prepared write PostgreSQL assente o incompatibile")
+        })?;
+    let mut evaluation = effective::Evaluation::new(
+        state.loss_instances.clone(),
+        &prepared.operation,
+        consent,
+        budget,
+    )?;
+    let result = execute_inner(
+        secret,
+        prepared,
+        input,
+        budget,
+        cancellation,
+        runtime,
+        state,
+        &mut evaluation,
+    )
+    .await;
+    let mut result = result;
+    match &result {
+        Ok(outcome) if outcome.status == WriteStatus::Committed => {}
+        Err(error)
+            if matches!(
+                error.remote_effect,
+                plenora_database_core::RemoteEffect::None
+                    | plenora_database_core::RemoteEffect::RolledBack
+            ) =>
+        {
+            evaluation.ledger.rollback();
+        }
+        Ok(_) | Err(_) => evaluation.ledger.uncertain()?,
+    }
+    let report = plenora_database_core::execution_loss::VersionedLossReport::from(
+        if result
+            .as_ref()
+            .is_ok_and(|outcome| outcome.status == WriteStatus::Committed)
+        {
+            evaluation.confirmed
+        } else {
+            evaluation.ledger.report()
+        },
+    );
+    match &mut result {
+        Ok(outcome) => {
+            outcome.schema_version = 3;
+            outcome.loss_report = Some(report);
+        }
+        Err(error) => {
+            error.loss_report = Some(Box::new(report));
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn execute_inner(
+    secret: &SecretString,
+    prepared: PreparedWrite,
+    mut input: Box<dyn BatchStream>,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    runtime: WriteRuntime,
+    prepared_state: PreparedPostgresWrite,
+    evaluation: &mut effective::Evaluation,
+) -> Result<WriteOutcome> {
+    plenora_database_core::prepared_execution::authorize(&prepared.loss_report)?;
+    evaluation.profile(&prepared.operation)?;
+    if prepared_state.operation != prepared.operation
+        || prepared_state.input_schema.as_ref() != prepared.input_schema.as_ref()
+    {
+        return Err(DatabaseError::invalid_plan(
+            "contratto prepared PostgreSQL modificato dopo la preparazione",
+        ));
+    }
+    if !prepared_state.covered
+        && prepared.operation.mapping_policy != plenora_database_core::loss::MappingPolicy::Strict
+    {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Postgres,
+            ErrorPhase::Prepare,
+            "piano PostgreSQL senza qualifica esecutiva delle perdite",
+        ));
+    }
     if cancellation.is_cancelled() {
         runtime.metrics.cancellation();
         return Err(public_error(
@@ -183,11 +280,6 @@ pub async fn execute(
             "schema stream diverso dallo schema preparato",
         ));
     }
-    let prepared_state = prepared
-        .take_driver_state::<PreparedPostgresWrite>()
-        .ok_or_else(|| {
-            DatabaseError::invalid_plan("stato prepared write PostgreSQL assente o incompatibile")
-        })?;
     let mut column_plans = prepared_state.column_plans;
     // Row-scoped diagnostics è supportata solo per Append + SingleTransaction
     // (l'unico scenario dove ha senso quarantinare righe: il target esiste
@@ -317,6 +409,31 @@ pub async fn execute(
             plan.qualify_postgis(&qualifier);
         }
     }
+    if operation.mode != WriteMode::Create {
+        let locked = async {
+            transaction
+                .batch_execute(&format!(
+                    "LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE",
+                    quote_object(&operation.target)?
+                ))
+                .await
+                .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+            if let Some(snapshot) = &prepared_state.snapshot {
+                if &crate::catalog::schema_token(&transaction, &operation.target).await? != snapshot
+                {
+                    return Err(DatabaseError::invalid_plan(
+                        "contratto PostgreSQL cambiato dopo il preflight",
+                    ));
+                }
+            }
+            Ok(())
+        };
+        match select_with_cancellation(locked, cancellation).await {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        }
+    }
     if let Some(diagnostic_input) = diagnostic_input {
         // La regola V sulle colonne del target, prima di ogni valore.
         match select_with_cancellation(
@@ -352,6 +469,9 @@ pub async fn execute(
             Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
             None => return Err(recovery.rollback_cancellation(transaction).await),
         }
+        if let Err(error) = evaluation.bind(&column_plans) {
+            return Err(recovery.rollback_error(transaction, error).await);
+        }
         let result = row_diagnostics::execute(
             transaction,
             input.as_mut(),
@@ -365,6 +485,7 @@ pub async fn execute(
             &execution_id,
             diagnostic_input,
             &paths,
+            evaluation,
         )
         .await;
         if result
@@ -447,6 +568,9 @@ pub async fn execute(
         Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
         None => return Err(recovery.rollback_cancellation(transaction).await),
     };
+    if let Err(error) = evaluation.bind(&column_plans) {
+        return Err(recovery.rollback_error(transaction, error).await);
+    }
     let mut input = match plenora_database_core::write_keys::guard_input_keys(
         operation.mode,
         &operation.keys,
@@ -493,6 +617,10 @@ pub async fn execute(
                 return Err(recovery.rollback_resource_error(transaction, &error).await);
             }
         };
+        let changes = match evaluation.batch(&batch, &column_plans, operation) {
+            Ok(changes) => changes,
+            Err(error) => return Err(recovery.rollback_error(transaction, error).await),
+        };
         let batch = match stamp_declared_srid(&batch, &column_plans, budget.limits().nesting_depth)
         {
             Ok(batch) => batch,
@@ -502,6 +630,15 @@ pub async fn execute(
         if batch_rows == 0 {
             continue;
         }
+        let insert_mode = if changes && runtime.insert_mode != PostgresInsertMode::Prepared {
+            match copy_identity(&transaction, operation).await {
+                Ok(true) => runtime.insert_mode,
+                Ok(false) => PostgresInsertMode::Prepared,
+                Err(error) => return Err(recovery.rollback_error(transaction, error).await),
+            }
+        } else {
+            runtime.insert_mode
+        };
         let written = if let Some(result) = select_with_cancellation(
             write_batch(
                 &transaction,
@@ -509,8 +646,9 @@ pub async fn execute(
                 &operation.target,
                 &batch,
                 &column_plans,
-                runtime.insert_mode,
+                insert_mode,
                 &paths,
+                evaluation,
             ),
             cancellation,
         )
@@ -541,6 +679,7 @@ pub async fn execute(
             return Err(recovery.rollback_resource_error(transaction, &error).await);
         }
     }
+    evaluation.ledger.complete();
     // Solo Create fabbrica la tabella, quindi solo Create puo aggiungerle un
     // indice: per ogni altra mode gli indici del target sono quelli che il
     // target aveva, e la scrittura non li tocca.
@@ -588,6 +727,9 @@ pub async fn execute(
         Some(Ok(())) => {}
         Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
         None => return Err(recovery.rollback_cancellation(transaction).await),
+    }
+    if let Err(error) = evaluation.prepare_commit() {
+        return Err(recovery.rollback_error(transaction, error).await);
     }
     let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
     if commit_result.is_none() {
@@ -1164,6 +1306,21 @@ fn batch_failure(phase: ErrorPhase, error: &tokio_postgres::Error) -> BatchFailu
     }
 }
 
+async fn copy_identity(transaction: &Transaction<'_>, operation: &WriteOperation) -> Result<bool> {
+    let row = transaction.query_one(
+        "WITH RECURSIVE relations(oid) AS (
+            SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname=$1 AND c.relname=$2
+            UNION SELECT i.inhrelid FROM pg_catalog.pg_inherits i JOIN relations r ON i.inhparent=r.oid
+        ) SELECT NOT EXISTS (SELECT 1 FROM relations r JOIN pg_catalog.pg_trigger t ON t.tgrelid=r.oid
+            WHERE NOT t.tgisinternal AND t.tgenabled <> 'D' AND (t.tgtype::pg_catalog.int4 & 1) <> 0
+            AND (t.tgtype::pg_catalog.int4 & 4) <> 0 AND (t.tgtype::pg_catalog.int4 & 66) <> 0)",
+        &[&crate::target_schema::schema_of(&operation.target)?, &operation.target.object]
+    ).await.map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+    Ok(row.get(0))
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn write_batch(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
@@ -1172,6 +1329,7 @@ async fn write_batch(
     plans: &[WriteColumnPlan],
     insert_mode: PostgresInsertMode,
     paths: &SessionPath,
+    evaluation: &mut effective::Evaluation,
 ) -> std::result::Result<u64, BatchFailure> {
     if matches!(
         operation.mode,
@@ -1183,14 +1341,17 @@ async fn write_batch(
         let copied = match insert_mode {
             PostgresInsertMode::CopyText => Some(
                 paths
-                    .on_target(transaction, copy_batch(transaction, target, batch, plans))
+                    .on_target(
+                        transaction,
+                        copy_batch(transaction, target, batch, plans, evaluation),
+                    )
                     .await,
             ),
             PostgresInsertMode::CopyBinary => Some(
                 paths
                     .on_target(
                         transaction,
-                        copy_binary_batch(transaction, target, batch, plans),
+                        copy_binary_batch(transaction, target, batch, plans, evaluation),
                     )
                     .await,
             ),
@@ -1198,6 +1359,17 @@ async fn write_batch(
         };
         if let Some(copied) = copied {
             let copied = copied?;
+            // Senza eventi di perdita, una cardinalita ridotta non richiede
+            // di attribuire una trasformazione a un sottoinsieme ignoto.
+            if copied != batch.num_rows() as u64 && evaluation.has_changes() {
+                return Err(DatabaseError::invalid_plan(
+                    "cardinalita COPY PostgreSQL non corrispondente al batch valutato",
+                )
+                .into());
+            }
+            for row in 0..batch.num_rows() {
+                evaluation.applied(row, u64::from(copied == batch.num_rows() as u64))?;
+            }
             let columns = visibility::copied_columns(batch.schema_ref(), target::WritePath::Copy);
             visibility::enforce(transaction, operation, &columns).await?;
             return Ok(copied);
@@ -1215,6 +1387,7 @@ async fn write_batch(
     // La preparazione ha preso il lock del target: la regola R si rilegge
     // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
     visibility::enforce(transaction, operation, &[]).await?;
+    validate_prepared_bindings(batch, plans, &indexes, statement.params())?;
     // Gli statement sul target con il percorso della sessione; i valori si
     // codificano (e si giudicano) in Rust, senza SQL.
     paths
@@ -1229,14 +1402,34 @@ async fn write_batch(
                     .iter()
                     .map(|value| value.as_ref() as &(dyn ToSql + Sync))
                     .collect::<Vec<_>>();
-                affected += transaction
+                evaluation.sent(row)?;
+                let count = transaction
                     .execute(&statement, &refs)
                     .await
                     .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
+                evaluation.applied(row, count)?;
+                affected += count;
             }
             Ok(affected)
         })
         .await
+}
+
+fn validate_prepared_bindings(
+    batch: &RecordBatch,
+    plans: &[WriteColumnPlan],
+    indexes: &[usize],
+    types: &[tokio_postgres::types::Type],
+) -> Result<()> {
+    for row in 0..batch.num_rows() {
+        for (&index, target_type) in indexes.iter().zip(types) {
+            let value = arrow_value(batch.column(index).as_ref(), &plans[index], row)?;
+            value
+                .to_sql_checked(target_type, &mut bytes::BytesMut::new())
+                .map_err(|_| mapping_error())?;
+        }
+    }
+    Ok(())
 }
 
 async fn copy_binary_batch(
@@ -1244,6 +1437,7 @@ async fn copy_binary_batch(
     target: &ObjectRef,
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
+    evaluation: &mut effective::Evaluation,
 ) -> std::result::Result<u64, BatchFailure> {
     let renderer = renderer();
     let columns = batch
@@ -1270,6 +1464,14 @@ async fn copy_binary_batch(
     let mut current = plans.to_vec();
     intermediate::assign(transaction, target, batch.schema_ref(), &mut current).await?;
     intermediate::verify_parameters(&current, &indexes, &types)?;
+    for row in 0..batch.num_rows() {
+        for ((array, plan), target_type) in batch.columns().iter().zip(plans).zip(&types) {
+            let value = binary_copy_value(array.as_ref(), plan, target_type, row)?;
+            value
+                .to_sql_checked(target_type, &mut bytes::BytesMut::new())
+                .map_err(|_| mapping_error())?;
+        }
+    }
     let sink = transaction
         .copy_in(&format!(
             "COPY {} ({}) FROM STDIN BINARY",
@@ -1294,6 +1496,7 @@ async fn copy_binary_batch(
             .iter()
             .map(|value| value.as_ref() as &(dyn ToSql + Sync))
             .collect::<Vec<_>>();
+        evaluation.sent(row)?;
         writer
             .as_mut()
             .write(&refs)
@@ -1312,6 +1515,7 @@ async fn copy_batch(
     target: &ObjectRef,
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
+    evaluation: &mut effective::Evaluation,
 ) -> std::result::Result<u64, BatchFailure> {
     let renderer = renderer();
     let columns = batch
@@ -1332,13 +1536,17 @@ async fn copy_batch(
     // la risposta del `CopyFail` che segue fuori sequenza: il ROLLBACK
     // successivo fallisce con `UnexpectedMessage`. Il rifiuto del server ha
     // gia abortito la transazione (`BatchFailure::ServerAborted`).
+    let buffer = Bytes::from(copy_buffer(batch, plans)?);
     let sink = transaction
         .copy_in(&sql)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     futures_util::pin_mut!(sink);
+    for row in 0..batch.num_rows() {
+        evaluation.sent(row)?;
+    }
     sink.as_mut()
-        .send(Bytes::from(copy_buffer(batch, plans)?))
+        .send(buffer)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
     sink.as_mut()

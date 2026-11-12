@@ -41,6 +41,7 @@ enum RowState {
     Discarded,
 }
 
+#[derive(Clone)]
 pub struct LossLedger {
     report: ExecutionLossReport,
     batch: Option<u64>,

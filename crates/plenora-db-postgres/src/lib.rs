@@ -1124,11 +1124,19 @@ impl Provider for PostgresProvider {
             let mut driver_state = write::prepare_state(&input_schema, operation)?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-            let (loss_report, admitted) =
+            let (loss_report, admitted, instances, snapshot) =
                 preflight::write(self, secret, operation, &input_schema).await?;
             // La regola A: le riscritture misurate del target, che la
             // scrittura e il dry run verificano valore per valore.
             driver_state.apply_admission(&input_schema, operation, &admitted);
+            driver_state.covered = true;
+            driver_state.loss_instances.clone_from(&instances);
+            driver_state.snapshot = snapshot;
+            let (_, execution) = plenora_database_core::loss_registry::compile_instances(
+                ProviderKind::Postgres,
+                operation.mapping_policy,
+                instances,
+            )?;
             Ok(PreparedWrite::new(
                 operation.clone(),
                 input_schema,
@@ -1137,7 +1145,8 @@ impl Provider for PostgresProvider {
                 operation_lease,
                 columns_lease,
             )
-            .with_driver_state(driver_state))
+            .with_driver_state(driver_state)
+            .with_execution_loss(execution))
         })
     }
 
@@ -1363,3 +1372,6 @@ mod parameter_fidelity_live_tests;
 #[cfg(test)]
 #[path = "audit900_live_tests.rs"]
 mod audit900_live_tests;
+
+#[cfg(test)]
+mod effective_loss_live_tests;

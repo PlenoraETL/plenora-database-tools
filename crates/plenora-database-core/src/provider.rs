@@ -182,6 +182,7 @@ pub struct PreparedWrite {
     pub operation_lease: ResourceLease,
     pub columns_lease: ResourceLease,
     driver_state: Option<Box<dyn Any + Send>>,
+    pub(crate) execution_loss: Option<crate::execution_loss::ExecutionLossReport>,
 }
 
 impl PreparedWrite {
@@ -202,6 +203,7 @@ impl PreparedWrite {
             operation_lease,
             columns_lease,
             driver_state: None,
+            execution_loss: None,
         }
     }
 
@@ -212,6 +214,16 @@ impl PreparedWrite {
     #[must_use]
     pub fn with_driver_state<T: Any + Send>(mut self, state: T) -> Self {
         self.driver_state = Some(Box::new(state));
+        self
+    }
+
+    /// Associa il piano esecutivo di un writer migrato; non contiene consenso.
+    #[must_use]
+    pub fn with_execution_loss(
+        mut self,
+        report: crate::execution_loss::ExecutionLossReport,
+    ) -> Self {
+        self.execution_loss = Some(report);
         self
     }
 

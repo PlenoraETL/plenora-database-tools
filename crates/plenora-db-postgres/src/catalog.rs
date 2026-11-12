@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use tokio_postgres::types::FromSql;
 use tokio_postgres::{Client, Row};
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CatalogSchemaToken {
     pub public: PostgresSchemaToken,
     pub exact_signature: String,

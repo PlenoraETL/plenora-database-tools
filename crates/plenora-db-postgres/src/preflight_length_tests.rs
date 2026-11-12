@@ -1,5 +1,5 @@
 use super::*;
-use plenora_database_core::loss::LossCategory;
+use plenora_database_core::loss::{LossCategory, LossSeverity};
 
 /// Un cast limitato puo perdere contenuto: non e soltanto un avviso sugli spazi.
 #[test]
@@ -25,7 +25,7 @@ fn nullability_is_a_rejection_risk_not_data_alteration() {
         MappingPolicy::Lossy,
         MappingPolicy::Native,
     ] {
-        let loss = nullability_loss(0, policy).unwrap();
+        let loss = nullability_loss(0, policy).unwrap().risk(policy);
         assert_eq!(loss.category, LossCategory::Nullability);
         assert_eq!(
             loss.severity,

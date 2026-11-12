@@ -35,17 +35,25 @@ where
     Fut: Future<Output = Result<WriteOutcome>>,
 {
     let report = prepared.loss_report.clone();
+    let execution = prepared.execution_loss.clone();
     let result = async {
         if report.policy != prepared.operation.mapping_policy {
             return Err(DatabaseError::invalid_plan(
                 "policy del rapporto diversa dal piano",
             ));
         }
-        authorize_legacy(&report, consent)?;
+        if execution.is_some() {
+            authorize(&report)?;
+        } else {
+            authorize_legacy(&report, consent)?;
+        }
         run(prepared, consent).await
     }
     .await;
-    attach(report, result)
+    match execution {
+        Some(plan) => attach_execution(plan, result),
+        None => attach(report, result),
+    }
 }
 
 /// Ammissione condivisa anche dal percorso Rust SQL Server diretto.

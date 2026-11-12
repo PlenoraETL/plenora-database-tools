@@ -3,13 +3,13 @@ use crate::pool::PooledClient;
 use crate::write::LeafLoss;
 use crate::{PostgresProvider, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
-use plenora_database_core::loss::{LossReport, LossSeverity, MappingLoss, MappingPolicy};
-use plenora_database_core::loss_registry::RuleId;
+use plenora_database_core::loss::{LossReport, MappingPolicy};
+use plenora_database_core::loss_registry::{RuleId, RuleInstance, RuleParameters};
 use plenora_database_core::plan::{ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::protocol;
 use plenora_database_core::provider::SecretString;
-use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard};
+use plenora_database_core::store_rewrite::ColumnRewrites;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 
 #[allow(clippy::too_many_lines)]
@@ -18,7 +18,12 @@ pub async fn write(
     secret: &SecretString,
     operation: &WriteOperation,
     input_schema: &SchemaRef,
-) -> Result<(LossReport, Vec<ColumnRewrites>)> {
+) -> Result<(
+    LossReport,
+    Vec<ColumnRewrites>,
+    Vec<RuleInstance>,
+    Option<crate::catalog::CatalogSchemaToken>,
+)> {
     let client = provider.connect_session(secret).await?;
     validate_resolved_crs_against_postgis(&client, input_schema).await?;
     let schema_name = crate::target_schema::schema_of(&operation.target)?;
@@ -99,6 +104,11 @@ pub async fn write(
             ));
         }
     }
+    let snapshot = if exists {
+        Some(crate::catalog::schema_token(client.client()?, &operation.target).await?)
+    } else {
+        None
+    };
     // La regola A (`write::admission`): ogni colonna cerca la chiave
     // d'ammissione della propria foglia nel fixture della major del server;
     // una coppia non misurata rifiuta la scrittura con ogni politica.
@@ -139,7 +149,26 @@ pub async fn write(
                 if provider.schema_evolution == PostgresSchemaEvolution::AddNullableColumns
                     && supports_additive_evolution(operation.mode)
                 {
-                    losses.push(RuleId::PgAddNullable.legacy(
+                    let mut create = operation.clone();
+                    create.mode = WriteMode::Create;
+                    let added_leaves =
+                        crate::write::leaf_losses(client.client()?, &create, input_schema).await?;
+                    if let Some(leaves) = added_leaves.get(source.name()) {
+                        for rule in select_leaf_rules(
+                            operation.mapping_policy,
+                            is_key(source.name()),
+                            leaves.iter().map(|leaf| (*leaf, true)),
+                        ) {
+                            losses.push(instance(
+                                rule,
+                                field_number(field_id)?,
+                                Some(source.data_type().to_string()),
+                                None,
+                            ));
+                        }
+                    }
+                    losses.push(instance(
+                        RuleId::PgAddNullable,
                         field_number(field_id)?,
                         Some(source.data_type().to_string()),
                         Some("nuova colonna nullable".to_owned()),
@@ -260,7 +289,8 @@ pub async fn write(
                 } else {
                     target.native_declaration.clone()
                 };
-                losses.push(rule.legacy(
+                losses.push(instance(
+                    rule,
                     field_number(field_id)?,
                     Some(source.data_type().to_string()),
                     target_type,
@@ -341,7 +371,8 @@ pub async fn write(
                     (LeafLoss::Jsonb, jsonb || leaf(name, LeafLoss::Jsonb)),
                 ],
             ) {
-                losses.push(rule.legacy(
+                losses.push(instance(
+                    rule,
                     field_number(field_id)?,
                     Some(source.data_type().to_string()),
                     declared.clone(),
@@ -352,19 +383,41 @@ pub async fn write(
     // La regola S con le riscritture misurate: con le politiche non strette
     // la perdita di ogni colonna che non e chiave (con `Strict` il valore
     // riscritto si rifiuta nella scrittura, in una chiave con ogni politica).
-    losses.extend(
-        RewriteGuard::new(
-            ProviderKind::Postgres,
-            input_schema,
-            operation,
-            admitted.clone(),
-        )?
-        .losses(),
-    );
+    if operation.mapping_policy != MappingPolicy::Strict {
+        for column in &admitted {
+            if !is_key(input_schema.field(column.field).name()) {
+                for rewrite in &column.rewrites {
+                    losses.push(instance(
+                        rewrite.rule_id().canonical(ProviderKind::Postgres),
+                        field_number(column.field)?,
+                        None,
+                        None,
+                    ));
+                }
+            }
+        }
+    }
+    let (instances, execution) = plenora_database_core::loss_registry::compile_instances(
+        ProviderKind::Postgres,
+        operation.mapping_policy,
+        losses,
+    )?;
     let report = LossReport {
         schema_version: 2,
         policy: operation.mapping_policy,
-        losses,
+        losses: execution
+            .risk
+            .iter()
+            .map(|risk| {
+                let mut loss = risk.rule_id.legacy(
+                    risk.field_id,
+                    risk.source_type.clone(),
+                    risk.target_type.clone(),
+                );
+                loss.severity = risk.severity;
+                loss
+            })
+            .collect(),
     };
     // Un report si accumula una perdita per campo, e i nomi di tipo arrivano
     // dallo schema sorgente: entrambe le dimensioni dipendono dal target, non
@@ -379,8 +432,15 @@ pub async fn write(
             "preflight PostgreSQL rileva conversioni non ammesse",
         ));
     }
+    if let Some(expected) = &snapshot {
+        if &crate::catalog::schema_token(client.client()?, &operation.target).await? != expected {
+            return Err(DatabaseError::invalid_plan(
+                "contratto PostgreSQL cambiato durante il preflight",
+            ));
+        }
+    }
     drop(client);
-    Ok((report, admitted))
+    Ok((report, admitted, instances, snapshot))
 }
 
 // Deviazione dichiarata (REJ-003, contracts/adoption-source.json): i rifiuti decisi
@@ -528,12 +588,8 @@ fn select_leaf_rules(
 // NOT NULL rifiuta il valore nullo; non converte un valore valido. Strict
 // conserva il precedente rifiuto strutturale, le altre policy non richiedono
 // consenso per un rischio di rifiuto che non altera dati.
-fn nullability_loss(field_id: usize, policy: MappingPolicy) -> Result<MappingLoss> {
-    let mut loss = mapping_loss(field_id, RuleId::PgNullability, None, None)?;
-    if policy != MappingPolicy::Strict {
-        loss.severity = LossSeverity::Information;
-    }
-    Ok(loss)
+fn nullability_loss(field_id: usize, _policy: MappingPolicy) -> Result<RuleInstance> {
+    mapping_loss(field_id, RuleId::PgNullability, None, None)
 }
 
 fn mapping_loss(
@@ -541,8 +597,27 @@ fn mapping_loss(
     rule: RuleId,
     source_type: Option<String>,
     target_type: Option<String>,
-) -> Result<MappingLoss> {
-    Ok(rule.legacy(field_number(field_id)?, source_type, target_type))
+) -> Result<RuleInstance> {
+    Ok(instance(
+        rule,
+        field_number(field_id)?,
+        source_type,
+        target_type,
+    ))
+}
+fn instance(
+    rule_id: RuleId,
+    field_id: u32,
+    source_type: Option<String>,
+    target_type: Option<String>,
+) -> RuleInstance {
+    RuleInstance {
+        rule_id,
+        field_id,
+        source_type,
+        target_type,
+        parameters: RuleParameters::default(),
+    }
 }
 
 const fn supports_additive_evolution(mode: WriteMode) -> bool {

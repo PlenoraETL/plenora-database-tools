@@ -7,7 +7,7 @@ Generato da `loss_registry.rs` con `scripts/render_loss_registry.py`.
 | pg.add_nullable | Postgres | NativeType | Information | NoChange | NoChange | None |
 | pg.arrow_mismatch | Postgres | NativeType | DataLoss | Conservative | Conservative | None |
 | pg.crs | Postgres | Crs | DataLoss | Conservative | Conservative | None |
-| pg.jsonb | Postgres | NativeType | Warning | PgJson | Exact | None |
+| pg.jsonb | Postgres | NativeType | Warning | PgJson | Mixed | None |
 | pg.missing_column | Postgres | NativeType | DataLoss | Conservative | Conservative | None |
 | pg.nullability | Postgres | Nullability | DataLoss | NoChange | NoChange | None |
 | pg.numeric | Postgres | Precision | DataLoss | PgNumeric | Mixed | None |
