@@ -186,7 +186,7 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 
 | provider | test Rust |
 | --- | --- |
-| PostgreSQL | 476 |
+| PostgreSQL | 478 |
 | MySQL + MariaDB | 429 |
 | SQL Server | 251 |
 | Oracle Database Free | 203 |

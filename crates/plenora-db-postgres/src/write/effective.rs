@@ -115,10 +115,16 @@ impl Evaluation {
             .checked_mul(self.rules.len() as u64)
             .and_then(|n| n.checked_mul(192))
             .ok_or_else(invalid)?;
-        self.lease = Some(self.budget.try_lease(
-            plenora_database_core::resource::ResourceKind::MemoryBytes,
-            bytes,
-        )?);
+        // Nessuna cella del ledger: nessuna lease, ma i codec e i controlli
+        // canonici devono comunque validare le righe anche senza regole.
+        self.lease = (bytes > 0)
+            .then(|| {
+                self.budget.try_lease(
+                    plenora_database_core::resource::ResourceKind::MemoryBytes,
+                    bytes,
+                )
+            })
+            .transpose()?;
         self.sequence = self.sequence.checked_add(1).ok_or_else(invalid)?;
         self.ledger.begin_batch(self.sequence)?;
         self.tracked = vec![false; batch.num_rows()];

@@ -155,7 +155,7 @@ async fn live_b2_matrix_a_to_e_all_modes_transports_policies() {
             PostgresInsertMode::CopyBinary,
             PostgresInsertMode::Prepared,
         ] {
-            let provider = PostgresProvider::default().with_insert_mode(transport);
+            let provider = PostgresProvider::insecure_local().with_insert_mode(transport);
             for declared in [false, true] {
                 for mode in [
                     WriteMode::Create,
@@ -273,7 +273,7 @@ async fn live_b2_text_second_batch_rollback_and_strict_baseline() {
             PostgresInsertMode::CopyBinary,
             PostgresInsertMode::Prepared,
         ] {
-            let provider = PostgresProvider::default().with_insert_mode(transport);
+            let provider = PostgresProvider::insecure_local().with_insert_mode(transport);
             for mode in [
                 WriteMode::Create,
                 WriteMode::Append,
@@ -344,7 +344,7 @@ async fn live_b2_no_match_suppressed_rows_and_profiles() {
         PostgresInsertMode::CopyBinary,
         PostgresInsertMode::Prepared,
     ] {
-        let provider = PostgresProvider::default().with_insert_mode(transport);
+        let provider = PostgresProvider::insecure_local().with_insert_mode(transport);
         for mode in [WriteMode::Append, WriteMode::Update] {
             let outcome = run(
                 &provider,
@@ -393,7 +393,7 @@ async fn live_b2_schema_change_keys_and_add_column_rollback() {
         connection.await.unwrap();
     });
     let secret = SecretString::new(dsn);
-    let provider = PostgresProvider::default();
+    let provider = PostgresProvider::insecure_local();
     reset(&client, WriteMode::Append, "jsonb").await;
     let op = operation(WriteMode::Append, MappingPolicy::Compatible);
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
@@ -504,7 +504,7 @@ async fn live_b2_strict_and_uncertain_commit_reports() {
             reset(&client, WriteMode::Append, "jsonb").await;
             let before = rows(&client).await;
             let error = run(
-                &PostgresProvider::default(),
+                &PostgresProvider::insecure_local(),
                 &secret,
                 &operation(WriteMode::Append, MappingPolicy::Strict),
                 input("jsonb", &[(3, Some(r#"{"a":1,"a":2}"#))], declared),
@@ -516,7 +516,7 @@ async fn live_b2_strict_and_uncertain_commit_reports() {
             assert_eq!(rows(&client).await, before);
         }
         reset(&client, WriteMode::Append, "jsonb").await;
-        let provider = PostgresProvider::default()
+        let provider = PostgresProvider::insecure_local()
             .with_fault_injection(PostgresFaultPoint::AfterCommitAcknowledgement);
         let result = run(
             &provider,

@@ -14,6 +14,106 @@ fn plan(class: LeafClass, shape: SessionShape) -> WriteColumnPlan {
 }
 
 #[test]
+fn batches_without_loss_rules_still_validate_values_without_a_lease() {
+    use arrow_schema::Schema;
+    use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLimits};
+    use std::sync::Arc;
+
+    let p = plan(LeafClass::Jsonb, SessionShape::Scalar);
+    let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Utf8, true)]));
+    let valid = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(StringArray::from(vec!["{}", "null"]))],
+    )
+    .unwrap();
+    let invalid =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(StringArray::from(vec!["{"]))]).unwrap();
+    let empty = RecordBatch::new_empty(schema);
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let available = budget.remaining(ResourceKind::MemoryBytes);
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        let mut op = crate::write_visibility_live_tests::operation("target", WriteMode::Append);
+        op.mapping_policy = policy;
+        let mut evaluation = Evaluation::new(vec![], &op, LossConsent::Deny, &budget).unwrap();
+        for batch in [&empty, &valid, &empty] {
+            assert!(!evaluation
+                .batch(batch, std::slice::from_ref(&p), &op)
+                .unwrap());
+            assert!(evaluation.lease.is_none());
+            assert_eq!(budget.remaining(ResourceKind::MemoryBytes), available);
+            for row in 0..batch.num_rows() {
+                evaluation.sent(row).unwrap();
+                evaluation.applied(row, 1).unwrap();
+            }
+        }
+        let error = evaluation
+            .batch(&invalid, std::slice::from_ref(&p), &op)
+            .unwrap_err();
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+    }
+}
+
+#[test]
+fn empty_batch_with_rules_releases_previous_lease_and_can_resume() {
+    use arrow_schema::Schema;
+    use plenora_database_core::loss_registry::RuleParameters;
+    use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLimits};
+    use std::sync::Arc;
+
+    let p = plan(LeafClass::Jsonb, SessionShape::Scalar);
+    let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(StringArray::from(vec!["{}"]))],
+    )
+    .unwrap();
+    let empty = RecordBatch::new_empty(schema);
+    let op = crate::write_visibility_live_tests::operation("target", WriteMode::Append);
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let available = budget.remaining(ResourceKind::MemoryBytes);
+    let mut evaluation = Evaluation::new(
+        vec![RuleInstance {
+            field_id: 0,
+            rule_id: RuleId::PgJsonb,
+            parameters: RuleParameters::default(),
+            source_type: None,
+            target_type: None,
+        }],
+        &op,
+        LossConsent::Deny,
+        &budget,
+    )
+    .unwrap();
+    for current in [&empty, &batch, &empty, &batch] {
+        assert!(!evaluation
+            .batch(current, std::slice::from_ref(&p), &op)
+            .unwrap());
+        if current.num_rows() == 0 {
+            assert!(evaluation.lease.is_none());
+            assert_eq!(budget.remaining(ResourceKind::MemoryBytes), available);
+        } else {
+            assert!(evaluation.lease.is_some());
+            assert!(budget.remaining(ResourceKind::MemoryBytes) < available);
+            evaluation.sent(0).unwrap();
+            evaluation.applied(0, 1).unwrap();
+        }
+    }
+    evaluation.ledger.complete();
+    evaluation.prepare_commit().unwrap();
+    assert_eq!(evaluation.confirmed.evaluation.entries[0].checked, 2);
+    drop(evaluation);
+    assert_eq!(budget.remaining(ResourceKind::MemoryBytes), available);
+}
+
+#[test]
 fn decimal_exact_rounding_and_precision_without_float() {
     for (text, p, s, changed) in [
         ("1.2300", 5, 2, false),
