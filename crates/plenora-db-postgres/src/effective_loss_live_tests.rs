@@ -355,6 +355,48 @@ async fn live_b2_no_match_suppressed_rows_and_profiles() {
         PostgresInsertMode::Prepared,
     ] {
         let provider = PostgresProvider::insecure_local().with_insert_mode(transport);
+        // Nella 9.0.3 None salta la diagnostica; Some(0) la seleziona e fallisce.
+        for policy in [
+            MappingPolicy::Compatible,
+            MappingPolicy::Lossy,
+            MappingPolicy::Native,
+        ] {
+            for consent in [LossConsent::Deny, LossConsent::Accept] {
+                let before = rows(&client).await;
+                let outcome = run(
+                    &provider,
+                    &secret,
+                    &operation(WriteMode::Append, policy),
+                    input("jsonb", &[], false),
+                    consent,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    outcome.status,
+                    plenora_database_core::outcome::WriteStatus::Committed
+                );
+                let report = execution(outcome.loss_report.as_ref().unwrap());
+                assert!(report.evaluation.complete);
+                assert!(report.effective.is_empty());
+                assert_eq!(rows(&client).await, before);
+                let error = run(
+                    &provider,
+                    &secret,
+                    &operation(WriteMode::Append, policy),
+                    input("jsonb", &[], true),
+                    consent,
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(error.category, ErrorCategory::InvalidPlan);
+                assert_eq!(error.remote_effect, RemoteEffect::None);
+                let report = execution(error.loss_report.as_ref().unwrap());
+                assert!(!report.evaluation.complete);
+                assert!(report.effective.is_empty());
+                assert_eq!(rows(&client).await, before);
+            }
+        }
         for mode in [WriteMode::Append, WriteMode::Update] {
             let outcome = run(
                 &provider,

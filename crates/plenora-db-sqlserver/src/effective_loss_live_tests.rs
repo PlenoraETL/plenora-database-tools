@@ -385,6 +385,56 @@ async fn live_b3_negative_profiles_strict_and_tds() {
     let mut admin = SqlServerSession::open(&config(), &CancellationToken::new())
         .await
         .unwrap();
+    // Il BatchStream Rust puo omettere il conteggio, a differenza di SDK e CLI.
+    for transport in [SqlServerInsertMode::Prepared, SqlServerInsertMode::TdsBulk] {
+        for policy in [
+            MappingPolicy::Compatible,
+            MappingPolicy::Lossy,
+            MappingPolicy::Native,
+        ] {
+            for consent in [LossConsent::Deny, LossConsent::Accept] {
+                reset(&mut admin, WriteMode::Append, "datetime2(3)").await;
+                sql(
+                    &mut admin,
+                    "INSERT INTO plenora_test.b3 VALUES (9, '2000-01-01');",
+                )
+                .await;
+                let before = contents(&mut admin).await;
+                for declared in [false, true] {
+                    let source = input(
+                        "datetime2(3)",
+                        vec![Arc::new(TimestampMicrosecondArray::from(
+                            Vec::<Option<i64>>::new(),
+                        ))],
+                        declared,
+                    );
+                    let result = run(
+                        &operation(WriteMode::Append, policy),
+                        transport,
+                        source,
+                        consent,
+                        false,
+                    )
+                    .await;
+                    if declared {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+                        assert_eq!(error.remote_effect, RemoteEffect::None);
+                        let r = report(error.loss_report.as_ref().unwrap());
+                        assert!(!r.evaluation.complete);
+                        assert!(r.effective.is_empty());
+                    } else {
+                        let outcome = result.unwrap();
+                        assert_eq!(outcome.status, WriteStatus::Committed);
+                        let r = report(outcome.loss_report.as_ref().unwrap());
+                        assert!(r.evaluation.complete);
+                        assert!(r.effective.is_empty());
+                    }
+                    assert_eq!(contents(&mut admin).await, before);
+                }
+            }
+        }
+    }
     for consent in [LossConsent::Deny, LossConsent::Accept] {
         for profile in [
             TransactionProfile::ChunkCommitted,

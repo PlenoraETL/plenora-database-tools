@@ -54,6 +54,30 @@ def loss_stream(provider):
     return sink.getvalue().to_pybytes()
 
 
+def empty_sources(provider):
+    # Anche reader e IPC vengono contati dal binding, gia nella 9.0.3.
+    table = loss_table(provider, [])
+    yield table
+    yield pa.RecordBatch.from_arrays([pa.array([], type=table.schema[0].type)], schema=table.schema)
+    yield pa.RecordBatchReader.from_batches(table.schema, [])
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema):
+        pass
+    yield sink.getvalue().to_pybytes()
+
+
+def check_empty_error(error):
+    assert error.category == "invalid_plan"
+    assert error.remote_effect == "none"
+    check_empty_report(error.loss_report)
+
+
+def check_empty_report(report):
+    assert report["schema_version"] == 3
+    assert report["evaluation"]["complete"] is False
+    assert report["effective"] == []
+
+
 def check_outcome(outcome, changed=False):
     assert outcome["schema_version"] == 3
     assert outcome["status"] == "committed"
@@ -106,7 +130,7 @@ def test_live_loss_consent_sync(provider):
         dtype = loss_type(provider)
         session.execute_ddl(f"CREATE TABLE {target} (value {dtype} NULL)")
         for policy in ["compatible", "lossy", "native"]:
-            for values in ([1000, None], [None], [], [1000], *([[1002]] if provider == "postgres" else [])):
+            for values in ([1000, None], [None], [1000], *([[1002]] if provider == "postgres" else [])):
                 with warnings.catch_warnings(record=True) as emitted:
                     warnings.simplefilter("always", p.MappingLossWarning)
                     check_outcome(session.copy_from(schema, table, loss_table(provider, values), mapping_policy=policy))
@@ -114,6 +138,14 @@ def test_live_loss_consent_sync(provider):
                     if values == [1002]:
                         assert session.execute_scalar(f"SELECT CAST(value AS text) FROM {target}") == "1.5"
                 session.execute_ddl(f"TRUNCATE TABLE {target}")
+            for source in empty_sources(provider):
+                with warnings.catch_warnings(record=True) as emitted:
+                    warnings.simplefilter("always", p.MappingLossWarning)
+                    with pytest.raises(p.PlenoraInvalidPlanError) as caught:
+                        session.copy_from(schema, table, source, mapping_policy=policy)
+                    check_empty_error(caught.value)
+                    assert not emitted
+                assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
             for source in [loss_table(provider, [1001]), loss_stream(provider)]:
                 with pytest.raises(p.PlenoraDataMappingError) as caught:
                     session.copy_from(schema, table, source, mapping_policy=policy)
@@ -189,7 +221,7 @@ async def test_live_loss_consent_async(provider):
         dtype = loss_type(provider)
         await session.execute_ddl(f"CREATE TABLE {target} (value {dtype} NULL)")
         for policy in ["compatible", "lossy", "native"]:
-            for values in ([1000, None], [None], [], [1000], *([[1002]] if provider == "postgres" else [])):
+            for values in ([1000, None], [None], [1000], *([[1002]] if provider == "postgres" else [])):
                 with warnings.catch_warnings(record=True) as emitted:
                     warnings.simplefilter("always", p.MappingLossWarning)
                     check_outcome(await session.acopy_from(schema, table, loss_table(provider, values), mapping_policy=policy))
@@ -197,6 +229,14 @@ async def test_live_loss_consent_async(provider):
                     if values == [1002]:
                         assert await session.execute_scalar(f"SELECT CAST(value AS text) FROM {target}") == "1.5"
                 await session.execute_ddl(f"TRUNCATE TABLE {target}")
+            for source in empty_sources(provider):
+                with warnings.catch_warnings(record=True) as emitted:
+                    warnings.simplefilter("always", p.MappingLossWarning)
+                    with pytest.raises(p.PlenoraInvalidPlanError) as caught:
+                        await session.acopy_from(schema, table, source, mapping_policy=policy)
+                    check_empty_error(caught.value)
+                    assert not emitted
+                assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
             for source in [loss_table(provider, [1001]), loss_stream(provider)]:
                 with pytest.raises(p.PlenoraDataMappingError) as caught:
                     await session.acopy_from(schema, table, source, mapping_policy=policy)
@@ -319,42 +359,54 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
             session.execute_ddl(f"DROP TABLE {target}")
             dtype = loss_type(provider)
             session.execute_ddl(f"CREATE TABLE {target} (value {dtype} NULL)")
-            def write_loss_batches(batches):
+            def write_loss_batches(batches, ipc_format):
                 tables = [loss_table(provider, values) for values in batches]
-                with pa.ipc.new_file(arrow_path, tables[0].schema) as writer:
+                with ipc_format(arrow_path, tables[0].schema) as writer:
                     for data in tables:
                         writer.write_table(data)
             for output in ["json", "markdown", "junit"]:
                 for policy in ["compatible", "lossy", "native"]:
-                    for batches, accept, success, count in [
-                        ([[1000, None]], False, True, 2),
-                        ([[]], False, True, 0),
-                        ([[1001]], False, False, 0),
-                        ([[1000], [1001]], False, False, 0),
-                        ([[1001]], True, True, 1),
+                    for batches, accept, success, count, ipc_format in [
+                        ([[1000, None]], False, True, 2, pa.ipc.new_file),
+                        ([[]], False, False, 0, pa.ipc.new_file),
+                        ([[]], True, False, 0, pa.ipc.new_file),
+                        ([[]], False, False, 0, pa.ipc.new_stream),
+                        ([[]], True, False, 0, pa.ipc.new_stream),
+                        ([[1001]], False, False, 0, pa.ipc.new_file),
+                        ([[1000], [1001]], False, False, 0, pa.ipc.new_file),
+                        ([[1001]], True, True, 1, pa.ipc.new_file),
                     ]:
-                        write_loss_batches(batches)
+                        write_loss_batches(batches, ipc_format)
                         result = run(policy, accept, output)
                         assert (result.returncode == 0) == success, result.stdout
                         for key in ["risk", "evaluation", "effective"]:
                             assert key in result.stdout
-                        if not success:
+                        if batches == [[]]:
+                            assert result.returncode == 2
+                            assert "invalid_plan" in result.stdout
+                            assert "none" in result.stdout
+                        elif not success:
                             assert "rolled_back" in result.stdout
                             assert "data_mapping" in result.stdout
                         if output == "json":
                             document = json.loads(result.stdout)
-                            if success:
+                            if batches == [[]]:
+                                error = document["error"]
+                                assert error["category"] == "invalid_plan"
+                                assert error["remote_effect"] == "none"
+                                check_empty_report(error["loss_report"])
+                            elif success:
                                 report = check_outcome(document.get("result", document), changed=accept)
                                 assert report["risk"]
                             else:
                                 # Canonical and legacy envelopes preserve their own axes.
                                 assert "would_change" in result.stdout
                         assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == count
-                        if accept:
+                        if accept and success:
                             fraction = stored_loss_expression(provider)
                             assert session.execute_scalar(f"SELECT MAX({fraction}) FROM {target}") == ("0" if provider == "postgres" else 1000)
                         session.execute_ddl(f"TRUNCATE TABLE {target}")
-                write_loss_batches([[1001]])
+                write_loss_batches([[1001]], pa.ipc.new_file)
                 assert run("strict", False, output).returncode != 0
                 assert run("strict", True, output).returncode != 0
         session.execute_ddl(f"DROP TABLE {target}")

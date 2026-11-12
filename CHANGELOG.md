@@ -27,6 +27,11 @@ riassumono le note di quelle release.
   distinti da `committed`; `conservative` non pretende una misura esatta.
   Python emette `MappingLossWarning` solo per perdite committate, conserva
   `write_outcome` anche con filtro error e non suggerisce retry dopo commit.
+- Test di compatibilita con 9.0.3: l'input dichiarato vuoto nel percorso con
+  diagnostica resta rifiutato (`invalid_plan`, nessun effetto remoto); il
+  rapporto v3 conserva `effective` vuoto e `evaluation.complete=false`.
+  SDK Table/RecordBatch/reader/IPC e CLI IPC file/stream contano le righe;
+  il vuoto senza conteggio resta accettato nel percorso Rust senza diagnostica.
 - Runtime-tools deve adottare `database.write@2`: catalogo, `accept_loss` e
   WriteOutcome v3. Il pin contrattuale conserva write@1; la deviazione locale
   è esplicita. L'adozione del consumer non è dichiarata completata.
