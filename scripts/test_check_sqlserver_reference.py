@@ -9,6 +9,7 @@ matrice live e il nome dei test che non possono mancare.
 from __future__ import annotations
 
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -50,6 +51,40 @@ def executable() -> list[str]:
 
 
 class RequiredLiveTests(unittest.TestCase):
+    def test_reference_runs_and_lists_ignored_and_non_ignored_live_tests(self) -> None:
+        commands = []
+
+        def run_cargo(arguments, **kwargs):
+            commands.append(arguments)
+            return listing(inventory()) if "--list" in arguments else live_output(executable())
+
+        with ExitStack() as stack:
+            for name in ("validate_image_pin", "server_identity", "materialize_private_ca",
+                         "run_live_cli_probe", "rotate_server_certificate"):
+                stack.enter_context(patch.object(gate, name, return_value={}))
+            stack.enter_context(patch.object(gate, "docker_value", return_value="running|healthy"))
+            stack.enter_context(patch.object(gate, "run_cargo", side_effect=run_cargo))
+            stack.enter_context(patch("builtins.print"))
+            self.assertEqual(gate.main(), 0)
+        live_commands = [
+            command for command in commands
+            if command[:4] == ["test", "-p", "plenora-db-sqlserver", "live_"]
+        ]
+        self.assertEqual(len(live_commands), 2)
+        for command in live_commands:
+            self.assertIn("--include-ignored", command)
+            self.assertNotIn("--ignored", command)
+        offline = next(command for command in commands if "--lib" in command)
+        self.assertEqual(offline[-3:], ["--", "--skip", "live_"])
+
+    def test_inventory_accepts_live_tests_outside_the_historical_module(self) -> None:
+        names = executable()
+        actual_listing = listing(inventory()).replace("live_tests::live_b3_", "effective_loss::live_b3_")
+        actual_output = live_output(names).replace("live_tests::live_b3_", "effective_loss::live_b3_")
+        self.assertEqual(len(gate.validate_live_result(actual_output, actual_listing)), len(names))
+        with self.assertRaisesRegex(RuntimeError, "non eseguiti"):
+            gate.validate_live_result(live_output([name for name in names if not name.startswith("live_b3_")]), actual_listing)
+
     def test_inventory_includes_split_modules_in_both_gates(self) -> None:
         expected = {
             "live_s_chiave_datetimeoffset_compatible_non_arrotonda",
@@ -65,6 +100,8 @@ class RequiredLiveTests(unittest.TestCase):
         with patch.object(matrix, "run", return_value=live_output(expected)) as run:
             matrix.run_suite(matrix.MATRIX[0])
         command = run.call_args.args[0]
+        self.assertIn("--include-ignored", command)
+        self.assertNotIn("--ignored", command)
         for database in ("CS_DATABASE=dataflow_cs", "AI_DATABASE=dataflow_ai"):
             self.assertIn("PLENORA_SQLSERVER_" + database, command)
 

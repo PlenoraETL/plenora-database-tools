@@ -108,9 +108,14 @@ fn operation(mode: WriteMode, policy: MappingPolicy) -> WriteOperation {
     }
 }
 fn config() -> SqlServerConfig {
-    private_ca_live_config(
-        std::env::var("PLENORA_SQLSERVER_HOST").unwrap_or_else(|_| "sqlserver".into()),
-    )
+    if std::env::var_os("PLENORA_SQLSERVER_PRIVATE_CA").is_some() {
+        private_ca_live_config(
+            std::env::var("PLENORA_SQLSERVER_HOST").unwrap_or_else(|_| "sqlserver".into()),
+        )
+    } else {
+        // La matrice versioni usa il fixture senza CA, come gli altri test live.
+        live_config(CertificatePolicy::TrustServerCertificate)
+    }
 }
 async fn sql(admin: &mut SqlServerSession, sql: impl Into<String>) -> Vec<Vec<tiberius::Row>> {
     admin

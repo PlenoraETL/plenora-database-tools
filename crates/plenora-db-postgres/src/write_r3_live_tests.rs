@@ -529,6 +529,12 @@ async fn live_p_spazi_finali_oltre_la_lunghezza() {
                 let operation = with_policy(strict.clone(), policy);
                 let dry =
                     dry_run_stream(&provider, &secret, &operation, text_input(3, "abc   ")).await;
+                // Il dry run bulk binario resta non supportato: non misura i valori.
+                let dry_category = if profile == PostgresInsertMode::CopyBinary {
+                    ErrorCategory::Unsupported
+                } else {
+                    ErrorCategory::DataMapping
+                };
                 let written =
                     write_stream(&provider, &secret, &operation, text_input(3, "abc   ")).await;
                 let stored = texts(&admin, "SELECT at::text FROM pln_regola_r.v").await;
@@ -537,12 +543,14 @@ async fn live_p_spazi_finali_oltre_la_lunghezza() {
                     .is_err_and(|error| error.category == ErrorCategory::DataMapping)
                     || !dry
                         .as_ref()
-                        .is_err_and(|error| error.category == ErrorCategory::DataMapping)
+                        .is_err_and(|error| error.category == dry_category)
                     || stored != before
                 {
                     difformi.push(format!(
-                        "{column} {policy:?} {profile:?}: {}",
-                        rows_of(&written)
+                        "{column} {policy:?} {profile:?}: write={}, dry={:?}, unchanged={}",
+                        rows_of(&written),
+                        dry.as_ref().err().map(|error| error.category),
+                        stored == before
                     ));
                 }
             }
