@@ -380,6 +380,7 @@ async fn live_b3_warning_code_page_and_second_batch_text() {
     }
 }
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn live_b3_negative_profiles_strict_and_tds() {
     let _serial = SERIAL.lock().await;
     let mut admin = SqlServerSession::open(&config(), &CancellationToken::new())

@@ -330,6 +330,11 @@ fn every_status_requires_or_forbids_recovery_and_rejects_null() {
         for present in [false, true] {
             let mut outcome = source.clone();
             outcome.status = status;
+            if let Some(crate::execution_loss::VersionedLossReport::Execution(report)) =
+                &mut outcome.loss_report
+            {
+                report.effective.clear(); // Questo test isola il vincolo recovery.
+            }
             outcome.rows.received = 0;
             outcome.rows.confirmed = 0;
             outcome.rows.failed = 0;

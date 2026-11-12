@@ -238,6 +238,9 @@ def validate_examples(
                 registry,
                 f"example {root.name}/{entry['file']}",
             )
+            if schema_path.name == "write-outcome-v3.schema.json":
+                from scripts.execution_loss_semantics import validate_outcome
+                validate_outcome(load_json(example_path))
         if not entries:
             raise ValidationError(f"examples index vuoto: {root.name}")
         validated += len(entries)

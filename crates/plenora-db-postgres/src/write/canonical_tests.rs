@@ -605,3 +605,36 @@ fn nul_text_is_refused_before_any_writer_codec_sends_the_value() {
         assert!(!error.message.contains("a\0b"));
     }
 }
+
+/// La specializzazione Numeric di B2 non apre i typmod 0..3 in Strict.
+#[test]
+fn strict_numeric_predicate_matches_903_baseline_enumeration() {
+    use super::super::plan::WriteColumnPlan;
+    use arrow_array::StringArray;
+    let values = StringArray::from(vec![Some("1"), Some("1.005"), Some("-0"), None]);
+    for typmod in [-1, 0, 1, 2, 3, 4, (5 << 16) + 2 + 4] {
+        for key in [false, true] {
+            let mut plan =
+                WriteColumnPlan::compile(&Field::new("v", DataType::Utf8, true)).unwrap();
+            plan.session_rule = Some(SessionRule {
+                strict: true,
+                key,
+                leaves: vec![Leaf {
+                    class: classify(Some("numeric_in"), typmod),
+                    shape: SessionShape::Scalar,
+                }],
+            });
+            for row in 0..4 {
+                // 99ec6332: numeric_in con typmod >= 0 era Rounding;
+                // senza typmod era Parsed (chiavi non nulle rifiutate).
+                // Rounding rifiutava il tipo testuale anche per una cella NULL.
+                let baseline = typmod < 0 && (!key || row == 3);
+                assert_eq!(
+                    super::check(&plan, &values, row).is_ok(),
+                    baseline,
+                    "typmod={typmod} key={key} row={row}"
+                );
+            }
+        }
+    }
+}

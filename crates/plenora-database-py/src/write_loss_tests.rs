@@ -73,6 +73,8 @@ fn warning_filters_preserve_the_committed_outcome() {
                 .get_item("write_outcome")
                 .is_ok());
             // Commit parziale: il filtro error non maschera l'errore primario.
+            uncertain.status = plenora_database_core::outcome::WriteStatus::PartiallyCommitted;
+            uncertain.rows.confirmed = 1;
             uncertain.loss_report = outcome.loss_report.clone();
             let error = outcome_into_py(py, &uncertain).unwrap_err();
             assert!(!error.is_instance_of::<crate::errors::MappingLossWarning>(py));

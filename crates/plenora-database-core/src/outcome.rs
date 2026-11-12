@@ -116,6 +116,9 @@ impl WriteOutcome {
         }
         if let Some(report) = &self.loss_report {
             report.validate()?;
+            if let crate::execution_loss::VersionedLossReport::Execution(report) = report {
+                report.validate_outcome(self.status, self.rows.confirmed)?;
+            }
         }
         // `minLength: 1` e `maxLength: 128` contano code point.
         let execution_id_chars = self.execution_id.chars().count();

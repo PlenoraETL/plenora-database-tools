@@ -14,7 +14,7 @@ class ExecutionLossTests(unittest.TestCase):
             if not report or report.get('schema_version') != 3:
                 continue
             with self.subTest(example=item['file']):
-                execution_loss_semantics.validate(report)
+                execution_loss_semantics.validate_outcome(document)
                 seen.add(document['status'])
                 if document['status'] == 'rolled_back':
                     self.assertEqual(report['effective'], [])

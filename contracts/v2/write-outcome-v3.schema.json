@@ -54,45 +54,59 @@
           "properties": {
             "received": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 18446744073709551615
             },
             "confirmed": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 18446744073709551615
             },
             "inserted": {
               "type": [
                 "integer",
                 "null"
               ],
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 18446744073709551615
             },
             "updated": {
               "type": [
                 "integer",
                 "null"
               ],
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 18446744073709551615
             },
             "deleted": {
               "type": [
                 "integer",
                 "null"
               ],
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 18446744073709551615
             },
             "failed": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 18446744073709551615
             },
             "skipped": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 18446744073709551615
             }
           }
         },
         "loss_report": {
-          "oneOf": [{"$ref": "execution-loss-report-v3.schema.json"}, {"$ref": "loss-report.schema.json"}]
+          "oneOf": [
+            {
+              "$ref": "execution-loss-report-v3.schema.json"
+            },
+            {
+              "$ref": "loss-report.schema.json"
+            }
+          ]
         }
       }
     },
@@ -107,6 +121,19 @@
           "properties": {
             "status": {
               "const": "committed"
+            },
+            "loss_report": {
+              "properties": {
+                "effective": {
+                  "items": {
+                    "properties": {
+                      "uncertain": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -123,6 +150,29 @@
           "properties": {
             "status": {
               "const": "rolled_back"
+            },
+            "loss_report": {
+              "properties": {
+                "effective": {
+                  "items": {
+                    "properties": {
+                      "committed": {
+                        "const": 0
+                      },
+                      "uncertain": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "rows": {
+              "properties": {
+                "confirmed": {
+                  "const": 0
+                }
+              }
             }
           }
         }
@@ -167,6 +217,26 @@
             },
             "recovery": {
               "$ref": "#/$defs/recovery"
+            },
+            "loss_report": {
+              "properties": {
+                "effective": {
+                  "items": {
+                    "properties": {
+                      "committed": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "rows": {
+              "properties": {
+                "confirmed": {
+                  "const": 0
+                }
+              }
             }
           }
         }
@@ -216,5 +286,6 @@
         }
       }
     }
-  }
+  },
+  "$comment": "Full validation also requires scripts.execution_loss_semantics.validate_outcome (cross-field counts and report invariants)."
 }

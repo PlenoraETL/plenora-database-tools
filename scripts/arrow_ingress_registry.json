@@ -1170,7 +1170,7 @@
     "crates/plenora-db-postgres/src/preflight.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Preflight PostgreSQL riceve solo SchemaRef; produce regole/rapporto/catalog token, senza celle Arrow.",
-      "review_sha256": "2a5c0d95229892f6ee905c6782c32767b7476ec5cb69b99cdd994d4bca675b45",
+      "review_sha256": "cca0f628f207d941b89559bef759a8d14eaf04c1177f49bd6fa7fde824860443",
       "signature": "pub async fn write( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, input_schema: &SchemaRef, ) -> Result<( LossReport, Vec<ColumnRewrites>, Vec<RuleInstance>, Option<crate::catalog::CatalogSchemaToken>, )>"
     },
     "crates/plenora-db-postgres/src/query_execution.rs::query_stream#1": {
@@ -9854,7 +9854,7 @@
     },
     "crates/plenora-db-postgres/src/write/canonical.rs": {
       "reason": "canonical::check e pub(super) nel writer privato: check_independent e effective::classify consumano array gia validati dai fetch ordinari/diagnostici o dagli ingressi codec guardati.",
-      "review_sha256": "34d5ddce27756ce92346e28d6e08babbd5969b635b7fd0a89d868d673fc5a717"
+      "review_sha256": "0bd8044b79551bdd51747c38500abcb1474e34b4574b7e359cf28b8b5dac0d80"
     },
     "crates/plenora-database-core/src/prepared_execution.rs": {
       "reason": "execute/execute_with_consent autorizzano report e invocano la closure una volta; non ricevono ne leggono buffer Arrow, validazione affidata ai consumer registrati.",

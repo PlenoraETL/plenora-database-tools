@@ -3,6 +3,7 @@ import copy
 import unittest
 
 from scripts import phase0_validate as gate
+from scripts.execution_loss_semantics import validate_outcome
 
 
 class LossOutcomeContractTests(unittest.TestCase):
@@ -38,4 +39,12 @@ class LossOutcomeContractTests(unittest.TestCase):
                          {"committed", "rolled_back", "partially_committed", "outcome_unknown"})
         for case in cases:
             with self.subTest(name=case["name"]):
-                self.assertEqual(validator.is_valid(case["document"]), case["valid"])
+                structural = validator.is_valid(case["document"])
+                self.assertEqual(structural, case.get("structural", case["valid"]))
+                accepted = structural
+                if accepted:
+                    try:
+                        validate_outcome(case["document"])
+                    except ValueError:
+                        accepted = False
+                self.assertEqual(accepted, case["valid"])

@@ -19,6 +19,8 @@ riassumono le note di quelle release.
   una trasformazione Warning richiede consenso quanto una DataLoss.
   Strict e chiavi non si indeboliscono. `chunk_committed` e `best_effort_ddl`
   non-strict senza consenso sono rifiutati prima degli effetti.
+- L'arricchimento CRS dal catalogo PostGIS a SRID invariato e esente solo
+  nelle policy non-strict. Strict conserva il rifiuto Crs/DataLoss della 9.0.3.
 - PostgreSQL non tronca mai testo, inclusi spazi finali oltre capacità.
   SQL Server bulk TDS rifiuta testo/binario eccedenti anche con consenso;
   Prepared con consenso altera e dichiara nei percorsi ammessi.

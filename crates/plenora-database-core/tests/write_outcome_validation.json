@@ -496,5 +496,6457 @@
         ]
       }
     }
+  },
+  {
+    "name": "committed-confirmed0-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "committed-confirmed0-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed0-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed0-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed0-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed0-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed0-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed0-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed0-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed1-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "committed-confirmed1-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed1-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed1-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "committed-confirmed1-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed1-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed1-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed1-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed1-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed2-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "committed-confirmed2-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed2-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed2-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "committed-confirmed2-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed2-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed2-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "committed-confirmed2-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "committed-confirmed2-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "rolled_back-confirmed0-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed0-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed1-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "rolled_back-confirmed2-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed0-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed1-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "outcome_unknown-confirmed2-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": false,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed0-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed0-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed0-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed0-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed0-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed0-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed0-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed0-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed0-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed1-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed1-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed1-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed1-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed1-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed1-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed1-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed1-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed1-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "partially_committed-confirmed2-effective0-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": []
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective0-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective0-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 0,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective1-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective1-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective1-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective2-0",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 0
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective2-1",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 1
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "partially_committed-confirmed2-effective2-2",
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 4,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 4,
+              "would_change": 4
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 2,
+            "uncertain": 2
+          }
+        ]
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false
+      }
+    },
+    "structural": true,
+    "valid": true
+  },
+  {
+    "name": "rows-received-18446744073709551615",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "rows-received-18446744073709551616",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551616,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rows-confirmed-18446744073709551615",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551615,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "rows-confirmed-18446744073709551616",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551616,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rows-inserted-18446744073709551615",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551615,
+        "failed": 0,
+        "skipped": 0,
+        "inserted": 18446744073709551615
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "rows-inserted-18446744073709551616",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551615,
+        "failed": 0,
+        "skipped": 0,
+        "inserted": 18446744073709551616
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rows-updated-18446744073709551615",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551615,
+        "failed": 0,
+        "skipped": 0,
+        "updated": 18446744073709551615
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "rows-updated-18446744073709551616",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551615,
+        "failed": 0,
+        "skipped": 0,
+        "updated": 18446744073709551616
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rows-deleted-18446744073709551615",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551615,
+        "failed": 0,
+        "skipped": 0,
+        "deleted": 18446744073709551615
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "rows-deleted-18446744073709551616",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 18446744073709551615,
+        "failed": 0,
+        "skipped": 0,
+        "deleted": 18446744073709551616
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rows-failed-18446744073709551615",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 0,
+        "failed": 18446744073709551615,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "rows-failed-18446744073709551616",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 0,
+        "failed": 18446744073709551616,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "rows-skipped-18446744073709551615",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 18446744073709551615
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "rows-skipped-18446744073709551616",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 18446744073709551615,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 18446744073709551616
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "ss.text_limit",
+              "basis": "exact",
+              "checked": 2,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "disjoint-bases-confirmed1",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 2,
+        "confirmed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "pg.numeric",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "pg.numeric",
+              "basis": "exact",
+              "checked": 1,
+              "would_change": 1
+            },
+            {
+              "field_id": 0,
+              "rule_id": "pg.numeric",
+              "basis": "conservative",
+              "checked": 1,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "pg.numeric",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          },
+          {
+            "field_id": 0,
+            "rule_id": "pg.numeric",
+            "category": "precision",
+            "basis": "conservative",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": false
+  },
+  {
+    "name": "disjoint-bases-confirmed2",
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0COMMITTED",
+      "provider": "sqlserver",
+      "rows": {
+        "received": 2,
+        "confirmed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 3,
+        "policy": "compatible",
+        "risk": [
+          {
+            "field_id": 0,
+            "rule_id": "pg.numeric",
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+          }
+        ],
+        "evaluation": {
+          "complete": true,
+          "entries": [
+            {
+              "field_id": 0,
+              "rule_id": "pg.numeric",
+              "basis": "exact",
+              "checked": 1,
+              "would_change": 1
+            },
+            {
+              "field_id": 0,
+              "rule_id": "pg.numeric",
+              "basis": "conservative",
+              "checked": 1,
+              "would_change": 1
+            }
+          ]
+        },
+        "effective": [
+          {
+            "field_id": 0,
+            "rule_id": "pg.numeric",
+            "category": "precision",
+            "basis": "exact",
+            "committed": 1,
+            "uncertain": 0
+          },
+          {
+            "field_id": 0,
+            "rule_id": "pg.numeric",
+            "category": "precision",
+            "basis": "conservative",
+            "committed": 1,
+            "uncertain": 0
+          }
+        ]
+      }
+    },
+    "structural": true,
+    "valid": true
   }
 ]

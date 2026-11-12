@@ -103,3 +103,14 @@ in [adoption-source.json](../adoption-source.json); la deviazione dal suo
 catalogo write@1 è dichiarata e controllata da `check_public_contracts.py`.
 Runtime-tools richiede adozione separata di catalogo, `accept_loss` e
 WriteOutcome v3; non è attestata da questo repository.
+
+La validazione completa di WriteOutcome v3 comprende lo schema e
+`scripts.execution_loss_semantics.validate_outcome`, equivalente a
+`WriteOutcome::validate` in Rust. Il confronto fra contatori non e esprimibile
+in JSON Schema standard: per ogni campo/regola la somma di `committed` fra
+le basi non supera `rows.confirmed`; campi e regole diversi non si sommano.
+`rolled_back` non ammette effective positivi; `committed` non ammette
+`uncertain`; gli stati parziale e ignoto ammettono incertezza. Resta il vincolo
+preesistente che un esito ignoto non conferma righe. Gli esempi e i vettori
+condivisi sono verificati dal gate offline. I limiti u64 dei contatori rows
+sono espliciti nello schema v3; gli artefatti pubblicati v2 restano invariati.

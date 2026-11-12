@@ -355,6 +355,8 @@ pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
             precision: ((typmod - 4) >> 16).cast_unsigned() & 65535,
             scale: (((typmod - 4) & 2047) ^ 1024) - 1024,
         },
+        // Typmod non canonici conservano il rifiuto Strict della 9.0.3.
+        "numeric_in" if typmod >= 0 => LeafClass::Rounding,
         "uuid_in" => LeafClass::Uuid,
         "boolin" | "int2in" | "int4in" | "int8in" | "numeric_in" | "inet_in" | "cidr_in"
         | "macaddr_in" | "macaddr8_in" | "bit_in" | "varbit_in" | "byteain" => LeafClass::Parsed,

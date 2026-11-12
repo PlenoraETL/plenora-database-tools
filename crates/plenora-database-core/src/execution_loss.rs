@@ -203,6 +203,34 @@ impl ExecutionLossReport {
         Ok(())
     }
 
+    /// Coerenza con gli effetti confermati dall'outcome. Le basi della stessa
+    /// cella/regola sono disgiunte; regole o campi diversi non si sommano.
+    /// # Errors
+    /// Rifiuta perdite incompatibili con stato o righe confermate.
+    pub(crate) fn validate_outcome(
+        &self,
+        status: crate::outcome::WriteStatus,
+        confirmed: u64,
+    ) -> Result<()> {
+        use crate::outcome::WriteStatus;
+        let mut committed = BTreeMap::new();
+        for entry in &self.effective {
+            if (status == WriteStatus::RolledBack && (entry.committed != 0 || entry.uncertain != 0))
+                || (status == WriteStatus::Committed && entry.uncertain != 0)
+            {
+                return Err(invalid());
+            }
+            let count = committed
+                .entry((entry.field_id, entry.rule_id))
+                .or_insert(0_u64);
+            *count = count.checked_add(entry.committed).ok_or_else(invalid)?;
+            if *count > confirmed {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
     /// Budget serializzato con escaping reale e contatori alla massima larghezza.
     /// # Errors
     /// Rifiuta il piano prima degli effetti se il peggior caso non entra nel trasporto.
