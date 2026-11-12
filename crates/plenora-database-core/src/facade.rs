@@ -88,6 +88,7 @@ fn not_found(message: &str) -> DatabaseError {
         provider: None,
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -101,6 +102,7 @@ fn too_many_rows(n: usize) -> DatabaseError {
         provider: None,
         execution_id: None,
         message: format!("query attesa a 1 riga, ricevute {n}"),
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -114,6 +116,7 @@ fn malformed(message: &str) -> DatabaseError {
         provider: None,
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

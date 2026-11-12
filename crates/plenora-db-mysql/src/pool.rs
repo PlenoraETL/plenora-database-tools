@@ -67,6 +67,7 @@ impl MysqlPool {
                 provider: Some(profile.kind()),
                 execution_id: None,
                 message: format!("pool {} con capacita zero", profile.product()),
+                loss_report: None,
                 diagnostics: None,
             });
         }

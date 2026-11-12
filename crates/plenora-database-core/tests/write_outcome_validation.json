@@ -1,0 +1,500 @@
+[
+  {
+    "name": "committed-absent",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "committed-object",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "committed-null",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "committed",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": null,
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "rolled_back-absent",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "rolled_back-object",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "rolled_back-null",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "rolled_back",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": null,
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "partially_committed-absent",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "partially_committed-object",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "partially_committed-null",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "partially_committed",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": null,
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "outcome_unknown-absent",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "outcome_unknown-object",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "outcome_unknown-null",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": null,
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": []
+      }
+    }
+  },
+  {
+    "name": "source_type-absent",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": [
+          {
+            "field_id": 0,
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "precisione ridotta"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "source_type-string",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": [
+          {
+            "field_id": 0,
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "precisione ridotta",
+            "source_type": "Utf8"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "source_type-null",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": [
+          {
+            "field_id": 0,
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "precisione ridotta",
+            "source_type": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "target_type-absent",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": [
+          {
+            "field_id": 0,
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "precisione ridotta"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "target_type-string",
+    "valid": true,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": [
+          {
+            "field_id": 0,
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "precisione ridotta",
+            "target_type": "Utf8"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "target_type-null",
+    "valid": false,
+    "document": {
+      "schema_version": 3,
+      "status": "outcome_unknown",
+      "execution_id": "01J3PHASE0UNKNOWN",
+      "provider": "postgres",
+      "rows": {
+        "received": 0,
+        "confirmed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "recovery": {
+        "last_certain_phase": "commit_requested",
+        "automatic_retry_allowed": false,
+        "idempotency_key": "batch-2026-08-21-0001",
+        "staging_object": "plenora.public.events__staging_0001",
+        "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
+      },
+      "loss_report": {
+        "schema_version": 2,
+        "policy": "compatible",
+        "losses": [
+          {
+            "field_id": 0,
+            "category": "precision",
+            "severity": "data_loss",
+            "reason": "precisione ridotta",
+            "target_type": null
+          }
+        ]
+      }
+    }
+  }
+]

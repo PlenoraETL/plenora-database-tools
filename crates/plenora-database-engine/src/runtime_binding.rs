@@ -1080,6 +1080,7 @@ fn redact_host_error(error: &DatabaseError, message: &'static str) -> DatabaseEr
         provider: error.provider,
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

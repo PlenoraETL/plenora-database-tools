@@ -73,6 +73,7 @@ pub fn driver_error(
         provider: Some(profile.kind()),
         execution_id: None,
         message: verdict.message,
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -130,6 +131,7 @@ pub fn timeout_error(
         } else {
             format!("timeout operazione {product}; connessione quarantinata")
         },
+        loss_report: None,
         diagnostics: None,
     }
     .after_interrupted_send()
@@ -154,6 +156,7 @@ pub fn cancellation_error(
         } else {
             format!("operazione {product} cancellata; connessione quarantinata")
         },
+        loss_report: None,
         diagnostics: None,
     }
     .after_interrupted_send()

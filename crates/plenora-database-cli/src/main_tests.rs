@@ -315,6 +315,7 @@ fn crs_error_envelope_matches_protocol_v2() {
         provider: None,
         execution_id: None,
         message: "identificatore CRS e SRID numerico divergenti".to_owned(),
+        loss_report: None,
         diagnostics: None,
     })
     .to_json()
@@ -352,6 +353,7 @@ fn delayed_retry_is_explicit_and_keeps_the_delay() {
         provider: None,
         execution_id: None,
         message: "servizio temporaneamente non disponibile".to_owned(),
+        loss_report: None,
         diagnostics: None,
     })
     .to_json()

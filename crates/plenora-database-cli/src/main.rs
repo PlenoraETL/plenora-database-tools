@@ -285,6 +285,7 @@ fn unknown_commit_error(commit: &CommitOutcome) -> DatabaseError {
         message: "commit emesso senza conferma: verificare lo stato remoto \
                   prima di ogni retry"
             .to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -2229,6 +2230,7 @@ fn local_artifact_error(
         provider: None,
         execution_id: None,
         message: message.into(),
+        loss_report: None,
         diagnostics: None,
     })
 }

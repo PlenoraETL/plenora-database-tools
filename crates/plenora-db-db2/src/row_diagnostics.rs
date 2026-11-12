@@ -197,6 +197,7 @@ fn row_error(message: &'static str) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Db2),
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

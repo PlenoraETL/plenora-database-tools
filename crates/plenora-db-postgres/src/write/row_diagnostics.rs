@@ -234,6 +234,7 @@ fn commit_unknown_error(
         provider: Some(ProviderKind::Postgres),
         execution_id: Some(execution_id.to_owned()),
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: Some(Box::new(diagnostics)),
     })
 }

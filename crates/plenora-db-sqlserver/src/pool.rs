@@ -219,6 +219,7 @@ fn pool_error_with_retry(
         provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
         execution_id: None,
         message: message.into(),
+        loss_report: None,
         diagnostics: None,
     }
 }

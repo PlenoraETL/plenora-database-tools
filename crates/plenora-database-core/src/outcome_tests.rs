@@ -314,3 +314,41 @@ fn an_unknown_outcome_takes_the_category_of_its_cause() {
         assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
     }
 }
+
+#[test]
+fn every_status_requires_or_forbids_recovery_and_rejects_null() {
+    let source: WriteOutcome = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/outcome-v3-unknown.json"
+    ))
+    .unwrap();
+    for status in [
+        WriteStatus::Committed,
+        WriteStatus::RolledBack,
+        WriteStatus::PartiallyCommitted,
+        WriteStatus::OutcomeUnknown,
+    ] {
+        for present in [false, true] {
+            let mut outcome = source.clone();
+            outcome.status = status;
+            outcome.rows.received = 0;
+            outcome.rows.confirmed = 0;
+            outcome.rows.failed = 0;
+            outcome.rows.skipped = 0;
+            if !present {
+                outcome.recovery = None;
+            }
+            let uncertain = matches!(
+                status,
+                WriteStatus::PartiallyCommitted | WriteStatus::OutcomeUnknown
+            );
+            assert_eq!(
+                outcome.validate().is_ok(),
+                present == uncertain,
+                "{status:?}"
+            );
+            let mut document = serde_json::to_value(outcome).unwrap();
+            document["recovery"] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<WriteOutcome>(document).is_err());
+        }
+    }
+}

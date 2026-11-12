@@ -30,3 +30,15 @@ class LossOutcomeContractTests(unittest.TestCase):
                 }]
             with self.subTest(mutation=mutation):
                 self.assertFalse(validator.is_valid(value))
+
+    def test_shared_rust_schema_acceptance_matrix(self):
+        schemas = gate.discover_schemas(gate.REPO_ROOT / "contracts")
+        registry = gate.build_registry(schemas.values())
+        schema = schemas[(gate.ACTIVE_CONTRACT_ROOT / "write-outcome-v3.schema.json").resolve()]
+        validator = gate.Draft202012Validator(schema, registry=registry)
+        cases = gate.load_json(gate.REPO_ROOT / "crates/plenora-database-core/tests/write_outcome_validation.json")
+        self.assertEqual({case["document"]["status"] for case in cases},
+                         {"committed", "rolled_back", "partially_committed", "outcome_unknown"})
+        for case in cases:
+            with self.subTest(name=case["name"]):
+                self.assertEqual(validator.is_valid(case["document"]), case["valid"])

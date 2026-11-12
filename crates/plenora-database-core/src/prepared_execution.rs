@@ -20,13 +20,17 @@ where
     Fut: Future<Output = Result<WriteOutcome>>,
 {
     let report = prepared.loss_report.clone();
-    if report.policy != prepared.operation.mapping_policy {
-        return Err(DatabaseError::invalid_plan(
-            "policy del rapporto diversa dal piano",
-        ));
+    let result = async {
+        if report.policy != prepared.operation.mapping_policy {
+            return Err(DatabaseError::invalid_plan(
+                "policy del rapporto diversa dal piano",
+            ));
+        }
+        authorize(&report, accept_loss)?;
+        run(prepared).await
     }
-    authorize(&report, accept_loss)?;
-    attach(report, run(prepared).await)
+    .await;
+    attach(report, result)
 }
 
 /// Ammissione condivisa anche dal percorso Rust SQL Server diretto.
@@ -53,14 +57,20 @@ pub fn authorize(report: &LossReport, accept_loss: bool) -> Result<()> {
 }
 
 /// Associa il rapporto al risultato anche in caso di commit parziale o incerto.
-/// Gli errori senza outcome restano errori: non si inventa un rapporto vuoto.
+/// Anche gli errori senza outcome conservano il rapporto del piano.
 ///
 /// # Errors
 /// Preserva l'errore dell'esecutore senza modificarne gli assi.
 pub fn attach(report: LossReport, result: Result<WriteOutcome>) -> Result<WriteOutcome> {
-    result.map(|mut outcome| {
-        outcome.schema_version = 3;
-        outcome.loss_report = Some(report);
-        outcome
-    })
+    match result {
+        Ok(mut outcome) => {
+            outcome.schema_version = 3;
+            outcome.loss_report = Some(report);
+            Ok(outcome)
+        }
+        Err(mut error) => {
+            error.loss_report = Some(Box::new(report));
+            Err(error)
+        }
+    }
 }

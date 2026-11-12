@@ -99,3 +99,17 @@ fn the_error_message_does_not_carry_the_offending_text() {
         .expect_err("troppo lungo");
     assert!(!error.message.contains("SEGRETO"), "{}", error.message);
 }
+
+#[test]
+fn optional_types_accept_absence_and_strings_but_never_null() {
+    for field in ["source_type", "target_type"] {
+        let base = serde_json::to_value(report(vec![loss(0)])).unwrap();
+        assert!(serde_json::from_value::<LossReport>(base.clone()).is_ok());
+        let mut text = base.clone();
+        text["losses"][0][field] = serde_json::json!("Utf8");
+        assert!(serde_json::from_value::<LossReport>(text).is_ok());
+        let mut null = base;
+        null["losses"][0][field] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<LossReport>(null).is_err());
+    }
+}

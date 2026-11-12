@@ -71,6 +71,7 @@ impl Row {
                     columns.len(),
                     values.len()
                 ),
+                loss_report: None,
                 diagnostics: None,
             });
         }

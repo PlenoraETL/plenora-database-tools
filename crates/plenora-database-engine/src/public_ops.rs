@@ -88,6 +88,18 @@ impl TargetRequest {
                 "provider_arguments oltre 32 elementi o 4096 caratteri",
             ));
         }
+        if self
+            .provider_arguments
+            .iter()
+            .any(|argument| argument == "--accept-loss" || argument.starts_with("--accept-loss="))
+        {
+            return Err(DatabaseError::new(
+                plenora_database_core::ErrorCategory::InvalidConfiguration,
+                ErrorPhase::Validate,
+                Some(provider),
+                "accept-loss non ammesso in provider_arguments",
+            ));
+        }
         Ok(ValidatedTarget {
             provider,
             secret_environment: self.secret_environment,

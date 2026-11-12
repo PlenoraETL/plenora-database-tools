@@ -50,6 +50,7 @@ fn internal_error(message: impl Into<String>) -> DatabaseError {
         retry: plenora_database_core::RetryDisposition::Never,
         provider: None,
         execution_id: None,
+        loss_report: None,
         diagnostics: None,
         message: message.into(),
     }

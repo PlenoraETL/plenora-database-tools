@@ -150,3 +150,45 @@ fn empty_is_not_absent_and_uncertain_outcomes_keep_the_report() {
         }
     }
 }
+
+#[test]
+fn errors_after_preparation_keep_report_and_all_remote_axes() {
+    use plenora_database_core::{DatabaseError, RetryDisposition};
+    for effect in [
+        RemoteEffect::None,
+        RemoteEffect::RolledBack,
+        RemoteEffect::Committed,
+        RemoteEffect::Partial,
+        RemoteEffect::Unknown,
+    ] {
+        let report = LossReport {
+            schema_version: 2,
+            policy: MappingPolicy::Compatible,
+            losses: vec![],
+        };
+        let mut original = DatabaseError::new(
+            ErrorCategory::Execution,
+            ErrorPhase::Commit,
+            Some(ProviderKind::Postgres),
+            "errore dopo preparazione",
+        );
+        original.remote_effect = effect;
+        original.retry = RetryDisposition::RequiresRecovery;
+        original.execution_id = Some("prepared-error".into());
+        let error = ready(prepared_execution::execute(
+            prepared(report.clone()),
+            true,
+            |_| async { Err(original.clone()) },
+        ))
+        .unwrap_err();
+        assert_eq!(error.loss_report.as_deref(), Some(&report));
+        assert_eq!(error.remote_effect, original.remote_effect);
+        assert_eq!(error.retry, original.retry);
+        assert_eq!(error.phase, original.phase);
+        assert_eq!(error.execution_id, original.execution_id);
+        assert_eq!(
+            serde_json::to_value(error.public_projection()).unwrap()["details"]["loss_report"],
+            serde_json::to_value(report).unwrap()
+        );
+    }
+}

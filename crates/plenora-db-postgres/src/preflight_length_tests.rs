@@ -11,3 +11,24 @@ fn bounded_report_declares_content_loss() {
         assert!(loss.reason.contains("non spazio"));
     }
 }
+
+#[test]
+fn nullability_is_a_rejection_risk_not_data_alteration() {
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        let loss = nullability_loss(0, policy).unwrap();
+        assert_eq!(loss.category, LossCategory::Nullability);
+        assert_eq!(
+            loss.severity,
+            if policy == MappingPolicy::Strict {
+                LossSeverity::DataLoss
+            } else {
+                LossSeverity::Information
+            }
+        );
+    }
+}

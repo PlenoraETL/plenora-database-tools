@@ -51,9 +51,17 @@ pub struct MappingLoss {
     // `None` usciva come `null`, e il producer emetteva documenti che il
     // proprio contratto rifiuta — PostgreSQL li produce davvero, per le
     // perdite di nullability.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_type"
+    )]
     pub source_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_type"
+    )]
     pub target_type: Option<String>,
 }
 
@@ -160,3 +168,9 @@ impl LossReport {
 #[cfg(test)]
 #[path = "loss_tests.rs"]
 mod tests;
+
+fn present_type<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}

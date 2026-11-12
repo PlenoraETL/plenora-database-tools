@@ -193,6 +193,7 @@ fn host_errors_keep_their_axes_and_lose_their_text() {
         provider: None,
         execution_id: Some("host-internal".to_owned()),
         message: "s3://private-bucket/key resolved to /srv/data".to_owned(),
+        loss_report: None,
         diagnostics: None,
     };
     let redacted = redact_host_error(&host, "risoluzione rifiutata");
@@ -289,4 +290,20 @@ fn a_non_conforming_schema_never_reaches_the_runtime_sink() {
     assert!(result.is_err(), "schema fuori vocabolario consegnato");
     assert!(bytes.lock().expect("sink").is_empty());
     assert_eq!(written, 0);
+}
+
+#[test]
+fn runtime_error_document_preserves_prepared_report() {
+    let mut error = DatabaseError::invalid_plan("scrittura interrotta");
+    error.remote_effect = RemoteEffect::Unknown;
+    error.retry = RetryDisposition::RequiresRecovery;
+    error.loss_report = Some(Box::new(plenora_database_core::loss::LossReport {
+        schema_version: 2,
+        policy: plenora_database_core::loss::MappingPolicy::Strict,
+        losses: vec![],
+    }));
+    let value = error_document(&error);
+    assert_eq!(value["remote_effect"], "unknown");
+    assert_eq!(value["retry"]["kind"], "requires_recovery");
+    assert_eq!(value["details"]["loss_report"]["losses"], json!([]));
 }

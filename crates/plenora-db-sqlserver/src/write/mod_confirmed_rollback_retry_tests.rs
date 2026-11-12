@@ -26,6 +26,7 @@ fn a_confirmed_batch_rollback_preserves_every_retry_disposition() {
             provider: Some(ProviderKind::Sqlserver),
             execution_id: Some("sqlserver-batch-rollback".to_owned()),
             message: "errore pre-commit SQL Server".to_owned(),
+            loss_report: None,
             diagnostics: None,
         };
         let rolled_back = confirmed_rollback_axes(original);

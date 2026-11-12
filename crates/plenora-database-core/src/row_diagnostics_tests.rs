@@ -717,6 +717,7 @@ fn conversion_error() -> DatabaseError {
         provider: Some(ProviderKind::Mysql),
         execution_id: None,
         message: "valore non rappresentabile".to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -813,6 +814,7 @@ fn a_read_rejection_carries_the_declared_axes() {
             provider: Some(ProviderKind::Mysql),
             execution_id: None,
             message: "valore non rappresentabile".to_owned(),
+            loss_report: None,
             diagnostics: None,
         },
         report.clone(),
@@ -846,6 +848,7 @@ fn a_read_rejection_carries_the_declared_axes() {
             provider: None,
             execution_id: None,
             message: "documento di scrittura".to_owned(),
+            loss_report: None,
             diagnostics: None,
         },
         write_shaped,

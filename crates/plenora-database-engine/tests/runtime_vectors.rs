@@ -366,6 +366,7 @@ impl Provider for Scripted {
                     execution_id: Some("vector-execution-1".to_owned()),
                     message: "Commit outcome is unknown; reconcile by execution identity."
                         .to_owned(),
+                    loss_report: None,
                     diagnostics: None,
                 }),
             }

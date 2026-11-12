@@ -84,6 +84,7 @@ pub fn driver_error(
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message,
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -155,6 +156,7 @@ pub fn timeout_error(phase: ErrorPhase, remote_effect: RemoteEffect) -> Database
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message: "timeout operazione SQL Server".to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
     .after_interrupted_send()
@@ -193,6 +195,7 @@ pub fn cancellation_error(phase: ErrorPhase, remote_effect: RemoteEffect) -> Dat
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message: "operazione SQL Server cancellata; connessione quarantinata".to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
     .after_interrupted_send()

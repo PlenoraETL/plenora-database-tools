@@ -88,7 +88,7 @@ async def test_live_loss_consent_async(provider):
         assert exact["loss_report"]["losses"] == []
     finally:
         await session.execute_ddl(f"DROP TABLE {target}")
-        await session.close()
+        session.close()
 
 
 @pytest.mark.parametrize("provider,command", [

@@ -78,3 +78,22 @@ fn junit_wraps_failure_status_as_failure_element() {
     assert!(x.contains("failures=\"1\""));
     assert!(x.contains("<failure message=\"unhealthy\""));
 }
+
+#[test]
+fn prepared_error_report_survives_all_renderers() {
+    let mut error = plenora_database_core::DatabaseError::invalid_plan("esecuzione interrotta");
+    error.loss_report = Some(Box::new(plenora_database_core::loss::LossReport {
+        schema_version: 2,
+        policy: plenora_database_core::loss::MappingPolicy::Strict,
+        losses: vec![],
+    }));
+    let value = serde_json::to_value(error.public_projection()).unwrap();
+    for rendered in [
+        serde_json::to_string(&value).unwrap(),
+        render_markdown("write", &value),
+        render_junit("write", &value),
+    ] {
+        assert!(rendered.contains("loss_report"));
+        assert!(rendered.contains("strict"));
+    }
+}

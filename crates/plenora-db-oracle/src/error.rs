@@ -29,6 +29,7 @@ pub fn driver_error(phase: ErrorPhase, error: &Error) -> DatabaseError {
                 provider: Some(ProviderKind::Oracle),
                 execution_id: None,
                 message: message.to_owned(),
+                loss_report: None,
                 diagnostics: None,
             }
         },
@@ -254,6 +255,7 @@ pub fn oracle_code_error(phase: ErrorPhase, code: u32) -> DatabaseError {
         provider: Some(ProviderKind::Oracle),
         execution_id: None,
         message: format!("Oracle ha rifiutato l'operazione (codice ORA-{code:05})"),
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -272,6 +274,7 @@ pub fn interruption_error(cancellation: &CancellationToken, phase: ErrorPhase) -
         provider: Some(ProviderKind::Oracle),
         execution_id: None,
         message: "operazione Oracle interrotta".to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

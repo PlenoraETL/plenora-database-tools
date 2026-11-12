@@ -285,13 +285,7 @@ pub async fn write(
                 )?);
             }
             if source.is_nullable() && !target.nullable {
-                losses.push(mapping_loss(
-                    field_id,
-                    LossCategory::Nullability,
-                    "sorgente nullable verso colonna NOT NULL",
-                    None,
-                    None,
-                )?);
+                losses.push(nullability_loss(field_id, operation.mapping_policy)?);
             }
             // Lo SRID che la colonna riceverebbe, dichiarato o derivato da
             // `EPSG:<n>` (GEO-008): un campo senza `srid` ma con `EPSG:4326`
@@ -604,6 +598,23 @@ fn jsonb_loss(
         source_type: Some(source.data_type().to_string()),
         target_type,
     })
+}
+
+// NOT NULL rifiuta il valore nullo; non converte un valore valido. Strict
+// conserva il precedente rifiuto strutturale, le altre policy non richiedono
+// consenso per un rischio di rifiuto che non altera dati.
+fn nullability_loss(field_id: usize, policy: MappingPolicy) -> Result<MappingLoss> {
+    let mut loss = mapping_loss(
+        field_id,
+        LossCategory::Nullability,
+        "sorgente nullable verso colonna NOT NULL",
+        None,
+        None,
+    )?;
+    if policy != MappingPolicy::Strict {
+        loss.severity = LossSeverity::Information;
+    }
+    Ok(loss)
 }
 
 fn mapping_loss(

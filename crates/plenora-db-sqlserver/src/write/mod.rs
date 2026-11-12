@@ -466,7 +466,10 @@ pub async fn write_prepared(
     cancellation: &CancellationToken,
 ) -> Result<WriteOutcome> {
     let report = prepared.loss_report().clone();
-    plenora_database_core::prepared_execution::authorize(&report, true)?;
+    if let Err(mut error) = plenora_database_core::prepared_execution::authorize(&report, true) {
+        error.loss_report = Some(Box::new(report));
+        return Err(error);
+    }
     let result = write_prepared_inner(prepared, input, cancellation, None).await;
     plenora_database_core::prepared_execution::attach(report, result)
 }
@@ -479,7 +482,10 @@ pub async fn write_prepared_with_fault(
     fault: WriteFaultPoint,
 ) -> Result<WriteOutcome> {
     let report = prepared.loss_report().clone();
-    plenora_database_core::prepared_execution::authorize(&report, true)?;
+    if let Err(mut error) = plenora_database_core::prepared_execution::authorize(&report, true) {
+        error.loss_report = Some(Box::new(report));
+        return Err(error);
+    }
     let result = write_prepared_inner(prepared, input, cancellation, Some(fault)).await;
     plenora_database_core::prepared_execution::attach(report, result)
 }
@@ -1240,6 +1246,7 @@ fn transport_loss_error(execution_id: &str) -> DatabaseError {
         execution_id: Some(execution_id.to_owned()),
         message: "trasporto TDS perso durante write SQL Server: stato remoto da verificare"
             .to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

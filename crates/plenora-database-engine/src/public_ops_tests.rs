@@ -111,3 +111,15 @@ fn inspection_document_refuses_a_reserved_field() {
     assert_eq!(document["schemas"][0], "public");
     assert_eq!(document["provider"], "postgres");
 }
+
+#[test]
+fn provider_configuration_cannot_supply_loss_consent() {
+    for argument in ["--accept-loss", "--accept-loss=true", "--accept-loss=false"] {
+        let error = target("DSN", vec![argument.into()]).validate().unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
+        assert_eq!(
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
+    }
+}

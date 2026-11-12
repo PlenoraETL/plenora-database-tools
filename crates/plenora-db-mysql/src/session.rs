@@ -1056,6 +1056,7 @@ fn row_count_mismatch_error(profile: &dyn crate::profile::ProductProfile) -> Dat
             "conteggio righe {} incoerente per statement row-scoped",
             profile.product()
         ),
+        loss_report: None,
         diagnostics: None,
     }
 }

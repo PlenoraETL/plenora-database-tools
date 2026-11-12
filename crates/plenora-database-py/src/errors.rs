@@ -273,6 +273,13 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
             .and_then(|value| serde_json::to_value(value).ok())
             .and_then(|value| crate::py_convert::json_to_python(py, &value).ok());
         let _ = bound.setattr("details", details_py.as_ref());
+        let loss_py = public
+            .details
+            .as_ref()
+            .and_then(|details| details.loss_report.as_ref())
+            .and_then(|report| serde_json::to_value(report).ok())
+            .and_then(|value| crate::py_convert::json_to_python(py, &value).ok());
+        let _ = bound.setattr("loss_report", loss_py.as_ref());
         let diagnostics_py = public.details.as_ref().and_then(|details| {
             serde_json::to_value(&details.row_diagnostics)
                 .ok()

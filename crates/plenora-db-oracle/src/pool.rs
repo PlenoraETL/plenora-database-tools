@@ -194,6 +194,7 @@ fn pool_error(
         provider: Some(plenora_database_core::plan::ProviderKind::Oracle),
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

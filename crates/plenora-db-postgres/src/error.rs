@@ -244,6 +244,7 @@ pub fn public_error_envelope(
         provider: Some(ProviderKind::Postgres),
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

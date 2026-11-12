@@ -232,6 +232,7 @@ impl PostgresTransaction {
             provider: Some(plenora_database_core::plan::ProviderKind::Postgres),
             execution_id: None,
             message: message.to_owned(),
+            loss_report: None,
             diagnostics: None,
         }
         .after_interrupted_send()

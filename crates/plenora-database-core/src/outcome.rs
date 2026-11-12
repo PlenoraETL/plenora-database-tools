@@ -70,7 +70,11 @@ pub struct WriteOutcome {
     pub execution_id: String,
     pub provider: ProviderKind,
     pub rows: RowCounts,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_recovery"
+    )]
     pub recovery: Option<Recovery>,
 }
 
@@ -251,6 +255,7 @@ impl WriteOutcome {
                     message: "esito di scrittura fuori contratto: verificare lo stato remoto \
                               prima di ogni nuovo tentativo"
                         .to_owned(),
+                    loss_report: None,
                     diagnostics: None,
                 },
                 outcome: None,
@@ -294,6 +299,7 @@ impl WriteOutcome {
             provider: Some(self.provider),
             execution_id: Some(self.execution_id.clone()),
             message: message.to_owned(),
+            loss_report: None,
             diagnostics: None,
         };
         Err(Box::new(UnsettledWrite {
@@ -383,3 +389,9 @@ impl UnsettledWrite {
 #[cfg(test)]
 #[path = "outcome_tests.rs"]
 mod tests;
+
+fn present_recovery<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Recovery>, D::Error> {
+    Recovery::deserialize(deserializer).map(Some)
+}
