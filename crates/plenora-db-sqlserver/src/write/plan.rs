@@ -300,6 +300,65 @@ impl WritePlan {
         )
     }
 
+    pub(super) fn loss_instances(
+        &self,
+        operation: &WriteOperation,
+    ) -> Result<Vec<plenora_database_core::loss_registry::RuleInstance>> {
+        use plenora_database_core::loss_registry::{RuleInstance, RuleParameters};
+        let mut instances = Vec::new();
+        for column in &self.columns {
+            let field_id = u32::try_from(column.input_index)
+                .map_err(|_| DatabaseError::invalid_plan("numero colonne oltre il contratto"))?;
+            let mut rules = select_precision_rules(self.strict, column);
+            if !self.strict && !operation.keys.contains(&column.name) {
+                rules.extend(column.rewrites.iter().map(|rewrite| rewrite.rule_id()));
+            }
+            if self
+                .added_columns
+                .iter()
+                .any(|added| added.input_index == column.input_index)
+            {
+                rules.push(RuleId::SsAddNullable);
+            }
+            for rule_id in rules {
+                let mut parameters = RuleParameters::default();
+                if let Some(limit) = text_limit(
+                    &column.native_type,
+                    &column.native_declaration,
+                    column.collation.as_deref(),
+                ) {
+                    parameters.length = limit.max.map(|n| n as u64);
+                    parameters.text_unit = Some(limit.length_unit());
+                }
+                if matches!(rule_id, RuleId::SsBinaryLimit | RuleId::StorePadBinary) {
+                    parameters.length =
+                        binary_limit(&column.native_type, &column.native_declaration)
+                            .map(|n| n as u64);
+                }
+                if matches!(rule_id, RuleId::SsTemporal | RuleId::SsOffset) {
+                    parameters.precision = matches!(
+                        column.native_type.as_str(),
+                        "time" | "datetime2" | "datetimeoffset"
+                    )
+                    .then(|| temporal_scale(&column.native_declaration));
+                }
+                instances.push(RuleInstance {
+                    field_id,
+                    rule_id,
+                    parameters,
+                    source_type: Some(
+                        self.input_schema
+                            .field(column.input_index)
+                            .data_type()
+                            .to_string(),
+                    ),
+                    target_type: Some(column.native_declaration.clone()),
+                });
+            }
+        }
+        Ok(instances)
+    }
+
     pub(super) fn loss_report(&self, policy: MappingPolicy) -> Result<LossReport> {
         let losses = self
             .added_columns

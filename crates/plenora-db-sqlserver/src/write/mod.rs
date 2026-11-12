@@ -1,5 +1,6 @@
 pub mod admission;
 mod codec;
+mod effective;
 mod keys;
 mod lifecycle;
 mod plan;
@@ -131,6 +132,19 @@ impl std::fmt::Debug for PreparedSqlServerWrite {
 }
 
 impl PreparedSqlServerWrite {
+    /// Rapporto pianificato, prima del consumo dell'ingresso.
+    /// # Errors
+    /// Rifiuta rischi incompatibili o oltre i limiti del contratto.
+    pub fn execution_loss(
+        &self,
+    ) -> Result<plenora_database_core::execution_loss::ExecutionLossReport> {
+        plenora_database_core::loss_registry::compile_instances(
+            ProviderKind::Sqlserver,
+            self.operation.mapping_policy,
+            self.plan.loss_instances(&self.operation)?,
+        )
+        .map(|(_, report)| report)
+    }
     #[must_use]
     pub const fn loss_report(&self) -> &LossReport {
         &self.loss_report
@@ -466,15 +480,7 @@ pub async fn write_prepared(
     cancellation: &CancellationToken,
     consent: plenora_database_core::loss::LossConsent,
 ) -> Result<WriteOutcome> {
-    let report = prepared.loss_report().clone();
-    if let Err(mut error) =
-        plenora_database_core::prepared_execution::authorize_legacy(&report, consent)
-    {
-        error.loss_report = Some(Box::new(report.into()));
-        return Err(error);
-    }
-    let result = write_prepared_inner(prepared, input, cancellation, consent, None).await;
-    plenora_database_core::prepared_execution::attach(report, result)
+    execute_evaluated(prepared, input, cancellation, consent, None).await
 }
 
 #[cfg(test)]
@@ -485,15 +491,69 @@ pub async fn write_prepared_with_fault(
     consent: plenora_database_core::loss::LossConsent,
     fault: WriteFaultPoint,
 ) -> Result<WriteOutcome> {
-    let report = prepared.loss_report().clone();
-    if let Err(mut error) =
-        plenora_database_core::prepared_execution::authorize_legacy(&report, consent)
-    {
-        error.loss_report = Some(Box::new(report.into()));
-        return Err(error);
+    execute_evaluated(prepared, input, cancellation, consent, Some(fault)).await
+}
+
+async fn execute_evaluated(
+    prepared: PreparedSqlServerWrite,
+    input: Box<dyn BatchStream>,
+    cancellation: &CancellationToken,
+    consent: plenora_database_core::loss::LossConsent,
+    fault: Option<WriteFaultPoint>,
+) -> Result<WriteOutcome> {
+    let planned = prepared.execution_loss()?;
+    let mut evaluation = match effective::Evaluation::new(
+        &prepared.plan,
+        &prepared.operation,
+        consent,
+        &prepared.budget,
+    ) {
+        Ok(evaluation) => evaluation,
+        Err(error) => {
+            return plenora_database_core::prepared_execution::attach_execution(planned, Err(error))
+        }
+    };
+    let mut result = write_prepared_inner(
+        prepared,
+        input,
+        cancellation,
+        consent,
+        &mut evaluation,
+        fault,
+    )
+    .await;
+    match &result {
+        Ok(outcome) if outcome.status == WriteStatus::Committed => {}
+        Err(error)
+            if matches!(
+                error.remote_effect,
+                RemoteEffect::None | RemoteEffect::RolledBack
+            ) =>
+        {
+            evaluation.ledger.rollback();
+        }
+        _ => evaluation.ledger.uncertain()?,
     }
-    let result = write_prepared_inner(prepared, input, cancellation, consent, Some(fault)).await;
-    plenora_database_core::prepared_execution::attach(report, result)
+    let report = plenora_database_core::execution_loss::VersionedLossReport::from(
+        if result
+            .as_ref()
+            .is_ok_and(|o| o.status == WriteStatus::Committed)
+        {
+            evaluation.confirmed
+        } else {
+            evaluation.ledger.report()
+        },
+    );
+    match &mut result {
+        Ok(outcome) => {
+            outcome.schema_version = 3;
+            outcome.loss_report = Some(report);
+        }
+        Err(error) => {
+            error.loss_report = Some(Box::new(report));
+        }
+    }
+    plenora_database_core::prepared_execution::attach_execution(planned, result)
 }
 
 #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
@@ -502,9 +562,11 @@ async fn write_prepared_inner(
     input: Box<dyn BatchStream>,
     cancellation: &CancellationToken,
     consent: plenora_database_core::loss::LossConsent,
+    evaluation: &mut effective::Evaluation,
     fault: Option<WriteFaultPoint>,
 ) -> Result<WriteOutcome> {
-    plenora_database_core::prepared_execution::authorize_legacy(prepared.loss_report(), consent)?;
+    evaluation.consent = consent;
+    plenora_database_core::prepared_execution::authorize(prepared.loss_report())?;
     let stream_schema = input.schema();
     if stream_schema.as_ref() != prepared.plan.input_schema.as_ref() {
         return Err(write_error(
@@ -603,6 +665,7 @@ async fn write_prepared_inner(
             constraint_column,
             fault,
             &execution_id,
+            evaluation,
         );
         let diagnosed =
             plenora_database_core::diagnose_row_scoped_write(&mut writer, &mut tracker).await;
@@ -644,6 +707,9 @@ async fn write_prepared_inner(
                 let error = DatabaseError::resource_limit("conteggio righe write overflow");
                 return Err(rollback_after_error(&mut pooled, error).await);
             };
+            if let Err(error) = evaluation.batch(&batch, &prepared.plan) {
+                return Err(rollback_after_error(&mut pooled, error).await);
+            }
             if server_keys {
                 if let Err(error) =
                     keys::register(&mut pooled, &prepared.plan, &batch, control.token()).await
@@ -660,6 +726,7 @@ async fn write_prepared_inner(
                         control.token(),
                         fault,
                         &execution_id,
+                        evaluation,
                     )
                     .await
                 }
@@ -671,6 +738,7 @@ async fn write_prepared_inner(
                         control.token(),
                         fault,
                         &execution_id,
+                        evaluation,
                     )
                     .await
                 }
@@ -688,6 +756,7 @@ async fn write_prepared_inner(
         }
         (received, mutations)
     };
+    evaluation.ledger.complete();
     if server_keys {
         if let Err(error) =
             execute_key_sql(&mut pooled, Ok(keys::DROP_SQL.to_owned()), control.token()).await
@@ -719,13 +788,18 @@ async fn write_prepared_inner(
         error.execution_id = Some(execution_id);
         return Err(rollback_after_error_with_delayed_response(&mut pooled, error).await);
     }
+    if let Err(error) = evaluation.prepare_commit() {
+        return Err(rollback_after_error(&mut pooled, error).await);
+    }
     let commit_result = commit_session(&mut pooled, control.token(), fault).await;
     if commit_result.is_ok() {
         if fault == Some(WriteFaultPoint::CommitConfirmationLost) {
             pooled.quarantine();
             return unknown_commit_outcome(&prepared, execution_id, received, None);
         }
-        pooled.allow_reuse_after_drain()?;
+        if pooled.allow_reuse_after_drain().is_err() {
+            pooled.quarantine();
+        }
         let (inserted, updated, deleted) = match prepared.plan.mode {
             plenora_database_core::plan::WriteMode::Append
             | plenora_database_core::plan::WriteMode::TruncateInsert
@@ -802,15 +876,19 @@ async fn execute_prepared_batch(
     cancellation: &CancellationToken,
     fault: Option<WriteFaultPoint>,
     execution_id: &str,
+    evaluation: &mut effective::Evaluation,
 ) -> Result<MutationCounts> {
     let mut mutations = MutationCounts::default();
     for row in 0..batch.num_rows() {
         let query = codec::bind_row(plan, batch, row)?;
+        evaluation.sent(row)?;
         let results = pooled
             .session_mut()?
             .execute_query(query, ErrorPhase::Write, cancellation)
             .await?;
-        mutations.checked_add(row_mutation(&results, plan.mode)?)?;
+        let mutation = row_mutation(&results, plan.mode)?;
+        evaluation.applied(row, mutation, plan)?;
+        mutations.checked_add(mutation)?;
         if fault == Some(WriteFaultPoint::TransportLostAfterFirstInsert) {
             pooled.quarantine();
             return Err(transport_loss_error(execution_id));
@@ -826,11 +904,15 @@ async fn execute_bulk_batch(
     cancellation: &CancellationToken,
     fault: Option<WriteFaultPoint>,
     execution_id: &str,
+    evaluation: &mut effective::Evaluation,
 ) -> Result<MutationCounts> {
     let rows = codec::bulk_rows(plan, batch)?;
     let expected = u64::try_from(batch.num_rows())
         .map_err(|_| DatabaseError::resource_limit("righe bulk non rappresentabili"))?;
     if expected > 0 {
+        for row in 0..batch.num_rows() {
+            evaluation.sent(row)?;
+        }
         let inserted = pooled
             .session_mut()?
             .execute_bulk_rows(&plan.bulk_table, rows, cancellation)
@@ -846,6 +928,17 @@ async fn execute_bulk_batch(
             pooled.quarantine();
             return Err(transport_loss_error(execution_id));
         }
+    }
+    for row in 0..batch.num_rows() {
+        evaluation.applied(
+            row,
+            MutationCounts {
+                confirmed: 1,
+                inserted: 1,
+                ..MutationCounts::default()
+            },
+            plan,
+        )?;
     }
     Ok(MutationCounts {
         confirmed: expected,

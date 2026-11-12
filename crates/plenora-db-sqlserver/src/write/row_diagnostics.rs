@@ -79,6 +79,7 @@ pub(super) struct SqlServerRowWriter<'a> {
     mutations: MutationCounts,
     fault: Option<WriteFaultPoint>,
     execution_id: &'a str,
+    evaluation: &'a mut super::effective::Evaluation,
 }
 
 impl<'a> SqlServerRowWriter<'a> {
@@ -92,6 +93,7 @@ impl<'a> SqlServerRowWriter<'a> {
         constraint_column: Option<String>,
         fault: Option<WriteFaultPoint>,
         execution_id: &'a str,
+        evaluation: &'a mut super::effective::Evaluation,
     ) -> Self {
         Self {
             pooled,
@@ -111,6 +113,7 @@ impl<'a> SqlServerRowWriter<'a> {
             },
             fault,
             execution_id,
+            evaluation,
         }
     }
 
@@ -152,6 +155,7 @@ impl<'a> SqlServerRowWriter<'a> {
                     "schema batch SQL Server diverso dallo schema preparato",
                 ));
             }
+            self.evaluation.batch(&batch, self.plan)?;
             if batch.num_rows() > 0 {
                 self.batch = Some(batch);
             }
@@ -175,6 +179,7 @@ impl RowScopedWriter for SqlServerRowWriter<'_> {
                     reserve_write_row(batch, offset, self.plan, self.budget)?,
                 )
             };
+            self.evaluation.sent(offset)?;
             match self
                 .pooled
                 .session_mut()?
@@ -193,6 +198,7 @@ impl RowScopedWriter for SqlServerRowWriter<'_> {
                         self.pooled.quarantine();
                         ambiguous_affected_rows(error)
                     })?;
+                    self.evaluation.applied(offset, mutation, self.plan)?;
                     resources.commit()?;
                     self.mutations.checked_add(mutation)?;
                     self.applied = self.applied.checked_add(1).ok_or_else(|| {
@@ -208,6 +214,7 @@ impl RowScopedWriter for SqlServerRowWriter<'_> {
                     Ok(RowApplication::Applied)
                 }
                 RowQueryResult::ServerRejected { code, error } => {
+                    self.evaluation.discard(offset)?;
                     if let Some(cause) = row_rejection_cause_from_code(code) {
                         Ok(RowApplication::Rejected(RowRejection {
                             cause: cause.to_owned(),

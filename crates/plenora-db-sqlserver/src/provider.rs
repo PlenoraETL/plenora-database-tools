@@ -460,6 +460,7 @@ impl Provider for SqlServerProvider {
             )
             .await?;
             let loss_report = driver_prepared.loss_report().clone();
+            let execution = driver_prepared.execution_loss()?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
             Ok(PreparedWrite::new(
@@ -470,6 +471,7 @@ impl Provider for SqlServerProvider {
                 operation_lease,
                 columns_lease,
             )
+            .with_execution_loss(execution)
             .with_driver_state(SqlServerPreparedState {
                 driver: driver_prepared,
                 secret_fingerprint: Sha256::digest(secret.expose().as_bytes()).into(),

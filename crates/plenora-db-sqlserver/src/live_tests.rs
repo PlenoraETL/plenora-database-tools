@@ -11921,3 +11921,7 @@ async fn live_audit900_typed_wkb_positive() {
         .await
         .unwrap();
 }
+
+#[cfg(test)]
+#[path = "effective_loss_live_tests.rs"]
+mod effective_loss;

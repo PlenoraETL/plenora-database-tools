@@ -567,6 +567,14 @@
     "prepared": 0,
     "write": 3
   },
+  "plenora-db-sqlserver/src/effective_loss_live_tests.rs": {
+    "consent": 0,
+    "direct": 3,
+    "overrides": 0,
+    "prepare": 1,
+    "prepared": 0,
+    "write": 1
+  },
   "plenora-db-sqlserver/src/live_tests.rs": {
     "consent": 0,
     "direct": 33,
@@ -585,7 +593,7 @@
   },
   "plenora-db-sqlserver/src/write/mod.rs": {
     "consent": 0,
-    "direct": 2,
+    "direct": 1,
     "overrides": 0,
     "prepare": 0,
     "prepared": 0,

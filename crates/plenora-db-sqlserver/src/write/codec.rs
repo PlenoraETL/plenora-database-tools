@@ -7,6 +7,7 @@ use plenora_database_core::arrow::array::{
 };
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::geometry_value::verify_field_value;
+use plenora_database_core::loss_ledger::Classification;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use tiberius::{IntoSql, Query, TokenRow};
 
@@ -662,14 +663,14 @@ pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str
     {
         return Err(mapping_error(super::plan::LOSSY_VALUE));
     }
-    if !limit.code_page.represents(value) {
+    if !matches!(
+        super::effective::encoding(column, value)?,
+        Classification::Exact(_)
+    ) || !matches!(
+        super::effective::text(column, value, None)?,
+        Classification::Exact(_)
+    ) {
         return Err(mapping_error(super::plan::LOSSY_VALUE));
-    }
-    if let Some(max) = limit.max {
-        let length = limit.length_unit().count(value);
-        if length > max {
-            return Err(mapping_error(super::plan::LOSSY_VALUE));
-        }
     }
     Ok(())
 }
@@ -687,8 +688,10 @@ pub(super) fn check_binary(plan: &WritePlan, column: &WriteColumnPlan, value: &[
     if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
         return Ok(());
     }
-    match super::plan::binary_limit(&column.native_type, &column.native_declaration) {
-        Some(max) if value.len() > max => Err(mapping_error(super::plan::LOSSY_VALUE)),
+    match super::effective::binary(column, value.len()) {
+        plenora_database_core::loss_ledger::Classification::WouldChange(_) => {
+            Err(mapping_error(super::plan::LOSSY_VALUE))
+        }
         _ => Ok(()),
     }
 }
@@ -712,8 +715,10 @@ pub(super) fn check_offset(
     if (!plan.strict && !plan.key_input_indices.contains(&column.input_index)) || scale >= 9 {
         return Ok(());
     }
-    let unit = 10_u32.pow(9 - scale);
-    if value.nanosecond().is_multiple_of(unit) {
+    if matches!(
+        super::effective::offset(column, value.nanosecond()),
+        plenora_database_core::loss_ledger::Classification::Exact(_)
+    ) {
         Ok(())
     } else {
         Err(mapping_error(super::plan::LOSSY_VALUE))
@@ -741,8 +746,8 @@ pub(super) fn check_temporal(
     if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
         return Ok(());
     }
-    match super::plan::temporal_unit(&column.native_type, &column.native_declaration) {
-        Some(unit) if microseconds.rem_euclid(unit) != 0 => {
+    match super::effective::temporal(column, microseconds) {
+        plenora_database_core::loss_ledger::Classification::WouldChange(_) => {
             Err(mapping_error(super::plan::LOSSY_VALUE))
         }
         _ => Ok(()),
@@ -758,7 +763,7 @@ pub(super) fn check_temporal(
 /// frazionarie si rifiutano in ogni politica, come `fraction_digits` di
 /// PostgreSQL: nessun tipo di SQL Server le conserva, e la libreria non le
 /// toglie in silenzio.
-fn datetimeoffset(value: &str) -> Result<DateTime<FixedOffset>> {
+pub(super) fn datetimeoffset(value: &str) -> Result<DateTime<FixedOffset>> {
     let fraction_digits = value.split_once('.').map_or(0, |(_, fraction)| {
         fraction.bytes().take_while(u8::is_ascii_digit).count()
     });

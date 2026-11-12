@@ -30,7 +30,11 @@ impl BatchStream for Input {
     }
 }
 
-fn input(native: &str, values: &[(i64, Option<&str>)], declared: bool) -> Box<dyn BatchStream> {
+fn input(
+    native: &str,
+    values: &[(i64, Option<&str>)],
+    declare_input_rows: bool,
+) -> Box<dyn BatchStream> {
     let field = Field::new("v", DataType::Utf8, true).with_metadata(
         [
             (protocol::POSTGRES_NATIVE_TYPE.to_owned(), native.to_owned()),
@@ -63,7 +67,7 @@ fn input(native: &str, values: &[(i64, Option<&str>)], declared: bool) -> Box<dy
     Box::new(Input {
         schema,
         batches,
-        declared: declared.then_some(values.len() as u64),
+        declared: declare_input_rows.then_some(values.len() as u64),
     })
 }
 
@@ -288,7 +292,7 @@ async fn live_b2_text_second_batch_rollback_and_strict_baseline() {
                         client.batch_execute("CREATE TABLE pln_b2.target(id bigint PRIMARY KEY, v varchar(3)); INSERT INTO pln_b2.target VALUES(1,'old'),(2,'old')").await.unwrap();
                     }
                     let first = if mode == WriteMode::Append { 3 } else { 1 };
-                    let error = run(
+                    let result = run(
                         &provider,
                         &secret,
                         &operation(mode, policy),
@@ -299,25 +303,31 @@ async fn live_b2_text_second_batch_rollback_and_strict_baseline() {
                         ),
                         consent,
                     )
-                    .await
-                    .unwrap_err();
+                    .await;
+                    // Baseline 9.0.3: pg_type/native_declaration_sql ripiega su text
+                    // per questa dichiarazione non qualificata. Nessuna troncatura.
+                    if mode == WriteMode::Create {
+                        let outcome = result.unwrap();
+                        assert!(execution(outcome.loss_report.as_ref().unwrap())
+                            .effective
+                            .is_empty());
+                        assert_eq!(
+                            rows(&client).await,
+                            vec![(1, Some("abc".to_owned())), (2, Some("abcd".to_owned()))]
+                        );
+                        let native: String = client.query_one("SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'pln_b2.target'::regclass AND attname = 'v'", &[]).await.unwrap().get(0);
+                        assert_eq!(native, "text");
+                        continue;
+                    }
+                    let error = result.unwrap_err();
                     assert_eq!(error.category, ErrorCategory::DataMapping);
                     assert!(execution(error.loss_report.as_ref().unwrap())
                         .effective
                         .is_empty());
-                    if mode == WriteMode::Create {
-                        assert!(client
-                            .query_one("SELECT to_regclass('pln_b2.target')::text", &[])
-                            .await
-                            .unwrap()
-                            .get::<_, Option<String>>(0)
-                            .is_none());
-                    } else {
-                        assert_eq!(
-                            rows(&client).await,
-                            vec![(1, Some("old".to_owned())), (2, Some("old".to_owned()))]
-                        );
-                    }
+                    assert_eq!(
+                        rows(&client).await,
+                        vec![(1, Some("old".to_owned())), (2, Some("old".to_owned()))]
+                    );
                 }
             }
         }

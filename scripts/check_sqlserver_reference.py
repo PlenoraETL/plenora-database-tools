@@ -46,6 +46,11 @@ SKIPPED_LIVE_TESTS = (
 # un altro. Il nome va verificato.
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_b3_matrix_a_to_e_direct_trait_and_staging",
+        "live_b3_warning_code_page_and_second_batch_text",
+        "live_b3_negative_profiles_strict_and_tds",
+        "live_b3_binary_and_surrogate_boundaries",
+        "live_b3_uncertain_commit_no_match_and_schema_change",
         "live_exact_temporal_query_stream_and_duplicate_names",
         "live_submicrosecond_temporal_values_fail_closed",
 

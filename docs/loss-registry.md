@@ -20,7 +20,7 @@ Generato da `loss_registry.rs` con `scripts/render_loss_registry.py`.
 | ss.encoding | Sqlserver | Encoding | Warning | SsEncoding | Mixed | None |
 | ss.offset | Sqlserver | Precision | Warning | SsOffset | Exact | None |
 | ss.temporal | Sqlserver | Precision | DataLoss | SsTemporal | Exact | None |
-| ss.text_limit | Sqlserver | Precision | DataLoss | SsText | Exact | None |
+| ss.text_limit | Sqlserver | Precision | DataLoss | SsText | Mixed | None |
 | ss.xml | Sqlserver | NativeType | Warning | Conservative | Conservative | None |
 | store.empty_to_null | Shared | Nullability | DataLoss | EmptyToNull | Exact | None |
 | store.every | Shared | NativeType | DataLoss | Conservative | Conservative | None |
