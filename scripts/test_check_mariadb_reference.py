@@ -997,6 +997,28 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
             f"nessuno spegnimento dopo l'ultima accensione: {calls}",
         )
 
+    def test_verified_spatial_functions_must_succeed_on_every_reference(self) -> None:
+        from scripts.check_mariadb_driver import gate_violations
+
+        for server in ("mysql", "mariadb-12", "mariadb-11", "mariadb-10"):
+            for outcome in ("rejected", "not_measured"):
+                with self.subTest(server=server, outcome=outcome):
+                    document = {"results": self.full_results()}
+                    for entry in document["results"]:
+                        entry["observations"]["mariadb-10"] = dict(
+                            entry["observations"]["mariadb-11"]
+                        )
+                    self.assertEqual(gate_violations(document), [])
+                    entry = next(
+                        item for item in document["results"]
+                        if item["probe"] == "provider.profile_spatial_functions"
+                    )
+                    entry["observations"][server]["outcome"] = outcome
+                    violations = gate_violations(document)
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertIn("provider.profile_spatial_functions", violations[0])
+                    self.assertIn(server, violations[0])
+
     def test_a_capability_without_its_proof_fails_the_campaign(self) -> None:
         """Il verdetto si stampa comunque, ma l'uscita dice cosa manca.
 

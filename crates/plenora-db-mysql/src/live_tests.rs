@@ -5697,7 +5697,7 @@ async fn live_v12_every_verified_spatial_function_executes() {
     let mut executed = 0_usize;
     let mut broken: Vec<String> = Vec::new();
     for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
-        // Ogni funzione prova entrambe le geometrie: basta che una riesca.
+        // Ogni funzione prova i tre tipi: serve almeno un risultato non NULL.
         // Un tipo di ingresso incompatibile non dimostra l'assenza della funzione.
         let mut refusals: Vec<String> = Vec::new();
         // Una funzione che **rende** geometria si chiede sulle colonne con un
@@ -5812,8 +5812,12 @@ async fn live_v12_every_verified_spatial_function_executes() {
                     continue;
                 }
                 Ok(first) => {
-                    if first.is_none_or(|batch| batch.num_rows() != 1) {
-                        refusals.push(format!("su {field} non produce la riga della sonda"));
+                    if first.is_none_or(|batch| {
+                        batch.num_rows() != 1
+                            || batch.num_columns() != 1
+                            || batch.column(0).null_count() != 0
+                    }) {
+                        refusals.push(format!("su {field} non produce un valore non NULL"));
                         continue;
                     }
                 }
@@ -6110,6 +6114,7 @@ async fn live_v12_a_computed_geometry_carries_the_declared_frame_and_refuses_a_l
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_v12_query_spatial_functions_render_and_execute() {
+    use plenora_database_core::arrow::array::Array;
     use plenora_database_core::plan::{ObjectRef, SortDirection};
     use plenora_database_core::provider::ParameterBag;
     use plenora_database_core::query::{
@@ -6142,22 +6147,25 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
             )
             .await
             .expect("create");
-        // Insert 3 geometrie: 2 point + 1 linestring
+        // ST_Area richiede Polygon/MultiPolygon: punti e linee producono 3516.
+        // Due quadrati congruenti, traslati in longitudine, e la loro unione.
+        // Conserviamo il CRS geografico: le aree sono geodetiche in m2.
         setup
             .connection_mut()
             .unwrap()
             .query_drop(
                 "INSERT INTO _v12_spatial VALUES \
-                 (1, ST_GeomFromText('POINT(0 0)', 4326)), \
-                 (2, ST_GeomFromText('POINT(1 1)', 4326)), \
-                 (3, ST_GeomFromText('LINESTRING(0 0, 5 5)', 4326))",
+                 (1, ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))', 4326, 'axis-order=long-lat')), \
+                 (2, ST_GeomFromText('POLYGON((3 0,4 0,4 1,3 1,3 0))', 4326, 'axis-order=long-lat')), \
+                 (3, ST_GeomFromText('MULTIPOLYGON(((0 0,1 0,1 1,0 1,0 0)), \
+                  ((3 0,4 0,4 1,3 1,3 0)))', 4326, 'axis-order=long-lat'))",
             )
             .await
             .expect("seed");
     }
 
     // Query portable: SELECT id, ST_Area(shape) AS area FROM _v12_spatial ORDER BY id
-    let mut operation = QueryOperation {
+    let operation = QueryOperation {
         declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
@@ -6212,7 +6220,6 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
         row_offset: None,
         locking: None,
     };
-    operation.derived_source = None; // (placeholder)
 
     let bag = ParameterBag::default();
     let mut stream = provider
@@ -6221,20 +6228,64 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
         .expect("query spatial");
     // Lo stream aperto non prova l'esecuzione: anche i warning finali
     // devono essere letti (CHANGELOG 9.0.0, vigente nella 10.0.0).
-    let mut rows = 0;
+    let mut ids = Vec::new();
+    let mut areas = Vec::new();
     while let Some(batch) = stream
         .next_batch(&cancellation)
         .await
         .expect("batch spatial")
     {
-        rows += batch.num_rows();
+        assert_eq!(batch.num_columns(), 2);
+        let batch_ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("id");
+        let batch_areas = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("area double");
+        assert_eq!(batch_ids.null_count(), 0);
+        assert_eq!(batch_areas.null_count(), 0);
+        ids.extend(batch_ids.values().iter().copied());
+        areas.extend(batch_areas.values().iter().copied());
     }
-    assert_eq!(rows, 3);
+    assert_eq!(ids, [1, 2, 3]);
+    assert_eq!(areas.len(), 3);
+    assert!(areas.iter().all(|area| area.is_finite() && *area > 0.0));
+    // Un quadrato di un grado all'equatore misura circa 12.3 miliardi di m2;
+    // una resa cartesiana in gradi quadrati non soddisfa questa prova.
+    assert!((1.2e10..1.3e10).contains(&areas[0]));
+    assert!((areas[1] / areas[0] - 1.0).abs() < 1e-9);
+    assert!((areas[2] / areas[0] - 2.0).abs() < 1e-9);
     drop(stream);
 
     let mut check = MysqlSession::open(&live_config(), &cancellation)
         .await
         .expect("check");
+    // I tre ingressi originari restano prove negative, ognuno isolato:
+    // nessun filtro elimina di nascosto il dato incompatibile.
+    for wkt in ["POINT(0 0)", "POINT(1 1)", "LINESTRING(0 0, 5 5)"] {
+        let connection = check.connection_mut().expect("fixture negativa");
+        connection
+            .query_drop("DELETE FROM _v12_spatial")
+            .await
+            .expect("svuota fixture");
+        connection.exec_drop(
+            "INSERT INTO _v12_spatial VALUES (1, ST_GeomFromText(?, 4326, 'axis-order=long-lat'))",
+            (wkt,),
+        ).await.expect("geometria valida ma non areale");
+        let error = geometry_operand_rows(&provider, &operation, &bag)
+            .await
+            .expect_err("ST_Area rifiuta il tipo non areale");
+        assert_eq!(error.category, ErrorCategory::Execution);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
+        assert_eq!(error.provider, Some(ProviderKind::Mysql));
+        assert_eq!(error.message, "errore server MySQL redatto (codice 3516)");
+    }
     check
         .connection_mut()
         .unwrap()

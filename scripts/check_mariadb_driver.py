@@ -83,6 +83,8 @@ OUTCOME_ONLY = frozenset({"raw.tls_cipher", "provider.test_connection"})
 #
 # Una sonda richiesta che diventa rejected rende non-zero anche il gate.
 REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
+    # La lista verified e pubblicata: una forma non NULL e EOF per ogni voce.
+    "provider.profile_spatial_functions": "quali funzioni verified il prodotto esegue",
     "provider.profile_probe": "riconoscimento del prodotto e qualifica della versione",
     # Il commit ambiguo: la sonda lo provoca in modo deterministico e verifica
     # **due** cose, non una. Che il provider dichiari `OutcomeUnknown`, e che
@@ -207,7 +209,6 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # esattamente nel caso che la sonda cerca.
     "provider.profile_pool_endurance": "molti cicli non lasciano connessioni dietro",
     "provider.profile_mixed_load": "letture e scritture insieme sullo stesso pool",
-    "provider.profile_spatial_functions": "quali funzioni verified il prodotto esegue",
     # `SpatialCapabilities::spatial_index` e chiusa su entrambi i profili e il
     # piano rifiuta `create_spatial_index` in prepare. Non e una divergenza: e
     # una superficie che nessuno ha attraversato, e questa sonda e il primo

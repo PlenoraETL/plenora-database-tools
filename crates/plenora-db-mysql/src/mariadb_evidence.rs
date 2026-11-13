@@ -7286,20 +7286,31 @@ async fn spatial_function_probe(
         functions.len(),
         refused.join(" ")
     );
-    recorder.accepted(
-        "provider.profile_spatial_functions",
-        "provider",
-        "profilo",
-        question,
-        condense(&detail),
-    );
+    if refused.is_empty() {
+        recorder.accepted(
+            "provider.profile_spatial_functions",
+            "provider",
+            "profilo",
+            question,
+            condense(&detail),
+        );
+    } else {
+        recorder.rejected(
+            "provider.profile_spatial_functions",
+            "provider",
+            "profilo",
+            question,
+            condense(&detail),
+            None,
+        );
+    }
 
     let _ = connection
         .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_FN}"))
         .await;
 }
 
-/// Attraversa una funzione su entrambe le geometrie: basta che una passi.
+/// Attraversa una funzione sui tre tipi: serve un valore non NULL e EOF.
 ///
 /// `ST_Area` su una `LINESTRING` risponde 3516, e chiudere la funzione per
 /// quello sarebbe una falsa assenza — una capability chiusa per colpa del dato
@@ -7418,10 +7429,17 @@ async fn drain_spatial_function(
         .next_batch(cancellation)
         .await
         .map_err(|error| condense(&error.message))?;
-    if first.is_none_or(|batch| batch.num_rows() != 1) {
-        return Err("nessuna riga".to_owned());
+    if first.is_none_or(|batch| {
+        batch.num_rows() != 1 || batch.num_columns() != 1 || batch.column(0).null_count() != 0
+    }) {
+        return Err("nessun valore non NULL sulla geometria della sonda".to_owned());
     }
-    Ok(())
+    // Un risultato senza EOF non certifica i diagnostici finali del server.
+    match stream.next_batch(cancellation).await {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => Err("piu di una riga nella sonda spatial".to_owned()),
+        Err(error) => Err(condense(&error.message)),
+    }
 }
 
 /// La tabella su cui il provider scrive geometrie.
