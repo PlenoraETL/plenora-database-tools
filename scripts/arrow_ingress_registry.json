@@ -8519,15 +8519,15 @@
     },
     "crates/plenora-db-mysql/src/provider.rs::prepare_write#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Riceve solo SchemaRef e metadati di preparazione, senza buffer di celle.",
+      "reason": "Riceve solo SchemaRef e metadati di preparazione, senza buffer di celle. P6: rilettura indipendente del consenso pubblico e delle catene schema/guard_input_keys/RewriteGuard/create_buffer; nessuna lettura array nuova prima della validazione. Live non eseguiti.",
       "signature": "fn prepare_write<'a>( &'a self, secret: &'a SecretString, operation: &'a WriteOperation, input_schema: SchemaRef, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, PreparedWrite>",
-      "review_sha256": "31ac59a487d8acb762a59886074322d4cfdd0339bc4a5cd451497d44a8db914c"
+      "review_sha256": "c9c2d2b585751e9d2d497a4c16d6cb3cccd42bef7436eacaa750b0e3500c26df"
     },
     "crates/plenora-db-mysql/src/provider.rs::write#1": {
       "classification": "ingresso guardato",
-      "reason": "Provider MySQL: execute_with_consent -> execute_mysql_write; validazione completa per ogni fetch ordinario e diagnostico prima dei codec.",
+      "reason": "Provider MySQL: execute_with_consent -> execute_mysql_write; validazione completa per ogni fetch ordinario e diagnostico prima dei codec. P6: rilettura indipendente del consenso pubblico e delle catene schema/guard_input_keys/RewriteGuard/create_buffer; nessuna lettura array nuova prima della validazione. Live non eseguiti.",
       "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "46c07c9f496c686e6c5a39ba7fce55fc8390316638b5b046fab03150e5ac2c25",
+      "review_sha256": "29d243055e8e02bb53c6c51eecbc36219f293c3a80d2d72fba713ec133447317",
       "required": [
         "execute_mysql_write("
       ],
@@ -9714,9 +9714,9 @@
     },
     "crates/plenora-db-mysql/src/provider.rs::execute_mysql_write#1": {
       "classification": "ingresso guardato",
-      "reason": "Wrapper dei consumer ordinario, diagnostico e Create: ogni fetch passa da validated_batch prima dei codec; catena fissata nei support_sources.",
-      "review_sha256": "a67b285a433117eed6bdfe44f8952447b9fcde0d7b3fd738a9b00546396e11f5",
-      "signature": "pub async fn execute_mysql_write( provider: &MysqlProvider, secret: &SecretString, mut prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, internal_test: bool, ) -> Result<WriteOutcome>",
+      "reason": "Wrapper dei consumer ordinario, diagnostico e Create: ogni fetch passa da validated_batch prima dei codec; catena fissata nei support_sources. P6: rilettura indipendente del consenso pubblico e delle catene schema/guard_input_keys/RewriteGuard/create_buffer; nessuna lettura array nuova prima della validazione. Live non eseguiti.",
+      "review_sha256": "bc92b3c2854fd9fc37fef4125be8220a1efa8ee735dfada96d22545278ec2404",
+      "signature": "pub async fn execute_mysql_write( provider: &MysqlProvider, secret: &SecretString, mut prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> Result<WriteOutcome>",
       "required": [
         "guard_input_keys(",
         "create_buffer::prepare(",
@@ -9729,6 +9729,18 @@
       "reason": "Adapter interno in modulo privato non riesportato: batch validati da validated_batch e controllo schema nel consumer prima di codec/cache; catena fissata nei support_sources.",
       "review_sha256": "dd4e6899ecb3ad55b8c78f1f2c71086630881390a45c9d62e16f9b7faa06b5c0",
       "signature": "pub(crate) fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<Value>"
+    },
+    "crates/plenora-database-py/src/write_loss_tests.rs::mysql_surface_vectors_warning_and_error_parity#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Test P6: fixture interna di rapporti o batch costruiti dal test, senza buffer Arrow esterni. Rilettura indipendente delle catene produttive separata.",
+      "review_sha256": "af7dda9c6a2959e9364935b2fe3296dbc4e3beb7e6b757af2071309ccffab9c8",
+      "signature": "fn mysql_surface_vectors_warning_and_error_parity()"
+    },
+    "crates/plenora-db-mysql/src/live_tests.rs::open_write_input#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Test P6: fixture interna di rapporti o batch costruiti dal test, senza buffer Arrow esterni. Rilettura indipendente delle catene produttive separata.",
+      "review_sha256": "4fa7969a8a129cefaa90dc0f9471a1274483fd94013a075d2bac1f8833f49a34",
+      "signature": "fn open_write_input<'a>( &'a self, _: &'a plenora_database_engine::runtime_binding::RuntimeRequest, ) -> ProviderFuture<'a, Box<dyn BatchStream>>"
     }
   },
   "support_sources": {
@@ -9781,7 +9793,7 @@
       "reason": "locate e drain usano validated_batch; evaluation.batch precede bind/invio e segue la validazione."
     },
     "crates/plenora-db-mysql/src/provider.rs": {
-      "review_sha256": "4f4bb695d1a8ffac9ab45d31e9dad6fbda694a7ff95363cff400f3587fb9e7f2",
+      "review_sha256": "a3a6c867d5bdfee20a5ea90c6cde1d161431ad42555bb96e05f802b09186beb0",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/row_diagnostics.rs": {
@@ -9809,7 +9821,7 @@
       "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
     },
     "crates/plenora-database-cli/src/main.rs": {
-      "review_sha256": "36f14303a36bc2ecabe7ed6887a1ae3bcdfcbabe4f7cb21a9e804c4e3c8d7d08",
+      "review_sha256": "306163680e82aeccd02b4c760dc62eeacffb0b2ba8406f6572a8d7c804f85291",
       "reason": "write e database-write-ipc passano da IpcFileBatchStream e provider validanti; dry-run e output usano validated_batch. accept_loss e un argomento distinto dai dati."
     },
     "crates/plenora-database-cli/src/query_cmd.rs": {

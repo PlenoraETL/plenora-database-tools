@@ -227,6 +227,12 @@ impl PreparedWrite {
         self
     }
 
+    /// Rischio congelato del piano, senza misura dei valori futuri.
+    #[must_use]
+    pub const fn execution_loss(&self) -> Option<&crate::execution_loss::ExecutionLossReport> {
+        self.execution_loss.as_ref()
+    }
+
     /// Consuma lo stato preparato se appartiene al driver atteso.
     pub fn take_driver_state<T: Any + Send>(&mut self) -> Option<T> {
         let state = self.driver_state.take()?;

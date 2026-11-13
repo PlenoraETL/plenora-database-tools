@@ -188,7 +188,24 @@ fn compile_rejects_unqualified_operation_shapes_before_the_network() {
     ] {
         let mut operation = append_operation();
         operation.mapping_policy = policy;
-        cases.push((operation, ErrorCategory::Unsupported));
+        assert!(MysqlWritePlan::compile_with_profile(
+            &input,
+            &operation,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE
+        )
+        .is_ok());
+        assert_eq!(
+            MysqlWritePlan::compile_with_profile(
+                &input,
+                &operation,
+                "warehouse",
+                &crate::profile::MARIADB_PROFILE
+            )
+            .unwrap_err()
+            .category,
+            ErrorCategory::Unsupported
+        );
     }
 
     for (operation, expected) in cases {
@@ -1986,7 +2003,7 @@ fn server_probe_binds_text_that_production_refuses_before_io() {
         .is_ok());
 }
 
-/// MySQL e MariaDB chiudono ogni politica non stretta prima dei valori limitati.
+/// Solo MySQL apre le policy non strict; i limiti dei valori restano indipendenti.
 #[test]
 fn bounded_types_all_policies_both_products() {
     for profile in [
@@ -2008,7 +2025,7 @@ fn bounded_types_all_policies_both_products() {
                     "warehouse",
                     profile,
                 );
-                if policy == MappingPolicy::Strict {
+                if policy == MappingPolicy::Strict || profile.kind() == ProviderKind::Mysql {
                     assert!(result.is_ok());
                 } else {
                     assert_eq!(result.unwrap_err().category, ErrorCategory::Unsupported);
@@ -2201,6 +2218,10 @@ fn p1_operation_gate_baseline() {
         "../../../tests/fixtures/mysql_permissive/inventory.json"
     ))
     .unwrap();
+    let baseline: Json = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/operation_baseline.json"
+    ))
+    .unwrap();
     let mut observed = Vec::new();
     for entry in inventory["operation_matrix"].as_array().unwrap() {
         let mut op = append_operation();
@@ -2224,14 +2245,25 @@ fn p1_operation_gate_baseline() {
             }
             let outcome =
                 MysqlWritePlan::compile_with_profile(&schema(fields), &op, "warehouse", profile);
-            assert_eq!(
-                outcome.is_ok(),
-                entry["baseline"] == "operation_admitted",
-                "{entry}: {outcome:?}"
-            );
-            observed.push(
-                json!({"case": entry, "provider": profile.product(), "outcome": result(outcome)}),
-            );
+            let index = observed.len();
+            if profile.kind() == ProviderKind::Mysql && op.mapping_policy != MappingPolicy::Strict {
+                assert_eq!(
+                    outcome.is_ok(),
+                    op.transaction_profile == TransactionProfile::SingleTransaction
+                        && !op.allow_partial
+                        && op.mode != WriteMode::TruncateInsert,
+                    "{entry}: {outcome:?}"
+                );
+                // La baseline P1 resta immutabile: soltanto il gate MySQL non-strict cambia in P6.
+                observed.push(baseline[index].clone());
+            } else {
+                assert_eq!(
+                    outcome.is_ok(),
+                    entry["baseline"] == "operation_admitted",
+                    "{entry}: {outcome:?}"
+                );
+                observed.push(json!({"case": entry, "provider": profile.product(), "outcome": result(outcome)}));
+            }
         }
     }
     snapshot::check(root(), "operation_baseline", &json!(observed));

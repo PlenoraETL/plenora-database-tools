@@ -125,6 +125,13 @@ provano la semantica del target. Il controllo e le regressioni sono in
 
 ## Scritture Arrow: rapporto e consenso
 
+La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
+Strict e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
+registro generato; l'apertura del percorso non attesta la qualifica live,
+che richiede la matrice sul ref finale. I reader 10.0.0 non comprendono gli
+ID MySQL: aggiornare producer e reader insieme alla major 11.
+
 La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
 PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
 `compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
@@ -133,7 +140,7 @@ anche se la regola ha severità Warning. Il default nega: Rust puro usa
 `LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
 SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
 Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
-vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+vincolanti. Il consenso non apre MariaDB, Db2 o Oracle. I profili `chunk_committed`
 e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
 il consenso non rende disponibile un profilo non qualificato.
 
@@ -142,7 +149,7 @@ consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anch
 con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
 altera i valori e dichiara le trasformazioni nel rapporto.
 
-Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
+Nei writer migrati, WriteOutcome v3 contiene in `loss_report`
 ExecutionLossReport v3:
 `risk` descrive il piano; `evaluation` registra i valori controllati e quelli
 che cambierebbero; `effective` distingue `committed` da `uncertain`.

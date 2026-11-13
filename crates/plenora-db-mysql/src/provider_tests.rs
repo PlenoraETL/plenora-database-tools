@@ -515,9 +515,9 @@ async fn prepare_write_rejects_unqualified_operations_before_the_network() {
     let provider = MysqlProvider::new(config, 1).expect("provider");
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
     let mut operation = append_write_operation();
-    // `Lossy` resta Unsupported anche quando la modalita di scrittura e
-    // qualificata, finche il relativo preflight non viene dimostrato.
+    // ChunkCommitted resta chiuso anche con una policy permissiva.
     operation.mapping_policy = plenora_database_core::loss::MappingPolicy::Lossy;
+    operation.transaction_profile = plenora_database_core::plan::TransactionProfile::ChunkCommitted;
     let outcome = provider
         .prepare_write(
             &SecretString::new("unique-secret"),

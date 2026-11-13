@@ -15254,7 +15254,8 @@ async fn p4_execute_selected(
         operation.keys = vec!["id".into()];
     }
     operation.update_columns = updates.iter().map(|s| (*s).to_owned()).collect();
-    let mut prepared = provider
+    operation.mapping_policy = policy;
+    let prepared = provider
         .prepare_write(
             &live_secret(),
             &operation,
@@ -15263,33 +15264,16 @@ async fn p4_execute_selected(
             cancellation,
         )
         .await?;
-    let plan = prepared
-        .take_driver_state::<crate::write::MysqlWritePlan>()
-        .unwrap();
-    operation.mapping_policy = policy;
-    prepared.operation = operation.clone();
-    prepared.loss_report.policy = policy;
-    prepared.loss_report.losses.extend(
-        plenora_database_core::store_rewrite::RewriteGuard::new(
-            ProviderKind::Mysql,
-            &input.schema(),
-            &operation,
-            plan.rewrites().to_vec(),
-        )?
-        .losses(),
-    );
-    prepared = prepared.with_driver_state(plan);
-    crate::provider::execute_mysql_write(
-        provider,
-        &live_secret(),
-        prepared,
-        input,
-        &budget,
-        cancellation,
-        plenora_database_core::loss::LossConsent::from_accept_loss(accept),
-        true,
-    )
-    .await
+    provider
+        .write(
+            &live_secret(),
+            prepared,
+            input,
+            &budget,
+            cancellation,
+            plenora_database_core::loss::LossConsent::from_accept_loss(accept),
+        )
+        .await
 }
 
 fn p4_report(
@@ -16195,7 +16179,8 @@ async fn live_p5_create_budget_keys_and_empty() {
         if case == 2 {
             operation.keys = vec!["id".into()];
         }
-        let mut prepared = provider
+        operation.mapping_policy = MappingPolicy::Compatible;
+        let prepared = provider
             .prepare_write(
                 &live_secret(),
                 &operation,
@@ -16205,8 +16190,6 @@ async fn live_p5_create_budget_keys_and_empty() {
             )
             .await
             .unwrap();
-        prepared.operation.mapping_policy = MappingPolicy::Compatible;
-        prepared.loss_report.policy = MappingPolicy::Compatible;
         let occupied = match case {
             0 => Some(
                 budget
@@ -16235,20 +16218,19 @@ async fn live_p5_create_budget_keys_and_empty() {
             4 => VecDeque::from([p4_batch(vec![1], vec![Some(i64::MAX)])]),
             _ => VecDeque::from([batch.clone()]),
         };
-        let result = crate::provider::execute_mysql_write(
-            &provider,
-            &live_secret(),
-            prepared,
-            Box::new(VecBatchStream {
-                schema: batch.schema(),
-                batches,
-            }),
-            &budget,
-            &cancellation,
-            plenora_database_core::loss::LossConsent::Accept,
-            true,
-        )
-        .await;
+        let result = provider
+            .write(
+                &live_secret(),
+                prepared,
+                Box::new(VecBatchStream {
+                    schema: batch.schema(),
+                    batches,
+                }),
+                &budget,
+                &cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
+            )
+            .await;
         let count: u64 = audit.connection_mut().unwrap().query_first("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='_p5_budget'").await.unwrap().unwrap();
         if case == 3 {
             assert!(result.is_ok(), "{result:?}");
@@ -16382,6 +16364,211 @@ async fn live_p5_create_drift_and_lost_commit() {
         .connection_mut()
         .unwrap()
         .query_drop("DROP TABLE _p5_drift")
+        .await
+        .unwrap();
+}
+
+struct P6RuntimeHost {
+    provider: Arc<MysqlProvider>,
+    operation: WriteOperation,
+    batch: RecordBatch,
+}
+impl plenora_database_engine::runtime_binding::ConnectionResolver for P6RuntimeHost {
+    fn open<'a>(
+        &'a self,
+        target: &'a plenora_database_engine::runtime_binding::RuntimeTarget,
+    ) -> ProviderFuture<'a, plenora_database_engine::runtime_binding::RuntimeConnection> {
+        Box::pin(async move {
+            assert_eq!(target.provider, ProviderKind::Mysql);
+            Ok(
+                plenora_database_engine::runtime_binding::RuntimeConnection {
+                    provider: self.provider.clone(),
+                    secret: live_secret(),
+                },
+            )
+        })
+    }
+}
+impl plenora_database_engine::runtime_binding::ArtifactResolver for P6RuntimeHost {
+    fn read_document<'a>(&'a self, _: &'a str, _: usize) -> ProviderFuture<'a, Vec<u8>> {
+        Box::pin(async move { Ok(serde_json::to_vec(&self.operation).unwrap()) })
+    }
+    fn open_write_input<'a>(
+        &'a self,
+        _: &'a plenora_database_engine::runtime_binding::RuntimeRequest,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
+        Box::pin(async move {
+            Ok(Box::new(VecBatchStream {
+                schema: self.batch.schema(),
+                batches: VecDeque::from([self.batch.clone()]),
+            }) as Box<dyn BatchStream>)
+        })
+    }
+    fn open_read_sink<'a>(
+        &'a self,
+        _: &'a plenora_database_engine::runtime_binding::RuntimeRequest,
+    ) -> ProviderFuture<'a, Box<dyn plenora_database_engine::runtime_binding::ArrowSink>> {
+        Box::pin(async {
+            Err(DatabaseError::invalid_plan(
+                "sink non usato dalla scrittura",
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+#[allow(clippy::too_many_lines)]
+async fn live_p6_runtime_public_consent_and_outcomes() {
+    use plenora_database_engine::runtime_binding::{
+        RuntimeBinding, RuntimeBody, RuntimeInvocation,
+    };
+    let provider = Arc::new(MysqlProvider::new(live_config(), 2).unwrap());
+    let mut audit = MysqlSession::open(&live_config(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/surfaces.json"
+    ))
+    .unwrap();
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for case in vectors["cases"].as_array().unwrap() {
+            if case["name"] == "planned" {
+                continue;
+            }
+            for supplied in [false, true] {
+                if !supplied && case["accept_loss"] == true {
+                    continue;
+                }
+                audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop("DROP TABLE IF EXISTS _p6_runtime")
+                    .await
+                    .unwrap();
+                let closed = case["name"] == "closed";
+                audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop(if closed {
+                        "CREATE TABLE _p6_runtime (id BIGINT, v FLOAT(7,3)) ENGINE=InnoDB"
+                    } else {
+                        "CREATE TABLE _p6_runtime (id BIGINT, v DATETIME(3)) ENGINE=InnoDB"
+                    })
+                    .await
+                    .unwrap();
+                let mut operation =
+                    write_op_scalar(live_config().database(), "_p6_runtime", WriteMode::Append);
+                operation.mapping_policy = policy;
+                let batch = if closed {
+                    let schema = plenora_database_core::protocol::contract_schema(vec![
+                        Field::new("id", DataType::Int64, false),
+                        Field::new("v", DataType::Float32, true),
+                    ])
+                    .unwrap();
+                    RecordBatch::try_new(
+                        schema,
+                        vec![
+                            Arc::new(Int64Array::from(vec![1])),
+                            Arc::new(plenora_database_core::arrow::array::Float32Array::from(
+                                vec![0.0],
+                            )),
+                        ],
+                    )
+                    .unwrap()
+                } else {
+                    p4_batch(
+                        vec![1],
+                        vec![Some(if case["name"] == "exact" {
+                            1_000_000
+                        } else {
+                            1_000_501
+                        })],
+                    )
+                };
+                let host = P6RuntimeHost {
+                    provider: provider.clone(),
+                    operation,
+                    batch,
+                };
+                let mut payload = serde_json::json!({"provider":"mysql", "secret_environment":"P6_SECRET_SENTINEL",
+                    "operation_path":"artifact://p6/write"});
+                if supplied {
+                    payload["accept_loss"] = case["accept_loss"].clone();
+                }
+                let invocation = RuntimeInvocation::from_json(&serde_json::to_vec(&serde_json::json!({
+                    "content_type":"application/json", "payload":payload, "metadata":{
+                        "plenora.message.id":"018f3d84-7b2c-7f00-8000-000000000204",
+                        "plenora.capability.name":"plenora.database-tools", "plenora.capability.version":"1",
+                        "plenora.capability.operation":"database.write", "plenora.operation.version":"2",
+                        "plenora.input.contract":"plenora-database-write-input-v2",
+                        "plenora.trace.correlation_id":"018f3d84-7b2c-7f00-8000-000000000205"
+                    }})).unwrap()).unwrap();
+                let token = CancellationToken::new();
+                let _fault = (case["name"] == "rollback")
+                    .then(|| crate::loss_execution::faults::Guard::engage(2));
+                let _delay = (case["name"] == "uncertain")
+                    .then(crate::session::DelayedCommitResponse::engage);
+                let binding = RuntimeBinding::new(&host, &host);
+                let writer = binding.invoke(&invocation, &token);
+                let observe = async {
+                    if case["name"] != "uncertain" {
+                        return;
+                    }
+                    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                        loop {
+                            let count: Option<u64> = audit
+                                .connection_mut()
+                                .unwrap()
+                                .query_first("SELECT COUNT(*) FROM _p6_runtime")
+                                .await
+                                .unwrap();
+                            if count == Some(1) {
+                                token.cancel();
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                };
+                let (result, ()) = tokio::join!(writer, observe);
+                let RuntimeBody::Json(body) = &result.body else {
+                    panic!("JSON richiesto")
+                };
+                let success = matches!(case["name"].as_str(), Some("exact" | "committed"));
+                assert_eq!(!result.is_error(), success, "{body}");
+                let report = if success {
+                    &body["loss_report"]
+                } else if body["details"]["loss_report"].is_object() {
+                    &body["details"]["loss_report"]
+                } else {
+                    &body["details"]["write_outcome"]["loss_report"]
+                };
+                let mut expected = case["outcome"]["loss_report"].clone();
+                expected["policy"] = serde_json::to_value(policy).unwrap();
+                assert_eq!(*report, expected, "{}", case["name"]);
+                assert!(!body.to_string().contains("P6_SECRET_SENTINEL"));
+                let count: u64 = audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_first("SELECT COUNT(*) FROM _p6_runtime")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(count, u64::from(success || case["name"] == "uncertain"));
+            }
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p6_runtime")
         .await
         .unwrap();
 }

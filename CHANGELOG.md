@@ -8,6 +8,21 @@ riassumono le note di quelle release.
 
 ## 11.0.0 — non pubblicata
 
+- Apertura del percorso MySQL non-strict con consenso per valore comune a
+  Rust (`LossConsent`), CLI (`--accept-loss`), Python sync/async
+  (`accept_loss=True`) e `database.write@2` (`accept_loss`). MariaDB resta
+  rifiutato. Strict, regola A e capability non cambiano.
+- Preparazione MySQL con rischio v3 senza consenso implicito; gli errori
+  conservano evaluation/effective. Warning Python soltanto per perdite
+  committed; warning-as-error conserva l'outcome e vieta retry automatici.
+- CLI `write`/`database-write-ipc`: dry-run del solo piano con rapporto,
+  senza effetti. **Cambio incompatibile:** il risultato puo essere anche
+  `dry_run`; i reader precedenti limitati a WriteOutcome devono aggiornarsi
+  alla major 11 prima di usare questa opzione.
+- Vettori comuni offline, test live delle superfici collegati alle tre major
+  MySQL. Qualifica live e rilascio restano subordinati alle campagne finali.
+
+
 - **Cambio incompatibile:** estensione del vocabolario chiuso del rapporto
   esecutivo v3; i reader 10.0.0 non accettano le nuove regole. Producer e reader
   devono essere aggiornati insieme. Il rapporto legacy v2 resta invariato.

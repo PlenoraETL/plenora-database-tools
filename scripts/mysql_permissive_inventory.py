@@ -127,7 +127,7 @@ def main():
         path.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     elif read(path) != result:
         raise SystemExit("inventory stale: run scripts/mysql_permissive_inventory.py --write")
-    print("MySQL P1 inventory: fixture/declarations bidirectional; gate closed")
+    print("MySQL P1 inventory: fixture/declarations bidirectional; P1 baseline immutable")
 
 
 if __name__ == "__main__":

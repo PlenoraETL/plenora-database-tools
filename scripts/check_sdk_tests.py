@@ -198,8 +198,9 @@ SCOPE_CONTRACTS = {
     # incorpora ODBC. I test Db2 e Oracle appartengono ai rispettivi gate live
     # dedicati e qui devono restare skip espliciti, non essere assorbiti dal
     # totale.
+    "mysql-surfaces": ScopeContract(passed=16, deselected=10, skips={}),
     "live": ScopeContract(
-        passed=1009,
+        passed=1025,
         deselected=0,
         skips={DB2_SKIP: 12, ORACLE_SKIP: 15},
     ),
@@ -208,7 +209,7 @@ SCOPE_CONTRACTS = {
         deselected=0,
         skips={
             POSTGRES_SKIP: 237,
-            MYSQL_SKIP: 37,
+            MYSQL_SKIP: 53,
             MARIADB_SKIP: 10,
             SQLSERVER_SKIP: 14,
             DB2_SKIP: 12,
@@ -218,7 +219,7 @@ SCOPE_CONTRACTS = {
         },
     ),
     "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=1034, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=1050, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
@@ -687,6 +688,7 @@ def build_artifacts(destination: Path) -> dict[str, object]:
             "/workspace",
             "-e",
             "CARGO_TARGET_DIR=/workspace/target-docker",
+            "-e", "CARGO_BUILD_JOBS=2",
             RUST_IMAGE,
             "sh",
             "-c",
@@ -872,7 +874,7 @@ def cli_binary_path() -> str:
     return path
 
 
-def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
+def pytest_command(*, scope: str, artifacts: Path, wheel: str, mysql_matrix=None) -> list[str]:
     """Il `docker run` che esegue la suite nello scope richiesto.
 
     Gli artefatti arrivano dalla directory temporanea dove la build li ha
@@ -899,7 +901,21 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
     environment: list[str] = []
     selection = ["tests"]
 
-    if scope != "offline":
+    if scope == "mysql-surfaces":
+        if mysql_matrix is None:
+            raise RuntimeError("riferimento MySQL mancante per le superfici")
+        network, tls_volume = mysql_matrix
+        command += ["--network", network, "-v", f"{tls_volume}:/mysql-tls:ro"]
+        environment = [
+            "-e", "PLENORA_TEST_MYSQL_HOST=dataflow-mysql",
+            "-e", "PLENORA_TEST_MYSQL_DATABASE",
+            "-e", "PLENORA_TEST_MYSQL_USER",
+            "-e", "PLENORA_TEST_MYSQL_PASSWORD",
+            "-e", "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
+            "-e", f"PLENORA_CLI_BIN={cli_binary_path()}",
+        ]
+        selection = ["tests/test_loss_consent.py", "-k", "mysql"]
+    elif scope != "offline":
         command += compose_network_arguments(
             POSTGRES_CONTAINER,
             MYSQL_CONTAINER,
@@ -924,6 +940,8 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
     elif scope == "stabilization":
         selection = ["tests/test_stabilization.py"]
 
+    if scope != "offline":
+        environment += ["-e", f"PLENORA_MYSQL_SURFACE_VECTORS={REPOSITORY_MOUNT}/tests/fixtures/mysql_permissive/surfaces.json"]
     suite = f"{REPOSITORY_MOUNT}/crates/plenora-database-py/python/tests"
     script = (
         "set -e; "

@@ -317,7 +317,7 @@ impl MysqlWritePlan {
     ) -> Result<Self> {
         let product = profile.product();
         plenora_database_core::field_contract::validate_schema_contract(schema.as_ref())?;
-        validate_operation(operation, database)?;
+        validate_operation(operation, database, profile.kind())?;
         if schema.fields().is_empty() {
             return Err(prepare_error(
                 ErrorCategory::Schema,
@@ -1218,8 +1218,8 @@ impl MysqlWritePlan {
                 )));
             }
         }
-        // `Strict` e la politica richiesta: `validate_operation` rifiuta ogni
-        // altra prima del preflight.
+        // Il confronto strutturale non decide la policy: il chiamante associa
+        // quella richiesta e aggiunge il rischio della regola A.
         Ok(LossReport {
             schema_version: 2,
             policy: MappingPolicy::Strict,
@@ -2024,7 +2024,11 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
     error
 }
 
-fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
+fn validate_operation(
+    operation: &WriteOperation,
+    database: &str,
+    provider: plenora_database_core::plan::ProviderKind,
+) -> Result<()> {
     plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     // `Replace` e qualificata come DELETE FROM + bulk insert nella stessa
     // transazione InnoDB: nessun DDL, quindi nessuna perdita di indici, FK,
@@ -2059,7 +2063,9 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
         return Err(unsupported("write richiede il profilo SingleTransaction"));
     }
-    if operation.mapping_policy != MappingPolicy::Strict {
+    if operation.mapping_policy != MappingPolicy::Strict
+        && provider != plenora_database_core::plan::ProviderKind::Mysql
+    {
         return Err(unsupported(
             "write richiede MappingPolicy::Strict finche il loss preflight non e qualificato",
         ));

@@ -4,6 +4,35 @@ use serde_json::json;
 static FORMAT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn mysql_surface_vectors_preserve_reports_in_every_formatter() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/surfaces.json"
+    ))
+    .unwrap();
+    for case in vectors["cases"].as_array().unwrap() {
+        let outcome: plenora_database_core::outcome::WriteOutcome =
+            serde_json::from_value(case["outcome"].clone()).unwrap();
+        outcome.validate().unwrap();
+        let value = match outcome.settle() {
+            Ok(outcome) => serde_json::to_value(outcome).unwrap(),
+            Err(error) => {
+                serde_json::from_str(&crate::CliError::from(error).to_json().unwrap()).unwrap()
+            }
+        };
+        for rendered in [
+            serde_json::to_string(&value).unwrap(),
+            render_markdown("write", &value),
+            render_junit("write", &value),
+        ] {
+            for key in ["risk", "evaluation", "effective", "mysql."] {
+                assert!(rendered.contains(key), "{case}");
+            }
+            assert!(!rendered.contains("P6_SECRET_SENTINEL"));
+        }
+    }
+}
+
+#[test]
 fn loss_report_survives_all_output_renderers() {
     let mut value: Value = serde_json::from_str(include_str!(
         "../../../contracts/v2/examples/outcome-v3-loss.json"

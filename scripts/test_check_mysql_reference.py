@@ -320,7 +320,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool;
         # Operandi geometrici e semantica delle scritture conservano tutte le prove.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 93)
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 94)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
@@ -2308,16 +2308,16 @@ class PythonSdkRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             set(sdk.SCOPE_CONTRACTS),
-            {"live", "offline", "stabilization", "benchmark"},
+            {"live", "offline", "stabilization", "benchmark", "mysql-surfaces"},
         )
         live = sdk.SCOPE_CONTRACTS["live"]
         offline = sdk.SCOPE_CONTRACTS["offline"]
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (1009, 27, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (1025, 27, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (706, 330, 0)
+            (offline.passed, offline.skipped, offline.deselected), (706, 346, 0)
         )
         self.assertEqual(
             (
@@ -2329,7 +2329,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 1034),
+            (2, 0, 1050),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 e Oracle anche live, e nessuno

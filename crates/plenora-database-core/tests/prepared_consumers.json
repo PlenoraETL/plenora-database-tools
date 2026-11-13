@@ -341,7 +341,7 @@
     "overrides": 0,
     "prepare": 34,
     "prepared": 0,
-    "write": 23
+    "write": 25
   },
   "plenora-db-mysql/src/mariadb_evidence.rs": {
     "consent": 0,

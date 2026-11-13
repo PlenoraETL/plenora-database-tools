@@ -7,10 +7,88 @@ use plenora_database_core::store_rewrite::{ColumnRewrites, StoreRewrite};
 use plenora_database_core::{RemoteEffect, ResourceLimits};
 use std::sync::Arc;
 
+#[test]
+fn p6_common_surface_reports_match_the_evaluator() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/surfaces.json"
+    ))
+    .unwrap();
+    for case in vectors["cases"].as_array().unwrap() {
+        let consent = LossConsent::from_accept_loss(case["accept_loss"].as_bool().unwrap());
+        let (plan, mut evaluation, mut batch) =
+            fixture_with(WriteMode::Append, consent, case["name"] == "closed");
+        if case["name"] == "exact" {
+            batch = RecordBatch::try_new(
+                batch.schema(),
+                vec![
+                    batch.column(0).clone(),
+                    Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])),
+                ],
+            )
+            .unwrap();
+        }
+        let mut published = None;
+        if case["name"] != "planned" {
+            evaluation.begin(&batch).unwrap();
+            let bound = evaluation.bind(&plan, &batch, 0, 1);
+            if matches!(case["name"].as_str(), Some("denied" | "closed")) {
+                assert_eq!(bound.unwrap_err().category, ErrorCategory::DataMapping);
+            } else {
+                bound.unwrap();
+                evaluation.sent(0, 1).unwrap();
+                evaluation.applied(0, 1, true).unwrap();
+                if case["name"] != "rollback" {
+                    evaluation.context.prepare_commit(true).unwrap();
+                }
+            }
+            if matches!(case["name"].as_str(), Some("exact" | "committed")) {
+                published = evaluation
+                    .finish(Ok(
+                        crate::write::committed_outcome("p6".into(), 1, 1).unwrap()
+                    ))
+                    .unwrap()
+                    .loss_report;
+            } else {
+                let mut error = invalid();
+                error.remote_effect = if case["name"] == "uncertain" {
+                    RemoteEffect::Unknown
+                } else {
+                    RemoteEffect::RolledBack
+                };
+                published = evaluation
+                    .finish(Err(error))
+                    .unwrap_err()
+                    .loss_report
+                    .map(|report| *report);
+            }
+        }
+        let actual = serde_json::to_value(
+            published.unwrap_or_else(|| evaluation.context.ledger.report().into()),
+        )
+        .unwrap();
+        assert_eq!(actual, case["outcome"]["loss_report"], "{}", case["name"]);
+    }
+}
+
 fn fixture(mode: WriteMode, consent: LossConsent) -> (MysqlWritePlan, Evaluation, RecordBatch) {
+    fixture_with(mode, consent, false)
+}
+fn fixture_with(
+    mode: WriteMode,
+    consent: LossConsent,
+    closed: bool,
+) -> (MysqlWritePlan, Evaluation, RecordBatch) {
     let schema = plenora_database_core::protocol::contract_schema(vec![
         Field::new("id", DataType::Int64, false),
-        Field::new("v", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new(
+            "v",
+            if closed {
+                DataType::Float32
+            } else {
+                DataType::Timestamp(TimeUnit::Microsecond, None)
+            },
+            true,
+        ),
     ])
     .unwrap();
     let mut operation = WriteOperation {
@@ -41,8 +119,12 @@ fn fixture(mode: WriteMode, consent: LossConsent) -> (MysqlWritePlan, Evaluation
     .unwrap();
     plan.set_rewrites(vec![ColumnRewrites {
         field: 1,
-        target_type: "datetime(3)".into(),
-        rewrites: vec![StoreRewrite::FractionalSeconds { digits: 3 }],
+        target_type: if closed { "float(7,3)" } else { "datetime(3)" }.into(),
+        rewrites: vec![if closed {
+            StoreRewrite::Every
+        } else {
+            StoreRewrite::FractionalSeconds { digits: 3 }
+        }],
     }]);
     operation.mapping_policy = MappingPolicy::Compatible;
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
@@ -51,7 +133,13 @@ fn fixture(mode: WriteMode, consent: LossConsent) -> (MysqlWritePlan, Evaluation
         schema,
         vec![
             Arc::new(Int64Array::from(vec![1])),
-            Arc::new(TimestampMicrosecondArray::from(vec![1_000_501])),
+            if closed {
+                Arc::new(plenora_database_core::arrow::array::Float32Array::from(
+                    vec![0.0],
+                ))
+            } else {
+                Arc::new(TimestampMicrosecondArray::from(vec![1_000_501]))
+            },
         ],
     )
     .unwrap();

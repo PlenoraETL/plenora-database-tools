@@ -38,6 +38,13 @@ JSON, Markdown e JUnit conservano `risk`, `evaluation`, `effective` e gli assi
 dell'errore; selezionare il formato con `--format json|markdown|junit`.
 Non usare il solo exit code per decidere un retry.
 
+La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
+Strict e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
+registro generato; l'apertura del percorso non attesta la qualifica live,
+che richiede la matrice sul ref finale. I reader 10.0.0 non comprendono gli
+ID MySQL: aggiornare producer e reader insieme alla major 11.
+
 La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
 PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
 `compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
@@ -46,7 +53,7 @@ anche se la regola ha severità Warning. Il default nega: Rust puro usa
 `LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
 SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
 Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
-vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+vincolanti. Il consenso non apre MariaDB, Db2 o Oracle. I profili `chunk_committed`
 e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
 il consenso non rende disponibile un profilo non qualificato.
 
@@ -55,7 +62,7 @@ consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anch
 con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
 altera i valori e dichiara le trasformazioni nel rapporto.
 
-Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
+Nei writer migrati, WriteOutcome v3 contiene in `loss_report`
 ExecutionLossReport v3:
 `risk` descrive il piano; `evaluation` registra i valori controllati e quelli
 che cambierebbero; `effective` distingue `committed` da `uncertain`.
@@ -94,3 +101,11 @@ non va ripetuto; un esito incerto richiede verifica sul target.
 Il binding `database.write@2` richiede adozione lato runtime-tools di catalogo,
 `accept_loss` e WriteOutcome v3. Le [regole](loss-registry.md) sono generate dal
 registro; [schema ed esempi](../contracts/v2/README.md) descrivono il formato.
+
+
+`write` e `database-write-ipc` accettano `--dry-run`: leggono il catalogo e
+pubblicano il rischio del piano, senza consumare i valori o eseguire DML/DDL.
+Il risultato dichiara `status: dry_run`, `remote_effect: none` ed
+`evaluation: not_performed`; non autorizza una scrittura successiva.
+JSON, Markdown e JUnit conservano il rapporto e gli errori. `bulk-write`
+resta un comando PostgreSQL e rifiuta MySQL, anche con `--accept-loss`.

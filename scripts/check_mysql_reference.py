@@ -58,6 +58,7 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "loss_execution::tests::p6_common_surface_reports_match_the_evaluator",
     "loss_execution::tests::p4_cache_second_batch_and_commit_attribution",
     "loss_execution::tests::p5_frozen_replay_preserves_values_tokens_and_counts",
     "loss_execution::tests::p5_reserves_remaining_budget_and_rejects_loss_before_replay",
@@ -418,6 +419,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_p6_runtime_public_consent_and_outcomes",
     "live_tests::live_p5_create_drift_and_lost_commit",
     "live_tests::live_p5_create_budget_keys_and_empty",
     "live_tests::live_p5_create_replay_and_prevalidation",

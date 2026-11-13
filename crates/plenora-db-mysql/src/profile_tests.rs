@@ -314,7 +314,11 @@ fn no_module_signs_an_error_with_a_hardcoded_product() {
         ("types.rs", include_str!("types.rs")),
         ("write.rs", include_str!("write.rs")),
     ] {
-        let production = source;
+        // Un confronto di ammissione non firma un errore: i costruttori restano vietati.
+        let production = source
+            .replace(&format!("== {literal}"), "")
+            .replace(&format!("!= {literal}"), "")
+            .replace(&format!("!= plenora_database_core::plan::{literal}"), "");
         assert_eq!(
             production.matches(literal.as_str()).count(),
             0,

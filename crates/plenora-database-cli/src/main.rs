@@ -788,11 +788,13 @@ async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<(
         .next()
         .ok_or_else(|| CliError::from("--data richiede un percorso"))?;
     let mut accept_loss = request.accept_loss;
+    let mut dry_run = false;
     for flag in args {
-        if flag != "--accept-loss" {
-            return Err("opzione write sconosciuta".into());
+        match flag.as_str() {
+            "--accept-loss" => accept_loss = true,
+            "--dry-run" => dry_run = true,
+            _ => return Err("opzione write sconosciuta".into()),
         }
-        accept_loss = true;
     }
     set_public_command("write", "plenora-database-write-result-v2");
     let target = request.target();
@@ -800,6 +802,9 @@ async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<(
     let mut forwarded = canonical_operation_arguments(target, [operation, data])?;
     if accept_loss {
         forwarded.push("--accept-loss".to_owned());
+    }
+    if dry_run {
+        forwarded.push("--dry-run".to_owned());
     }
     database_write_ipc(&mut forwarded.into_iter()).await
 }
@@ -1465,10 +1470,14 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
         )
     })?;
     let mut accept_loss = false;
+    let mut dry_run = false;
     let remaining: Vec<String> = args
         .filter(|arg| {
             if arg == "--accept-loss" {
                 accept_loss = true;
+                false
+            } else if arg == "--dry-run" {
+                dry_run = true;
                 false
             } else {
                 true
@@ -1491,6 +1500,17 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
             &cancellation,
         )
         .await?;
+    if dry_run {
+        let report = prepared
+            .execution_loss()
+            .map_or_else(
+                || serde_json::to_value(&prepared.loss_report),
+                serde_json::to_value,
+            )
+            .map_err(|_| "rapporto non serializzabile".to_owned())?;
+        return print_json(&json!({"status":"dry_run", "remote_effect":"none",
+            "evaluation":"not_performed", "loss_report":report}));
+    }
     // Solo un commit certo e completo e un successo (SURF-014).
     let outcome = opened
         .provider

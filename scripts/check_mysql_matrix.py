@@ -19,6 +19,7 @@ import secrets
 import subprocess
 import sys
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -408,7 +409,7 @@ def discard(entry: MatrixEntry) -> None:
     quiet(["docker", "volume", "rm", "--force", entry.ca_volume])
 
 
-def qualify(entry: MatrixEntry, environment: dict[str, str]) -> dict[str, Any]:
+def qualify(entry: MatrixEntry, environment: dict[str, str], surfaces=None) -> dict[str, Any]:
     discard(entry)
     try:
         generate_tls(entry)
@@ -428,7 +429,18 @@ def qualify(entry: MatrixEntry, environment: dict[str, str]) -> dict[str, Any]:
             EXPECTED_LIVE_REFERENCE_TESTS,
             run_suite(entry, environment, live_reference_command()),
         )
-        return entry_report(entry, probe)
+        report = entry_report(entry, probe)
+        if surfaces is not None:
+            from scripts import check_sdk_tests as sdk
+            artifacts, artifact = surfaces
+            output = run(sdk.pytest_command(scope="mysql-surfaces", artifacts=artifacts,
+                wheel=artifact["wheel"], mysql_matrix=(NETWORK, entry.tls_volume)),
+                environment=environment, timeout=3600, capture=True)
+            summary = sdk.pytest_summary(output)
+            counts = sdk.assert_scope_contract(scope="mysql-surfaces", output=output, summary=summary)
+            report["surfaces"] = {"counts": counts, "artifact": artifact,
+                "origin": sdk.installed_origin(output), "versions": sdk.installed_versions(output)}
+        return report
     finally:
         discard(entry)
 
@@ -438,13 +450,20 @@ def main() -> int:
     environment = os.environ.copy()
     environment["MYSQL_PASSWORD"] = password
     environment["PLENORA_MYSQL_PASSWORD"] = password
+    environment["PLENORA_TEST_MYSQL_PASSWORD"] = password
+    environment["PLENORA_TEST_MYSQL_DATABASE"] = DATABASE
+    environment["PLENORA_TEST_MYSQL_USER"] = USER
     results: list[dict[str, Any]] = []
     try:
         validate_inventory()
         verify_candidate_unit()
         ensure_network()
-        for entry in MATRIX:
-            results.append(qualify(entry, environment))
+        from scripts import check_sdk_tests as sdk
+        with tempfile.TemporaryDirectory(prefix="plenora-mysql-surfaces-") as staging:
+            artifacts = Path(staging)
+            artifact = sdk.build_artifacts(artifacts)
+            for entry in MATRIX:
+                results.append(qualify(entry, environment, (artifacts, artifact)))
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         print(f"mysql matrix gate: {error}", file=sys.stderr)
         return 1

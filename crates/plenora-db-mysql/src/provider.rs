@@ -523,7 +523,8 @@ impl Provider for MysqlProvider {
                     )
                     .await?;
                     crate::write_admission::reject_json_keys(&operation.keys, &target, &json)?;
-                    let report = plan.preflight(&target, self.profile)?;
+                    let mut report = plan.preflight(&target, self.profile)?;
+                    report.policy = operation.mapping_policy;
                     drop(session);
                     report
                 };
@@ -537,7 +538,25 @@ impl Provider for MysqlProvider {
                     token,
                 )
                 .await?;
-                Ok(PreparedWrite::new(
+                let execution = if self.profile.kind() == ProviderKind::Mysql
+                    && operation.mapping_policy
+                        != plenora_database_core::loss::MappingPolicy::Strict
+                {
+                    Some(
+                        crate::loss_execution::Evaluation::new(
+                            &input_schema,
+                            &plan,
+                            operation,
+                            plenora_database_core::loss::LossConsent::Deny,
+                            budget,
+                        )?
+                        .context
+                        .confirmed,
+                    )
+                } else {
+                    None
+                };
+                let prepared = PreparedWrite::new(
                     operation.clone(),
                     input_schema,
                     loss_report,
@@ -545,7 +564,11 @@ impl Provider for MysqlProvider {
                     operation_lease,
                     columns_lease,
                 )
-                .with_driver_state(plan))
+                .with_driver_state(plan);
+                Ok(match execution {
+                    Some(report) => prepared.with_execution_loss(report),
+                    None => prepared,
+                })
             }
             .await;
             crate::profile::attributed(self.profile, outcome)
@@ -579,7 +602,6 @@ impl Provider for MysqlProvider {
                         budget,
                         cancellation,
                         consent,
-                        false,
                     )
                     .await;
                     crate::profile::attributed(self.profile, outcome).map(|mut outcome| {
@@ -675,12 +697,9 @@ pub async fn execute_mysql_write(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     consent: plenora_database_core::loss::LossConsent,
-    internal_test: bool,
 ) -> Result<WriteOutcome> {
     if prepared.operation.mapping_policy != plenora_database_core::loss::MappingPolicy::Strict
-        && !(cfg!(test)
-            && internal_test
-            && provider.profile.kind() == crate::profile::MYSQL_PROFILE.kind())
+        && provider.profile.kind() != ProviderKind::Mysql
     {
         return Err(unsupported(
             "percorso permissivo MySQL non ancora qualificato",
@@ -952,8 +971,7 @@ async fn admit_in_preflight(
         &server,
     )?;
     // La regola S: con una politica non stretta le riscritture
-    // sono perdite dichiarate (oggi `validate_operation` ammette
-    // soltanto `Strict`, e la lista resta vuota).
+    // sono rischi dichiarati; il contesto decide il consenso sui valori.
     loss_report.losses.extend(
         plenora_database_core::store_rewrite::RewriteGuard::new(
             provider.profile.kind(),
