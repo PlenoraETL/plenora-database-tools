@@ -57,7 +57,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
 MARKER = "PLENORA_SESSION_EVIDENCE "
 
 TEST_COMMAND = (
-    "cargo test --locked -p plenora-db-mysql --lib session_semantics_evidence "
+    "cargo test --no-fail-fast --locked -p plenora-db-mysql --lib session_semantics_evidence "
     "-- --ignored --nocapture --test-threads=1"
 )
 
@@ -69,6 +69,9 @@ TEST_COMMAND = (
 OUTCOME_ONLY: frozenset[str] = frozenset()
 
 EVIDENCE = ROOT / "docs" / "mariadb" / "SESSION-MATRIX.md"
+
+
+from scripts.campaign_collection import collect_all
 
 
 def validate(documents: dict[str, dict[str, object]], results: list[dict[str, object]]) -> None:
@@ -196,17 +199,14 @@ def verdict() -> dict[str, object]:
     started_at = preflight()
 
     fleet = servers()
-    for server in fleet:
+    def measure_verified(server):
         identities = image_identities(server.container)
         if not declares_image(identities, server.digest):
-            raise RuntimeError(
-                f"{server.label}: il container esegue {', '.join(identities)}, il "
-                f"documento dichiara {server.digest} — la misura non riguarderebbe "
-                "l'immagine dichiarata"
-            )
-    documents = {
-        server.key: measure(server, MARKER, TEST_COMMAND) for server in fleet
-    }
+            raise RuntimeError("fixture image mismatch")
+        return measure(server, MARKER, TEST_COMMAND)
+
+    documents = collect_all(fleet, measure_verified,
+                            gate="session_matrix", key=lambda server: server.key)
 
     # Il bootstrap misurato deve essere quello del pool su ogni riferimento: se
     # due server riportassero SQL diversi, staremmo confrontando due misure e

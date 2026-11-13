@@ -172,7 +172,7 @@ campagna rossa; una sonda osservativa registra invece una differenza.
 | provider | `provider.profile_write_spatial_mixed` | richiesta: accepted |
 | provider | `provider.profile_write_spatial_declared_srid` | richiesta: rejected |
 | provider | `provider.profile_write_spatial_index` | richiesta: accepted |
-| provider | `provider.profile_spatial_functions` | osservativa |
+| provider | `provider.profile_spatial_functions` | richiesta: accepted |
 | provider | `provider.profile_concurrent_readers` | osservativa |
 | provider | `provider.profile_concurrent_writers` | osservativa |
 | provider | `provider.profile_pool_endurance` | osservativa |

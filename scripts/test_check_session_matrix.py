@@ -565,7 +565,7 @@ class SessionMatrixTests(unittest.TestCase):
                     fail_down=CAMPAIGN.COMPOSE_FILES[0],
                     down_error=FileNotFoundError,
                 )
-        self.assertIn("avvio fallito", str(raised.exception))
+        self.assertIn("campaign collection contains failures", str(raised.exception))
 
     def test_an_os_error_during_cleanup_still_fails_a_successful_run(self) -> None:
         """E sul percorso riuscito resta un errore, non un successo."""
@@ -604,7 +604,7 @@ class SessionMatrixTests(unittest.TestCase):
                     fail_on=CAMPAIGN.COMPOSE_FILES[1],
                     fail_down=CAMPAIGN.COMPOSE_FILES[0],
                 )
-        self.assertIn("avvio fallito", str(raised.exception))
+        self.assertIn("campaign collection contains failures", str(raised.exception))
         self.assertNotIn("la pulizia no", str(raised.exception))
 
     def test_a_failure_starting_the_second_compose_cleans_up_the_first(self) -> None:
@@ -625,7 +625,7 @@ class SessionMatrixTests(unittest.TestCase):
             self.assertTrue((tmp / "diag").exists(), "diagnostica non raccolta")
 
         # L'errore che arriva e quello vero, non quello della pulizia.
-        self.assertIn("avvio fallito", str(raised.exception))
+        self.assertIn("campaign collection contains failures", str(raised.exception))
         # E il primo compose, che era davvero acceso, e stato spento **dopo**
         # il tentativo fallito: prima dell'`up` del secondo ci sono gli
         # spegnimenti che portano allo stato noto, e cercarli senza guardare

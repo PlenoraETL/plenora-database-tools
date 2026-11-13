@@ -9900,7 +9900,7 @@
       "reason": "Matrice SDK sync/async e reader originali: eseguita dal job sdk-offline."
     },
     ".github/workflows/rust-ci.yml": {
-      "review_sha256": "68c4a2056468134a5f6a41a65c09091702f663fbc108eaa23c314be33322e269",
+      "review_sha256": "71eafee493e7b2d64c8b89200c5e51d36eed3bd58676966ca2ae5116818bced4",
       "reason": "Conserva gate statico, self-test inventario, catalogo Arrow, test Rust e suite SDK su Windows/Linux; aggiunge unittest execution_loss senza rimuovere prove ingress."
     },
     ".github/scripts/offline_suite.sh": {

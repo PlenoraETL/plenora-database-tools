@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.python_test_inventory import count as count_python_tests
 from scripts import live_inventory
 from scripts.compose_network import container_variable
 
@@ -118,11 +119,14 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_binary_float_in_json_reads_the_stored_value",
     }
 )
-PYTHON_LIVE_EXPECTED = 15
+PYTHON_LIVE_EXPECTED = count_python_tests(["test_oracle_session.py"])
 SERVER_VERSION_SQL = (
     "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION "
     "WHERE PRODUCT LIKE 'Oracle%Database%' FETCH FIRST 1 ROW ONLY"
 )
+
+
+from scripts.campaign_collection import Collection, observe, complete_command
 
 
 def run(
@@ -136,6 +140,7 @@ def run(
     merged_environment = os.environ.copy()
     if environment:
         merged_environment.update(environment)
+    command = complete_command(command)
     try:
         completed = subprocess.run(
             command,
@@ -151,10 +156,12 @@ def run(
         # l'ultimo test avviato quando il processo non arriva al riepilogo.
         for partial in (error.stdout, error.stderr):
             if partial:
+                observe(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes) else partial)
                 print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
                       else partial, end="", flush=True)
         raise RuntimeError(f"timeout durante {command[0]}") from error
     output = f"{completed.stdout}{completed.stderr}"
+    observe(output)
     if output:
         print(output, end="")
     if completed.returncode:
@@ -205,7 +212,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE, REWRITE_LIVE_SOURCE, ADMISSION_LIVE_SOURCE, ROOT / "crates/plenora-db-oracle/src/sospetti_live_tests.rs"],
+        live_inventory.crate_sources(ROOT / "crates/plenora-db-oracle"),
         keep=lambda name: name.startswith("live_"),
     )
 
@@ -551,6 +558,7 @@ def build_and_run_python_live(environment: dict[str, str]) -> str:
                 "-m",
                 "pytest",
                 "-q",
+                "-rA",
                 str(target / "test_oracle_session.py"),
             ],
             environment=environment,
@@ -582,24 +590,30 @@ def run_live_campaign(listing: str, environment: dict[str, str]) -> str:
     live_sonde_scritture_server. Il budget del singolo processo resta 1800s;
     le durate misurate permettono di distinguere una sonda lenta dalla somma.
     """
-    names = sorted(validate_live_listing(listing))
+    names = sorted(live_inventory.listed_tests(listing))
     outputs: list[str] = []
+    collection = Collection("oracle-live-tests")
+    with collection.stage("oracle-reference", "inventory"):
+        validate_live_listing(listing)
     for name in names:
         started = time.monotonic()
         budget = LIVE_TIMEOUTS.get(name.rsplit("::", 1)[-1], TIMEOUT)
         print(f"oracle live: inizio {name}; budget={budget}s", flush=True)
         try:
-            output = run(
-                ["cargo", "test", "--locked", "-p", "plenora-db-oracle",
-                 name, "--", "--exact", "--ignored", "--test-threads=1", "--show-output"],
-                environment=environment,
-                timeout=budget,
-            )
-            if live_inventory.executed_tests(output) != {name}:
-                raise RuntimeError(f"esecuzione live Oracle incompleta: {name}")
-            outputs.append(output)
+            with collection.stage("oracle-reference", name, (name,)):
+                output = run(
+                    ["cargo", "test", "--locked", "-p", "plenora-db-oracle",
+                     name, "--", "--exact", "--ignored", "--test-threads=1", "--show-output"],
+                    environment=environment,
+                    timeout=budget,
+                )
+                observe(output)
+                if live_inventory.executed_tests(output) != {name}:
+                    raise RuntimeError(f"esecuzione live Oracle incompleta: {name}")
+                outputs.append(output)
         finally:
             print(f"oracle live: fine {name}; durata={time.monotonic() - started:.2f}s", flush=True)
+    collection.finish()
     return "\n".join(outputs)
 
 
@@ -626,63 +640,71 @@ def main() -> int:
         rust_environment, python_environment = test_environments(
             reference, container["container_id"]
         )
-        run(
-            [
-                "cargo",
-                "clippy",
-                "--locked",
-                "-p",
-                "plenora-db-oracle",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-            environment=rust_environment,
-        )
-        steps.append("clippy_deny_warnings")
-        run(
-            ["cargo", "test", "--locked", "-p", "plenora-db-oracle", "--lib"],
-            environment=rust_environment,
-        )
-        steps.append("offline_unit_tests")
-        listing = run(
-            [
-                "cargo",
-                "test",
-                "--locked",
-                "-p",
-                "plenora-db-oracle",
-                "live_",
-                "--",
-                "--list",
-                "--ignored",
-            ],
-            environment=rust_environment,
-        )
-        live = run_live_campaign(listing, rust_environment)
-        executed = validate_live_run(listing, live)
-        steps.append("live_inventory_matches_sources_and_run")
-        run(
-            [
-                "cargo",
-                "build",
-                "--locked",
-                "-p",
-                "plenora-database-cli",
-                "--no-default-features",
-                "--features",
-                "oracle",
-            ]
-        )
-        probe = run_cli_probe(rust_environment)
-        steps.append("public_cli_probe")
-        run_cli_number_probe(rust_environment)
-        steps.append("public_cli_number_probe")
-        server_version = build_and_run_python_live(python_environment)
-        if not server_version.startswith(reference["server_major"] + "."):
-            raise RuntimeError("major Oracle avviata diversa dal riferimento")
-        steps.append("installed_python_wheel_sync_async_live")
+        collection = Collection("oracle-reference")
+        with collection.stage("oracle-reference", "clippy_deny_warnings"):
+            run(
+                [
+                    "cargo",
+                    "clippy",
+                    "--locked",
+                    "-p",
+                    "plenora-db-oracle",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+                environment=rust_environment,
+            )
+            steps.append("clippy_deny_warnings")
+        with collection.stage("oracle-reference", "offline_unit_tests"):
+            run(
+                ["cargo", "test", "--locked", "-p", "plenora-db-oracle", "--lib"],
+                environment=rust_environment,
+            )
+            steps.append("offline_unit_tests")
+        with collection.stage("oracle-reference", "live_inventory_matches_sources_and_run"):
+            listing = run(
+                [
+                    "cargo",
+                    "test",
+                    "--locked",
+                    "-p",
+                    "plenora-db-oracle",
+                    "live_",
+                    "--",
+                    "--list",
+                    "--ignored",
+                ],
+                environment=rust_environment,
+            )
+            live = run_live_campaign(listing, rust_environment)
+            executed = validate_live_run(listing, live)
+            steps.append("live_inventory_matches_sources_and_run")
+        with collection.stage("oracle-reference", "public_cli_probe"):
+            run(
+                [
+                    "cargo",
+                    "build",
+                    "--locked",
+                    "-p",
+                    "plenora-database-cli",
+                    "--no-default-features",
+                    "--features",
+                    "oracle",
+                ]
+            )
+            probe = run_cli_probe(rust_environment)
+            steps.append("public_cli_probe")
+        with collection.stage("oracle-reference", "public_cli_number_probe"):
+            run_cli_number_probe(rust_environment)
+            steps.append("public_cli_number_probe")
+        with collection.stage("oracle-reference", "installed_python_wheel_sync_async_live"):
+            server_version = build_and_run_python_live(python_environment)
+            if not server_version.startswith(reference["server_major"] + "."):
+                raise RuntimeError("major Oracle avviata diversa dal riferimento")
+            steps.append("installed_python_wheel_sync_async_live")
+        collection.finish()
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         print(f"oracle reference gate: {error}", file=sys.stderr)
         return 1

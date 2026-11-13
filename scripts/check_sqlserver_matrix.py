@@ -46,6 +46,9 @@ SKIPPED_TESTS = (
 LIVE_TEST_SOURCE = ROOT / "crates" / "plenora-db-sqlserver" / "src" / "live_tests.rs"
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def expected_live_tests() -> set[str]:
     """I test live che ogni riferimento della matrice deve attraversare.
 
@@ -103,6 +106,7 @@ MATRIX = (
 
 
 def run(command: list[str], *, timeout: int = 900, capture: bool = False) -> str:
+    command = complete_command(command)
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -111,6 +115,7 @@ def run(command: list[str], *, timeout: int = 900, capture: bool = False) -> str
         capture_output=capture,
         timeout=timeout,
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if capture:
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
@@ -248,9 +253,12 @@ def qualify(entry: MatrixEntry) -> dict[str, object]:
 def main() -> int:
     ensure_network()
     results = []
+    collection = Collection("sqlserver-version-matrix")
     try:
         for entry in MATRIX:
-            results.append(qualify(entry))
+            with collection.stage(entry.label, "live", expected_live_tests()):
+                results.append(qualify(entry))
+        collection.finish()
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"sqlserver matrix gate: {error}", file=sys.stderr)
         return 1

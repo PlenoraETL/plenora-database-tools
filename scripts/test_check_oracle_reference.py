@@ -109,7 +109,7 @@ def check_campaign() -> None:
         try:
             gate.run_live_campaign(listing, {})
         except RuntimeError:
-            assert run.call_count == 1
+            assert run.call_count == len(names)
         else:
             raise AssertionError("timeout accettato")
 

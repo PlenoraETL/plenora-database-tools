@@ -247,7 +247,7 @@ class MysqlMatrixTests(unittest.TestCase):
                 side_effect=RuntimeError("start failed"),
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "start failed"):
+            with self.assertRaisesRegex(RuntimeError, "campaign collection contains failures"):
                 qualify(self.entry, {})
         self.assertEqual(calls, ["discard", "discard"])
 
@@ -273,11 +273,14 @@ class MysqlMatrixTests(unittest.TestCase):
                 "scripts.check_mysql_matrix.ensure_network",
                 side_effect=RuntimeError("stop after network"),
             ),
+            patch("scripts.check_mysql_matrix.qualify") as qualify_mock,
+            patch("scripts.check_mysql_matrix.quiet"),
         ):
             from scripts.check_mysql_matrix import main
 
             self.assertEqual(main(), 1)
         self.assertEqual(calls, ["inventory", "unit"])
+        self.assertEqual(qualify_mock.call_count, len(MATRIX))
 
     def test_unit_runner_isolates_the_suite_from_the_server(self) -> None:
         captured: list[list[str]] = []

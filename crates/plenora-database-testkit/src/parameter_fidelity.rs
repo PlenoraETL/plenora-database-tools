@@ -87,6 +87,8 @@ pub enum Expect {
     /// Rifiutato con questa categoria prima dell'invio; sul percorso di
     /// lettura basta il rifiuto prima dello stream (`Prepare` o `Validate`).
     Refused(ErrorCategory),
+    /// Exact Prepare/None/Never refusal at the read boundary.
+    ReadRefusedBeforeIo(ErrorCategory),
     /// Rifiuto nativo dopo l'invio dello SQL per prepararlo, prima del bind:
     /// effetto Unknown, recovery obbligatoria e nessuna riga scritta.
     RefusedAfterPrepare(ErrorCategory),
@@ -908,7 +910,9 @@ async fn native_steps(
                 Err("rifiuto dopo prepare ha lasciato una riga".into())
             };
         }
-        Expect::WarningRefused => return Err("warning richiede il percorso nativo dedicato".into()),
+        Expect::ReadRefusedBeforeIo(_) | Expect::WarningRefused => {
+            return Err("warning richiede il percorso nativo dedicato".into())
+        }
         Expect::Assigned { read, raw } => (read, raw, &[][..], false),
         Expect::Exact {
             read,
@@ -991,7 +995,10 @@ async fn portable_steps(
     let (raw, distinct) = match case.expect_on(FidelityPath::Portable) {
         Expect::Refused(category) => return refused(&inserted, *category),
         Expect::Exact { raw, distinct, .. } => (raw, distinct),
-        Expect::Assigned { .. } | Expect::WarningRefused | Expect::RefusedAfterPrepare(_) => {
+        Expect::Assigned { .. }
+        | Expect::ReadRefusedBeforeIo(_)
+        | Expect::WarningRefused
+        | Expect::RefusedAfterPrepare(_) => {
             return Err("attesa riservata al percorso nativo".into());
         }
     };
@@ -1036,6 +1043,14 @@ async fn read(target: &Target<'_>, case: &Case, id: i32, notes: &mut Vec<String>
     let (read_value, distinct) = match case.expect_on(FidelityPath::Read) {
         Expect::Exact { read, distinct, .. } => (read, distinct),
         Expect::Refused(category) => return read_refused(target, case, *category).await,
+        Expect::ReadRefusedBeforeIo(category) => {
+            let result = read_rows_result(target, case.column, 0, Some(&case.value)).await;
+            return match result {
+                Err(error) if read_refusal_before_io(&error, *category) => Ok(()),
+                Err(error) => Err(format!("read refusal axes: {error:?}")),
+                Ok(_) => Err("read filter unexpectedly executed".into()),
+            };
+        }
         Expect::Assigned { .. } | Expect::WarningRefused | Expect::RefusedAfterPrepare(_) => {
             return Err("attesa riservata al percorso nativo".into());
         }
@@ -1132,12 +1147,40 @@ async fn read_refused(target: &Target<'_>, case: &Case, category: ErrorCategory)
     }
 }
 
+fn read_refusal_before_io(error: &DatabaseError, category: ErrorCategory) -> bool {
+    error.category == category
+        && error.phase == ErrorPhase::Prepare
+        && error.remote_effect == plenora_database_core::RemoteEffect::None
+        && error.retry == plenora_database_core::RetryDisposition::Never
+}
+
 async fn read_rows(
     target: &Target<'_>,
     column: &str,
     id: i32,
     value: Option<&ParameterValue>,
 ) -> std::result::Result<Vec<RecordBatch>, String> {
+    read_rows_result(target, column, id, value)
+        .await
+        .map_err(|error| {
+            if error.remote_effect == plenora_database_core::RemoteEffect::None {
+                describe(&error)
+            } else {
+                format!(
+                    "effetto remoto {:?}: {}",
+                    error.remote_effect,
+                    describe(&error)
+                )
+            }
+        })
+}
+
+async fn read_rows_result(
+    target: &Target<'_>,
+    column: &str,
+    id: i32,
+    value: Option<&ParameterValue>,
+) -> std::result::Result<Vec<RecordBatch>, DatabaseError> {
     let id_filter = FilterExpression::Eq {
         field: target.id_column.to_owned(),
         parameter: "id".to_owned(),
@@ -1169,7 +1212,7 @@ async fn read_rows(
     };
     let parameters = ParameterBag::new(parameters);
     let cancellation = CancellationToken::new();
-    let budget = budget(target)?;
+    let budget = ResourceBudget::new(target.limits.clone())?;
     let mut stream = target
         .provider
         .read(
@@ -1179,24 +1222,9 @@ async fn read_rows(
             &budget,
             &cancellation,
         )
-        .await
-        .map_err(|error| {
-            if error.remote_effect == plenora_database_core::RemoteEffect::None {
-                describe(&error)
-            } else {
-                format!(
-                    "effetto remoto {:?}: {}",
-                    error.remote_effect,
-                    describe(&error)
-                )
-            }
-        })?;
+        .await?;
     let mut batches = Vec::new();
-    while let Some(batch) = stream
-        .next_batch(&cancellation)
-        .await
-        .map_err(|error| describe(&error))?
-    {
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
         batches.push(batch);
     }
     Ok(batches)

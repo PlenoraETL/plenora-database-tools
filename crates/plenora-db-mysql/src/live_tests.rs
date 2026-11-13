@@ -3745,6 +3745,11 @@ async fn live_geographic_axis_order_round_trips_and_derived_srid_is_verified() {
         .value(0)
         .to_vec();
     assert_eq!(wkb, point, "la lettura rende la longitudine per prima");
+    assert!(stream
+        .next_batch(&cancellation)
+        .await
+        .expect("EOF")
+        .is_none());
     drop(stream);
 
     // `x` e `y` del contratto sono la prima e la seconda ordinata del WKB:
@@ -3814,6 +3819,11 @@ async fn live_geographic_axis_order_round_trips_and_derived_srid_is_verified() {
             .value(0)
     };
     assert_eq!((value(0), value(1)), (12.5, 60.0));
+    assert!(stream
+        .next_batch(&cancellation)
+        .await
+        .expect("EOF")
+        .is_none());
     drop(stream);
 
     setup
@@ -4698,6 +4708,12 @@ async fn live_v12_transaction_query_returns_typed_rows() {
         .expect("lettura")
         .expect("batch");
     assert_eq!(streamed, rows);
+    // CHANGELOG 9.0.0: senza EOF i warning finali non sono certificati.
+    assert!(stream
+        .next_batch(&cancellation)
+        .await
+        .expect("EOF")
+        .is_none());
     drop(stream);
 
     tx.rollback(&cancellation).await.expect("rollback");
@@ -5681,7 +5697,7 @@ async fn live_v12_every_verified_spatial_function_executes() {
     let mut executed = 0_usize;
     let mut broken: Vec<String> = Vec::new();
     for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
-        // Ogni funzione prova entrambe le geometrie: basta che una riesca.
+        // Ogni funzione prova i tre tipi: serve almeno un risultato non NULL.
         // Un tipo di ingresso incompatibile non dimostra l'assenza della funzione.
         let mut refusals: Vec<String> = Vec::new();
         // Una funzione che **rende** geometria si chiede sulle colonne con un
@@ -5796,8 +5812,12 @@ async fn live_v12_every_verified_spatial_function_executes() {
                     continue;
                 }
                 Ok(first) => {
-                    if first.is_none_or(|batch| batch.num_rows() != 1) {
-                        refusals.push(format!("su {field} non produce la riga della sonda"));
+                    if first.is_none_or(|batch| {
+                        batch.num_rows() != 1
+                            || batch.num_columns() != 1
+                            || batch.column(0).null_count() != 0
+                    }) {
+                        refusals.push(format!("su {field} non produce un valore non NULL"));
                         continue;
                     }
                 }
@@ -6094,6 +6114,7 @@ async fn live_v12_a_computed_geometry_carries_the_declared_frame_and_refuses_a_l
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_v12_query_spatial_functions_render_and_execute() {
+    use plenora_database_core::arrow::array::Array;
     use plenora_database_core::plan::{ObjectRef, SortDirection};
     use plenora_database_core::provider::ParameterBag;
     use plenora_database_core::query::{
@@ -6126,22 +6147,25 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
             )
             .await
             .expect("create");
-        // Insert 3 geometrie: 2 point + 1 linestring
+        // ST_Area richiede Polygon/MultiPolygon: punti e linee producono 3516.
+        // Due quadrati congruenti, traslati in longitudine, e la loro unione.
+        // Conserviamo il CRS geografico: le aree sono geodetiche in m2.
         setup
             .connection_mut()
             .unwrap()
             .query_drop(
                 "INSERT INTO _v12_spatial VALUES \
-                 (1, ST_GeomFromText('POINT(0 0)', 4326)), \
-                 (2, ST_GeomFromText('POINT(1 1)', 4326)), \
-                 (3, ST_GeomFromText('LINESTRING(0 0, 5 5)', 4326))",
+                 (1, ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))', 4326, 'axis-order=long-lat')), \
+                 (2, ST_GeomFromText('POLYGON((3 0,4 0,4 1,3 1,3 0))', 4326, 'axis-order=long-lat')), \
+                 (3, ST_GeomFromText('MULTIPOLYGON(((0 0,1 0,1 1,0 1,0 0)), \
+                  ((3 0,4 0,4 1,3 1,3 0)))', 4326, 'axis-order=long-lat'))",
             )
             .await
             .expect("seed");
     }
 
     // Query portable: SELECT id, ST_Area(shape) AS area FROM _v12_spatial ORDER BY id
-    let mut operation = QueryOperation {
+    let operation = QueryOperation {
         declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
@@ -6196,21 +6220,72 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
         row_offset: None,
         locking: None,
     };
-    operation.derived_source = None; // (placeholder)
 
     let bag = ParameterBag::default();
-    let stream = provider
+    let mut stream = provider
         .query(&live_secret(), &operation, &bag, &budget, &cancellation)
         .await
         .expect("query spatial");
-    // Consumo lo stream: se render e execute OK, il test passa (validazione
-    // semantica dei valori area richiederebbe parsing Arrow — sufficient
-    // qui che la query non fallisca).
+    // Lo stream aperto non prova l'esecuzione: anche i warning finali
+    // devono essere letti (CHANGELOG 9.0.0, vigente nella 10.0.0).
+    let mut ids = Vec::new();
+    let mut areas = Vec::new();
+    while let Some(batch) = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch spatial")
+    {
+        assert_eq!(batch.num_columns(), 2);
+        let batch_ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("id");
+        let batch_areas = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("area double");
+        assert_eq!(batch_ids.null_count(), 0);
+        assert_eq!(batch_areas.null_count(), 0);
+        ids.extend(batch_ids.values().iter().copied());
+        areas.extend(batch_areas.values().iter().copied());
+    }
+    assert_eq!(ids, [1, 2, 3]);
+    assert_eq!(areas.len(), 3);
+    assert!(areas.iter().all(|area| area.is_finite() && *area > 0.0));
+    // Un quadrato di un grado all'equatore misura circa 12.3 miliardi di m2;
+    // una resa cartesiana in gradi quadrati non soddisfa questa prova.
+    assert!((1.2e10..1.3e10).contains(&areas[0]));
+    assert!((areas[1] / areas[0] - 1.0).abs() < 1e-9);
+    assert!((areas[2] / areas[0] - 2.0).abs() < 1e-9);
     drop(stream);
 
     let mut check = MysqlSession::open(&live_config(), &cancellation)
         .await
         .expect("check");
+    // I tre ingressi originari restano prove negative, ognuno isolato:
+    // nessun filtro elimina di nascosto il dato incompatibile.
+    for wkt in ["POINT(0 0)", "POINT(1 1)", "LINESTRING(0 0, 5 5)"] {
+        let connection = check.connection_mut().expect("fixture negativa");
+        connection
+            .query_drop("DELETE FROM _v12_spatial")
+            .await
+            .expect("svuota fixture");
+        connection.exec_drop(
+            "INSERT INTO _v12_spatial VALUES (1, ST_GeomFromText(?, 4326, 'axis-order=long-lat'))",
+            (wkt,),
+        ).await.expect("geometria valida ma non areale");
+        let error = geometry_operand_rows(&provider, &operation, &bag)
+            .await
+            .expect_err("ST_Area rifiuta il tipo non areale");
+        assert_eq!(error.category, ErrorCategory::Execution);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
+        assert_eq!(error.provider, Some(ProviderKind::Mysql));
+        assert_eq!(error.message, "errore server MySQL redatto (codice 3516)");
+    }
     check
         .connection_mut()
         .unwrap()
@@ -6577,7 +6652,7 @@ async fn live_native_query_policy_deny_rejects_session_control() {
 }
 
 #[tokio::test]
-async fn live_native_query_policy_allow_permits_ddl() {
+async fn live_native_query_policy_allow_still_rejects_transaction_ddl() {
     use plenora_database_core::transaction::{Statement, TransactionOptions};
 
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -6603,15 +6678,49 @@ async fn live_native_query_policy_allow_permits_ddl() {
         )
         .await
         .expect("begin default");
-    // Con Allow il policy non blocca; MySQL fa autocommit implicito su DDL,
-    // quindi va a buon fine oltre l'enforcement.
-    tx.execute(
-        &Statement::new("CREATE TABLE _nqp_allow_ddl (x INT) ENGINE=InnoDB"),
-        &cancellation,
-    )
-    .await
-    .expect("DDL permesso da NativeQueryPolicy::Allow");
-    let _ = tx.rollback(&cancellation).await;
+    // CHANGELOG 9.0.0, vigente nella 10.0.0: Allow non scavalca
+    // il confine transazionale (DDL con commit implicito escluso).
+    let error = tx
+        .execute(
+            &Statement::new("CREATE TABLE _nqp_allow_ddl (x INT) ENGINE=InnoDB"),
+            &cancellation,
+        )
+        .await
+        .expect_err("DDL escluso anche con Allow");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::None
+    );
+    assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
+    let rows = tx
+        .query(
+            &Statement::new(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() \
+                 AND table_name = '_nqp_allow_ddl'",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("catalogo dopo il rifiuto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::I64(0))
+    );
+    tx.rollback(&cancellation)
+        .await
+        .expect("scope ancora usabile");
+
+    // Il percorso DDL esplicito fuori transazione resta disponibile.
+    provider
+        .execute_ddl(
+            &live_secret(),
+            "CREATE TABLE _nqp_allow_ddl (x INT) ENGINE=InnoDB",
+            &cancellation,
+        )
+        .await
+        .expect("DDL fuori transazione");
 
     provider
         .execute_ddl(
@@ -10794,16 +10903,40 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
         Ok(rows) => panic!("R1: accettata con {rows} righe"),
     }
     // R2 e R4 nella transazione, con il piano.
-    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
-    let mut tx = provider
-        .begin_transaction(
-            &live_secret(),
+    // Il DDL temporaneo e fixture raw prima di START TRANSACTION:
+    // il confine documentato nella 9.0.0 lo esclude dallo scope pubblico.
+    let profile: &'static dyn crate::profile::ProductProfile =
+        if environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb" {
+            &crate::profile::MARIADB_PROFILE
+        } else {
+            &crate::profile::MYSQL_PROFILE
+        };
+    let pool =
+        crate::pool::MysqlPool::new_with_profile(&live_config(), 1, profile).expect("pool fixture");
+    let mut session = pool
+        .checkout(&cancellation)
+        .await
+        .expect("sessione fixture");
+    for ddl in [
+        "CREATE TEMPORARY TABLE _nomi_r10_s (id BIGINT PRIMARY KEY, g POINT NOT NULL)",
+        "INSERT INTO _nomi_r10_s VALUES (1, ST_GeomFromText('POINT(1 1)'))",
+    ] {
+        session
+            .connection_mut()
+            .expect("connessione")
+            .query_drop(ddl)
+            .await
+            .expect("tabella temporanea");
+    }
+    let mut tx: Box<dyn plenora_database_core::transaction::TransactionScope> = Box::new(
+        crate::transaction::MysqlTransaction::begin(
+            session,
             &TransactionOptions::default(),
-            &budget,
             &cancellation,
         )
         .await
-        .expect("transazione");
+        .expect("transazione sulla sessione della fixture"),
+    );
     let r2 = plan(block(
         Some(&database),
         "_nomi_r10",
@@ -10921,14 +11054,6 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
     // il catalogo la legge come la legge la query (`SHOW COLUMNS`). Fino al
     // 25/10 `INFORMATION_SCHEMA` elencava la tabella di base (`g` intera) e
     // `ORDER BY g` sulla geometria temporanea passava.
-    for ddl in [
-        "CREATE TEMPORARY TABLE _nomi_r10_s (id BIGINT PRIMARY KEY, g POINT NOT NULL)",
-        "INSERT INTO _nomi_r10_s VALUES (1, ST_GeomFromText('POINT(1 1)'))",
-    ] {
-        tx.execute(&Statement::new(ddl), &cancellation)
-            .await
-            .expect("tabella temporanea");
-    }
     let shadowed = plan(block(
         None,
         "_nomi_r10_s",
@@ -11483,6 +11608,12 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             } else {
                 fidelity_exact(&fidelity_text("{\"a\": 1}"), "{\"a\": 1}")
             },
+        )
+        // CHANGELOG 9.0.0, audit JSON: the catalog rejects unqualified JSON
+        // comparisons before the binder, including SQL NULL.
+        .on(
+            FidelityPath::Read,
+            FidelityExpect::ReadRefusedBeforeIo(ErrorCategory::InvalidPlan),
         )
         .comparison_refused(FidelityPath::Portable, ErrorCategory::InvalidPlan)
         .comparison_refused(FidelityPath::Read, ErrorCategory::InvalidPlan),
@@ -12568,11 +12699,14 @@ async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
     } else {
         assert_eq!(fuso.expect("timestamp_tz su MySQL"), 1);
     }
+    // A900-002/003 e A900-009 (CHANGELOG): ammissione dei valori prima
+    // della rete; per i CAST di colonne resta il giudizio C sul catalogo.
     let refused = [
         (
             "n = uuid tipizzato",
             plan(compare(column("n"), typed("uuid"))),
             bag(ParameterValue::Uuid(uuid.to_owned())),
+            ErrorCategory::InvalidPlan,
             OPERAND_FAMILY_MISMATCH,
         ),
         (
@@ -12582,6 +12716,7 @@ async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
                 json!({"kind": "parameter", "name": "p"}),
             )),
             bag(ParameterValue::Uuid(uuid.to_owned())),
+            ErrorCategory::InvalidPlan,
             OPERAND_FAMILY_MISMATCH,
         ),
         (
@@ -12591,7 +12726,8 @@ async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
                 cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
             )),
             bag(ParameterValue::Decimal("0.12345678901".to_owned())),
-            CAST_NOT_EXACT,
+            ErrorCategory::DataMapping,
+            "parametro non rappresentabile esatto nel tipo dell'operando",
         ),
         (
             "d = CAST(F64 AS decimal)",
@@ -12600,36 +12736,42 @@ async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
                 cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
             )),
             bag(ParameterValue::F64(0.123_456_789_01)),
-            CAST_NOT_EXACT,
+            ErrorCategory::DataMapping,
+            "parametro non rappresentabile esatto nel tipo dell'operando",
         ),
         (
             "CAST(d DECIMAL(30, 12) AS decimal) = ?",
             plan(compare(cast(column("d"), "decimal"), typed("decimal"))),
             bag(ParameterValue::Decimal("0.123456789".to_owned())),
+            ErrorCategory::InvalidPlan,
             CAST_NOT_EXACT,
         ),
         (
             "t.ñame = testo, legato dal server",
             plan(compare(column("ñame"), typed("string"))),
             bag(ParameterValue::String("01".to_owned())),
+            ErrorCategory::InvalidPlan,
             OPERAND_FAMILY_MISMATCH,
         ),
         (
             "t.e non lega é",
             plan(compare(column("e"), typed("integer"))),
             bag(ParameterValue::I32(1)),
+            ErrorCategory::InvalidPlan,
             NAME_UNRESOLVED,
         ),
     ];
-    for (form, operation, parameters, message) in refused {
+    for (form, operation, parameters, category, message) in refused {
         let error = geometry_operand_rows(provider, &operation, &parameters)
             .await
             .expect_err(form);
+        assert_eq!(error.category, category, "{form}: {error:?}");
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
         assert_eq!(
-            error.category,
-            ErrorCategory::InvalidPlan,
-            "{form}: {error:?}"
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::None
         );
+        assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
         assert_eq!(error.message, message, "{form}: {error:?}");
     }
     let admitted = [
@@ -14650,18 +14792,24 @@ async fn live_audit900_lb_srid_before_io() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+#[ignore = "richiede MySQL o MariaDB live"]
 async fn live_audit900_la_json_read() {
     use plenora_database_core::provider::ParameterValue as V;
-    assert!(fidelity_mariadb());
     let provider = provider900();
     let secret = live_secret();
     let cancel = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
-    for declaration in [
-        "JSON",
-        "LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT')",
-    ] {
+    // CHANGELOG 9.0.0 audit JSON: native JSON on MySQL; JSON alias and
+    // CHECK-constrained LONGTEXT on MariaDB. Both catalog paths must refuse.
+    let declarations: &[&str] = if fidelity_mariadb() {
+        &[
+            "JSON",
+            "LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT')",
+        ]
+    } else {
+        &["JSON"]
+    };
+    for declaration in declarations {
         provider
             .execute_ddl(&secret, "DROP TABLE IF EXISTS audit900_read_json", &cancel)
             .await
@@ -14690,6 +14838,11 @@ async fn live_audit900_la_json_read() {
             };
             assert_eq!(error.category, ErrorCategory::InvalidPlan);
             assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+            assert_eq!(
+                error.remote_effect,
+                plenora_database_core::RemoteEffect::None
+            );
+            assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
         }
     }
     provider
@@ -14699,15 +14852,19 @@ async fn live_audit900_la_json_read() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+#[ignore = "richiede MySQL o MariaDB live"]
 async fn live_audit900_lc_json_arrow_key() {
-    assert!(fidelity_mariadb());
     let provider = provider900();
     let secret = live_secret();
     let cancel = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
-    for sql in ["DROP TABLE IF EXISTS audit900_json_key",
-        "CREATE TABLE audit900_json_key(payload LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT'), v INT)"] {
+    // Same 9.0.0 JSON-key prohibition, with each product's catalog encoding.
+    let create = if fidelity_mariadb() {
+        "CREATE TABLE audit900_json_key(payload LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT'), v INT)"
+    } else {
+        "CREATE TABLE audit900_json_key(payload JSON, v INT)"
+    };
+    for sql in ["DROP TABLE IF EXISTS audit900_json_key", create] {
         provider.execute_ddl(&secret, sql, &cancel).await.unwrap();
     }
     let operation = WriteOperation {
@@ -14748,6 +14905,12 @@ async fn live_audit900_lc_json_arrow_key() {
         "{}",
         error.message
     );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::None
+    );
+    assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
     assert!(
         error.message.contains("JSON"),
         "{:?}: {}",
@@ -14761,10 +14924,9 @@ async fn live_audit900_lc_json_arrow_key() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MariaDB e account plenora_minimal senza SHOW VIEW"]
+#[ignore = "richiede MySQL o MariaDB e account plenora_minimal senza SHOW VIEW"]
 async fn live_audit900_ld_view_without_show_view() {
     use plenora_database_core::transaction::TransactionOptions;
-    assert!(fidelity_mariadb());
     let admin = provider900();
     let secret = live_secret();
     let cancel = CancellationToken::new();
@@ -14787,7 +14949,11 @@ async fn live_audit900_ld_view_without_show_view() {
     )
     .with_port(base.port())
     .with_private_ca_certificate(std::env::var("PLENORA_MYSQL_CA").unwrap());
-    let provider = MariadbProvider::new(config, 2).unwrap();
+    let provider: Box<dyn Provider> = if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(config, 2).unwrap())
+    } else {
+        Box::new(MysqlProvider::new(config, 2).unwrap())
+    };
     let mut tx = provider
         .begin_transaction(&password, &TransactionOptions::default(), &budget, &cancel)
         .await
@@ -14798,7 +14964,18 @@ async fn live_audit900_ld_view_without_show_view() {
             &cancel,
         )
         .await;
-    assert!(denied.is_err(), "il fixture deve negare SHOW VIEW");
+    // 9.0.0 caller SQL: a server refusal after sending is not proof of no effect.
+    let denied = denied.expect_err("il fixture deve negare SHOW VIEW");
+    assert_eq!(denied.category, ErrorCategory::Authorization);
+    assert_eq!(denied.phase, plenora_database_core::ErrorPhase::Read);
+    assert_eq!(
+        denied.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        denied.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
     tx.rollback(&cancel).await.unwrap();
     let query = serde_json::from_value(serde_json::json!({
         "source":{"object":{"catalog":null,"schema":base.database(),"object":"audit900_view"},"alias":null},

@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
 # Rete privata della matrice, creata e distrutta dal gate: non e la rete
 # di un progetto Compose e il nome non deve farlo credere.
@@ -64,6 +65,9 @@ TARGETS = [
 ]
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -75,6 +79,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
+    command = complete_command(command)
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -82,6 +87,7 @@ def run(command: list[str], *, capture: bool = False) -> str:
         text=True,
         capture_output=capture,
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if completed.returncode:
         if capture:
             sys.stderr.write(completed.stdout)
@@ -185,8 +191,9 @@ def cargo_test(container: str) -> None:
             "plenora-db-postgres",
             "--lib",
             "--",
-            "--nocapture",
-        ]
+            "--show-output",
+        ],
+        capture=True,
     )
 
 
@@ -292,13 +299,15 @@ def main() -> int:
     CACHE.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, str]] = []
     failure: str | None = None
+    collection = Collection("postgres-matrix")
     try:
         ensure_network()
         for postgres, postgis, tag, digest in TARGETS:
-            try:
+            before = len(results)
+            with collection.stage(postgres + "/" + postgis, "live"):
                 results.append(test_target(postgres, postgis, tag, digest))
-            except (RuntimeError, ValueError) as error:
-                failure = str(error)
+            if len(results) == before:
+                failure = "stage failed; diagnostic redacted"
                 results.append(
                     {
                         "declared_postgres": postgres,
@@ -311,9 +320,13 @@ def main() -> int:
                         "error": failure,
                     }
                 )
-                break
+                continue
     except (RuntimeError, ValueError) as error:
-        failure = str(error)
+        failure = "stage failed; diagnostic redacted"
+    try:
+        collection.finish()
+    except RuntimeError:
+        failure = "campaign collection contains failures"
     report: dict[str, object] = {
         "schema_version": 1,
         "gate": "postgres-postgis-supported-major-matrix",

@@ -771,7 +771,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         self.assertIn('"{{.Image}}"', source)
         self.assertIn("RepoDigests", source)
         self.assertIn("declared_digest", source)
-        self.assertIn("la misura non riguarderebbe", source)
+        self.assertIn("fixture image mismatch", source)
 
     def test_the_runner_records_the_code_it_measured(self) -> None:
         """Commit e stato dell'albero, come nel gate del SDK."""
@@ -983,8 +983,8 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
             for name, value in shared.items():
                 setattr(lifecycle, name, value)
 
-        self.assertIn("e cambiato durante la misura", str(raised.exception))
-        self.assertIn("A -> B", str(raised.exception))
+        self.assertIn("campaign collection contains failures", str(raised.exception))
+        self.assertNotIn("A -> B", str(raised.exception))  # payload omitted from aggregate errors
 
         # E la pulizia c'e stata: dopo l'ultima accensione arriva uno
         # spegnimento, che e la cosa che prima non succedeva.
@@ -996,6 +996,28 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
             len(verbs) - 1 - verbs[::-1].index("up"),
             f"nessuno spegnimento dopo l'ultima accensione: {calls}",
         )
+
+    def test_verified_spatial_functions_must_succeed_on_every_reference(self) -> None:
+        from scripts.check_mariadb_driver import gate_violations
+
+        for server in ("mysql", "mariadb-12", "mariadb-11", "mariadb-10"):
+            for outcome in ("rejected", "not_measured"):
+                with self.subTest(server=server, outcome=outcome):
+                    document = {"results": self.full_results()}
+                    for entry in document["results"]:
+                        entry["observations"]["mariadb-10"] = dict(
+                            entry["observations"]["mariadb-11"]
+                        )
+                    self.assertEqual(gate_violations(document), [])
+                    entry = next(
+                        item for item in document["results"]
+                        if item["probe"] == "provider.profile_spatial_functions"
+                    )
+                    entry["observations"][server]["outcome"] = outcome
+                    violations = gate_violations(document)
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertIn("provider.profile_spatial_functions", violations[0])
+                    self.assertIn(server, violations[0])
 
     def test_a_capability_without_its_proof_fails_the_campaign(self) -> None:
         """Il verdetto si stampa comunque, ma l'uscita dice cosa manca.
