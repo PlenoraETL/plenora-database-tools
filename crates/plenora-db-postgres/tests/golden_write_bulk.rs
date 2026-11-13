@@ -5,7 +5,7 @@
 //! esistente), Upsert (conflict resolution). Include un test di rejection
 //! per validare che preflight blocchi mismatch di schema.
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -40,11 +40,10 @@ use plenora_db_postgres::PostgresProvider;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -179,7 +178,7 @@ async fn count_rows(table: &str) -> i64 {
 //  H7d.1 — WriteMode::Create: crea tabella + inserisce 100 righe
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7d_write_create_builds_table_and_inserts_batch() {
     let target = "_h7d_create";
@@ -222,7 +221,7 @@ async fn h7d_write_create_builds_table_and_inserts_batch() {
 //  H7d.2 — WriteMode::Append: crea con Create, poi Append 50 righe → 150 tot
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7d_write_append_adds_rows_to_existing_table() {
     let target = "_h7d_append";
@@ -296,7 +295,7 @@ async fn h7d_write_append_adds_rows_to_existing_table() {
 //  H7d.3 — WriteMode::Replace: drop+create con nuovo dataset
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7d_write_replace_swaps_table_content() {
     let target = "_h7d_replace";
@@ -376,7 +375,7 @@ async fn h7d_write_replace_swaps_table_content() {
 //  (non deve crashare, deve tornare DatabaseError classificato)
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7d_write_append_on_missing_table_returns_classified_error() {
     let target = "_h7d_nonexistent";

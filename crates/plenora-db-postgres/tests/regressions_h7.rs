@@ -1,6 +1,6 @@
 //! Contratti live per introspezione degli schemi e cancellazione degli stream.
 //!
-//! Sono `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! Sono `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(clippy::doc_markdown)]
@@ -11,11 +11,10 @@ use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::CancellationToken;
 use plenora_db_postgres::PostgresProvider;
 
-const DSN: &str =
-    "host=dataflow-postgres user=dataflow password=dataflow_test_2026 dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -25,7 +24,7 @@ fn budget() -> ResourceBudget {
 // `DatabaseListSchemas` espone soltanto schemi applicativi. Chi necessita dei
 // namespace di sistema deve interrogare `pg_namespace` direttamente.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7_1_list_schemas_excludes_system_schemas_by_default() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -65,7 +64,7 @@ async fn h7_1_list_schemas_excludes_system_schemas_by_default() {
 // Ogni `next_batch` deve osservare il token ricevuto, compresi i FETCH già in
 // flight; la firma rende impossibile omettere accidentalmente la cancellazione.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7_2_batch_stream_honors_cancellation_after_start() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);

@@ -6,8 +6,7 @@
 //! stream + drop implicito (quarantena), execute_scalar_* di tutti i tipi
 //! scalari, execute_portable + returning + returning_one.
 //!
-//! Bootstrap: richiedono un Postgres raggiungibile all'hostname
-//! `dataflow-postgres` (compose network `plenora-postgres_default`); i test
+//! Bootstrap: PLENORA_TEST_POSTGRES_DSN indica il fixture della campagna; i test
 //! sono `#[ignore]` per default, esegui con:
 //!
 //! ```text
@@ -50,11 +49,10 @@ use plenora_database_core::transaction::{ConditionalUpdate, Statement, Transacti
 use plenora_database_core::{CancellationToken, ErrorCategory};
 use plenora_db_postgres::PostgresProvider;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn provider() -> PostgresProvider {
@@ -69,7 +67,7 @@ fn budget() -> ResourceBudget {
 //  Golden 1 — happy path: begin + exec + query + commit
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn golden_begin_exec_query_commit_roundtrip() {
     let p = provider();
@@ -111,7 +109,7 @@ async fn golden_begin_exec_query_commit_roundtrip() {
 //  Golden 2 — savepoint annidati: create + rollback_to + release + commit
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn golden_savepoints_nested_rollback_release_commit() {
     let p = provider();
@@ -189,7 +187,7 @@ async fn golden_savepoints_nested_rollback_release_commit() {
 //  ConcurrentModification
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn golden_optimistic_conflict_cross_transactions() {
     let p = provider();
@@ -286,7 +284,7 @@ async fn golden_optimistic_conflict_cross_transactions() {
 //  connessione del pool non deve vederlo
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn golden_session_context_is_isolated_across_pool_reuse() {
     // Pool size 1 forza il riuso della stessa connessione tra tx1 e tx2 —
@@ -346,7 +344,7 @@ async fn golden_session_context_is_isolated_across_pool_reuse() {
 //  Golden 5 — facade scalar_*: tutti i tipi supportati roundtrippano
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn golden_scalar_facade_covers_every_supported_type() {
     let p = provider();
@@ -463,7 +461,7 @@ async fn golden_scalar_facade_covers_every_supported_type() {
 //  Golden 6 — execute_portable + execute_portable_returning + returning_one
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn golden_portable_facade_full_dml_flow() {
     let p = provider();
@@ -565,7 +563,7 @@ async fn golden_portable_facade_full_dml_flow() {
 //  Golden 7 — query_one / query_optional shape validation
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn golden_query_one_and_optional_shape_errors() {
     let p = provider();

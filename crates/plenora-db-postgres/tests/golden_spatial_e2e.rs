@@ -12,7 +12,7 @@
 //!
 //! Il caso senza estensione PostGIS vive nel test di preflight dedicato.
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres` con
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN con
 //! PostGIS 3.4+ installato.
 
 #![cfg(test)]
@@ -41,11 +41,10 @@ use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory, SpatialPredicate, SpatialReference};
 use plenora_db_postgres::PostgresProvider;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -109,7 +108,7 @@ fn text_of(v: Option<&ParameterValue>) -> String {
 //   - SRID resta 0 (WKB non porta SRID)
 //   - Lunghezza WKB per POINT 2D = 21 byte (1 byte order + 4 type + 8 x + 8 y)
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn spatial_s1_wkb_roundtrip_without_srid() {
     let provider = provider();
@@ -215,7 +214,7 @@ async fn spatial_s1_wkb_roundtrip_without_srid() {
 //   - Reinsert via ST_GeomFromEWKB → serializza allo stesso EWKB byte-perfect
 //   - SRID preservato
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn spatial_s2_ewkb_roundtrip_byte_consistent() {
     let provider = provider();
@@ -322,7 +321,7 @@ async fn spatial_s2_ewkb_roundtrip_byte_consistent() {
 // insert con SRID diverso deve fallire in modo esplicito. Usa savepoint per
 // contenere l'errore senza abortire la tx.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn spatial_s3_srid_preserved_read_mismatch_rejected_write() {
     let provider = provider();
@@ -439,7 +438,7 @@ async fn spatial_s3_srid_preserved_read_mismatch_rejected_write() {
 //
 // Il portable DWithin verso colonne geography è coperto separatamente in S.7.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn spatial_s4_geography_distance_in_meters() {
     let provider = provider();
@@ -528,7 +527,7 @@ async fn spatial_s4_geography_distance_in_meters() {
 
 // Le prove eseguono i predicati spatial sul database e verificano le righe restituite.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn spatial_s5_portable_contains_within_dwithin_e2e() {
     let provider = provider();
@@ -663,7 +662,7 @@ async fn spatial_s5_portable_contains_within_dwithin_e2e() {
 //   - Insert POINT ZM (4D) roundtrip: ST_Z e ST_M ritornano attesi
 //   - EWKB include il flag della dimensione (bit 0x80000000 per Z, 0x40000000 per M)
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn spatial_s6_3d_zm_roundtrip() {
     let provider = provider();
@@ -780,7 +779,7 @@ async fn spatial_s6_3d_zm_roundtrip() {
 // deve trovare le entità entro 500 metri dalla ref, con distanza in metri
 // (semantica geografica geodetica).
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn spatial_s7_portable_dwithin_over_geography_uses_meters() {
     let provider = provider();

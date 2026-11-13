@@ -274,15 +274,16 @@ impl LossLedger {
         Ok(())
     }
     fn events(&self, row: Row) -> BTreeMap<Key, u64> {
+        // Cell keys start with the source row: visit only its contiguous range.
         self.cells
-            .iter()
-            .filter_map(|(&(r, field, rule, subject), c)| {
-                if r == row {
-                    if let Classification::WouldChange(basis) = c {
-                        return Some(((field, rule, *basis, subject), 1));
-                    }
+            .range((row, 0, RuleId::ALL[0], None)..)
+            .take_while(|((r, ..), _)| *r == row)
+            .filter_map(|(&(_, field, rule, subject), c)| {
+                if let Classification::WouldChange(basis) = c {
+                    Some(((field, rule, *basis, subject), 1))
+                } else {
+                    None
                 }
-                None
             })
             .collect()
     }

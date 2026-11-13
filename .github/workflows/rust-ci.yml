@@ -192,7 +192,7 @@ jobs:
           python3 scripts/check_python_version.py --runtime
           python3 -m unittest scripts.test_python_version
       - name: SDK stream boundaries
-        run: python3 -m unittest scripts.test_sdk_stream_boundaries
+        run: python3 -m unittest scripts.test_sdk_stream_boundaries scripts.test_final_campaign_regressions
       - name: scripts/check_test_layout.py
         run: python3 scripts/check_test_layout.py
       - name: scripts/check_arrow_ingress.py

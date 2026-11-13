@@ -12,7 +12,7 @@
 //!   3. Budget di memoria molto stretto con huge row → deve fallire
 //!      pulitamente con ResourceLimit (o riuscire), NON hangere/panic
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -36,11 +36,10 @@ use plenora_database_core::{CancellationToken, ErrorCategory};
 use plenora_db_postgres::PostgresProvider;
 use std::time::Duration;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget_default() -> ResourceBudget {
@@ -139,7 +138,7 @@ async fn drop_fixture(table: &str) {
 // (bytea) è ~4 MiB. Col budget di default (memory=512 MiB), il read deve
 // completare senza errori e restituire esattamente 1 riga.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn edge_e1_single_huge_row_within_default_budget_returns_one_row() {
     let table = "_edge_e1_single_huge";
@@ -205,7 +204,7 @@ async fn edge_e1_single_huge_row_within_default_budget_returns_one_row() {
 // Deve restituire esattamente 101 righe totali, e leggendo colonna id
 // contigua deve essere 1..=101 senza gap.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
     let table = "_edge_e2_mixed";
@@ -297,7 +296,7 @@ async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
 //
 // NON deve fare panic né hang. Timeout hard a 30s.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn edge_e3_tight_memory_with_huge_row_fails_cleanly_or_streams() {
     let table = "_edge_e3_tight";

@@ -73,3 +73,42 @@ fn checked_overflow_is_atomic_and_rolls_back_without_erasing_evaluation() {
     assert_eq!(ledger.report().evaluation.entries[0].checked, u64::MAX);
     assert!(ledger.report().effective.is_empty());
 }
+
+#[test]
+fn indexed_events_preserve_rows_tokens_and_large_batch_accounting() {
+    assert_eq!(RuleId::ALL.iter().min(), RuleId::ALL.first());
+    let rule = RuleId::StoreNegativeZero;
+    let report = ExecutionLossReport::planned(
+        MappingPolicy::Compatible,
+        vec![RiskEntry::new(
+            0,
+            rule,
+            MappingPolicy::Compatible,
+            None,
+            None,
+        )],
+    )
+    .unwrap();
+    let mut ledger = LossLedger::new(report, 16384, 30_000).unwrap();
+    ledger.begin_source_batch(0).unwrap();
+    let mut tokens = Vec::new();
+    for row in 0..25_000 {
+        tokens.push(
+            ledger
+                .observe_token(row, 0, rule, Classification::WouldChange(Basis::Exact))
+                .unwrap(),
+        );
+    }
+    for token in tokens {
+        assert_eq!(ledger.events(token.row()).values().sum::<u64>(), 1);
+        ledger.sent_token(token).unwrap();
+        ledger.applied_token(token).unwrap();
+    }
+    assert!(ledger.events((1, 0, None)).is_empty());
+    ledger.complete();
+    ledger.commit().unwrap();
+    let report = ledger.report();
+    report.validate().unwrap();
+    assert_eq!(report.evaluation.entries[0].checked, 25_000);
+    assert_eq!(report.evaluation.entries[0].would_change, 25_000);
+}

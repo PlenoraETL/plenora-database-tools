@@ -845,10 +845,7 @@ async fn live_registered_projection_schema_matches_rust_and_cli() {
         panic!("corrupt registered projection accepted");
     };
     assert_eq!(error.category, ErrorCategory::DataMapping);
-    assert_eq!(
-        error.message,
-        "metadati identita colonna PostgreSQL non validi"
-    );
+    assert_eq!(error.message, "metadati di colonna PostgreSQL non validi");
     let error = run_json_err(&[
         "query",
         "--input",

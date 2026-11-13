@@ -42,6 +42,14 @@ impl BatchStream for Buffer {
 fn invalid() -> plenora_database_core::DatabaseError {
     crate::write::mapping_error("catalogo Create diverso dai fatti congelati")
 }
+// MySQL bug #112275: temporary tables report SQL NULL for absent Extra,
+// while permanent tables report an empty string. Nonempty Extra remains binding.
+fn normalize_extra(columns: &mut [Value]) {
+    if columns[6] == Value::NULL {
+        columns[6] = Value::Bytes(Vec::new());
+    }
+}
+
 pub async fn catalog(
     session: &mut MysqlSession,
     quoted: &str,
@@ -61,6 +69,7 @@ pub async fn catalog(
             if values.len() != 9 {
                 return Err(invalid());
             }
+            normalize_extra(&mut values);
             // Privileges non e un fatto di mapping ed e diverso sulle TEMPORARY.
             values.remove(7);
             Ok(values)
@@ -240,3 +249,7 @@ pub async fn prepare(
         catalog: snapshot,
     })
 }
+
+#[cfg(test)]
+#[path = "create_buffer_tests.rs"]
+mod tests;

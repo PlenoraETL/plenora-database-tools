@@ -3,6 +3,43 @@ use arrow_schema::DataType;
 use plenora_database_core::protocol;
 use serde_json::Value;
 
+#[test]
+fn legacy_scalar_input_does_not_require_comment_ownership() {
+    let schema = Schema::new(vec![Field::new("v", DataType::Int64, false)]);
+    let plan = crate::geometry_properties::SchemaPlan::compile(&schema).unwrap();
+    assert!(plan
+        .registrations(&schema, &[("v".into(), None)])
+        .unwrap()
+        .is_empty());
+    assert!(plan
+        .registrations(
+            &schema,
+            &[(
+                "v".into(),
+                Some("plenora.field_id.v1:broken\nplenora.arrow.v1:broken".into(),)
+            )]
+        )
+        .is_err());
+    let saved = plan.columns[0].encode().unwrap();
+    let comment = format!(
+        "plenora.field_id.v1:{}\nplenora.arrow.v1:{saved}\nhuman",
+        plan.columns[0].id
+    );
+    assert!(plan
+        .registrations(&schema, &[("v".into(), Some(comment))])
+        .unwrap()
+        .is_empty());
+    let schema = Schema::new(vec![schema.field(0).clone().with_metadata(
+        std::collections::HashMap::from([("application.note".into(), "preserve".into())]),
+    )]);
+    let plan = crate::geometry_properties::SchemaPlan::compile(&schema).unwrap();
+    assert!(
+        plan.registrations(&schema, &[("v".into(), None)]).unwrap()[0]
+            .comment
+            .is_some()
+    );
+}
+
 pub fn fixture_field(value: &Value) -> Field {
     let kind = match value["type"].as_str().unwrap() {
         "binary" => DataType::Binary,

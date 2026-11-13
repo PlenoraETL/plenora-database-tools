@@ -1253,7 +1253,7 @@ impl Provider for PostgresProvider {
                         &prepared.operation.keys,
                         &input.schema(),
                     )?;
-                    let result = write::execute(
+                    let result = Box::pin(write::execute(
                         secret,
                         prepared,
                         input,
@@ -1275,7 +1275,7 @@ impl Provider for PostgresProvider {
                             pool_acquire_timeout_ms: self.pool_acquire_timeout_ms,
                         },
                         consent,
-                    )
+                    ))
                     .await;
                     if result.is_ok() {
                         self.invalidate_cached_schema(secret, &target);

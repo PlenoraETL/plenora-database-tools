@@ -8,6 +8,14 @@ riassumono le note di quelle release.
 
 ## 11.0.0 — non pubblicata
 
+- Correzioni della corsa finale: gli input PostgreSQL scalari legacy senza
+  metadati non richiedono ownership per COMMENT; staging MySQL creato prima
+  della transazione e ricontrollato sotto lock; confronto Create normalizzato
+  per l'assenza di Extra nelle tabelle temporanee. Il ledger usa il proprio
+  indice per confermare le celle senza riscansionare l'intero batch.
+- Campagne e wheel offline ricevono fixture, DSN e binari espliciti; builder
+  Db2 coerente con curl-minimal di UBI e registro avvisi rigenerato.
+
 - **Python minimo 3.14**: SDK, ABI stabile dei wheel, CI, rilascio e campagne
   usano il minimo dichiarato in `.python-version`. Rimossi i fallback precedenti.
 - PostgreSQL: protocollo versionato nel commento di colonna per conservare le

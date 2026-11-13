@@ -1,6 +1,6 @@
 //! Roundtrip di tipi meno esercitati ma richiesti dal PFM.
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -26,11 +26,10 @@ use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;
 use plenora_db_postgres::PostgresProvider;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -42,7 +41,7 @@ fn budget() -> ResourceBudget {
 //  con Unsupported. Cast a text lo rende consumabile.
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h5_interval_direct_binary_returns_unsupported_or_maps_via_text() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -82,7 +81,7 @@ async fn h5_interval_direct_binary_returns_unsupported_or_maps_via_text() {
 //  H5.2 — JSONB grosso (~1 MiB): roundtrip senza truncation
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h5_large_jsonb_roundtrips_bytewise_intact() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -130,7 +129,7 @@ async fn h5_large_jsonb_roundtrips_bytewise_intact() {
 //  H5.3 — BYTEA grosso (~4 MiB): roundtrip senza truncation
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h5_large_bytea_roundtrips_bytewise_intact() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -176,7 +175,7 @@ async fn h5_large_bytea_roundtrips_bytewise_intact() {
 //  binario per TIMETZ)
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h5_timetz_via_text_cast_is_readable() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -216,7 +215,7 @@ async fn h5_timetz_via_text_cast_is_readable() {
 //  colonna target
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h5_typed_null_binds_correctly_for_each_hint() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);

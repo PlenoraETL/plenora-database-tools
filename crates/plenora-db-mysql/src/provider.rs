@@ -1091,6 +1091,27 @@ async fn execute_mysql_write_after_ddl(
     frozen: &mut Option<crate::loss_execution::Evaluation>,
     frozen_catalog: Option<&crate::create_buffer::Catalog>,
 ) -> Result<WriteOutcome> {
+    // TEMPORARY DDL must precede BEGIN: otherwise ROLLBACK emits warning 1751.
+    // Freeze the catalog used for staging, then compare it again under MDL.
+    let staging_snapshot =
+        if operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict {
+            None
+        } else {
+            let quoted = crate::create_buffer::quoted(operation, provider.config.database())?;
+            let catalog = crate::create_buffer::catalog(session, &quoted, token).await?;
+            let target = crate::catalog::describe_object_with_profile(
+                session,
+                target_schema,
+                &operation.target.object,
+                provider.profile,
+                token,
+            )
+            .await?;
+            let stages =
+                prepare_write_stages(provider, session, operation, schema, plan, &target, token)
+                    .await?;
+            Some((catalog, stages))
+        };
     let early = if operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict {
         None
     } else {
@@ -1107,6 +1128,22 @@ async fn execute_mysql_write_after_ddl(
                 .query_rows(&plan.render_metadata_lock(), ErrorPhase::Prepare, token)
                 .await?;
         }
+        let stages = if let Some((expected, stages)) = staging_snapshot {
+            let actual = crate::create_buffer::catalog(
+                session,
+                &crate::create_buffer::quoted(operation, provider.config.database())?,
+                token,
+            )
+            .await?;
+            if actual != expected {
+                return Err(crate::write::mapping_error(
+                    "catalogo staging cambiato prima del lock",
+                ));
+            }
+            Some(stages)
+        } else {
+            None
+        };
         execute_mysql_write_locked(
             provider,
             session,
@@ -1120,6 +1157,7 @@ async fn execute_mysql_write_after_ddl(
             budget,
             token,
             early.as_deref(),
+            stages,
             frozen,
             frozen_catalog,
         )
@@ -1140,6 +1178,123 @@ async fn execute_mysql_write_after_ddl(
     result
 }
 
+struct WriteStages {
+    target: crate::MysqlObjectDescription,
+    staging_quoted: String,
+    serial_stage: Option<String>,
+    key_guard: Option<crate::write::KeyCollationGuard>,
+}
+
+async fn prepare_write_stages(
+    provider: &MysqlProvider,
+    session: &mut crate::MysqlSession,
+    operation: &plenora_database_core::plan::WriteOperation,
+    schema: &SchemaRef,
+    plan: &crate::write::MysqlWritePlan,
+    target: &crate::MysqlObjectDescription,
+    token: &CancellationToken,
+) -> Result<WriteStages> {
+    // Ogni bind entra in una colonna dichiarata dal catalogo. Il DML sul
+    // target usa soltanto quelle colonne, anche nei predicati DeleteByKeys.
+    let staging_quoted = {
+        let seed = format!(
+            "{}-{}",
+            std::process::id(),
+            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let staging_name = plan.staging_temp_name(&seed);
+        let staging_ddl = crate::write::build_temp_staging_sql(
+            schema,
+            &staging_name,
+            provider.config.database(),
+            provider.profile,
+            target,
+        )?;
+        session
+            .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
+            .await?;
+        let quoted = crate::write::quote_staging_name(&staging_name, provider.config.database())?;
+        quoted
+    };
+
+    let serial_stage = if operation.mapping_policy
+        != plenora_database_core::loss::MappingPolicy::Strict
+        && matches!(
+            operation.mode,
+            plenora_database_core::plan::WriteMode::Update
+                | plenora_database_core::plan::WriteMode::Upsert
+        ) {
+        let key_schema = std::sync::Arc::new(plenora_database_core::arrow::schema::Schema::new(
+            operation
+                .keys
+                .iter()
+                .map(|key| {
+                    schema
+                        .field_with_name(key)
+                        .cloned()
+                        .map_err(|_| crate::write::mapping_error("chiave assente"))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        ));
+        let name = plan.staging_temp_name(&format!(
+            "k{}",
+            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let ddl = crate::write::build_temp_staging_sql(
+            &key_schema,
+            &name,
+            provider.config.database(),
+            provider.profile,
+            target,
+        )?;
+        session
+            .exec_control(&ddl, ErrorPhase::Prepare, token)
+            .await?;
+        Some(crate::write::quote_staging_name(
+            &name,
+            provider.config.database(),
+        )?)
+    } else {
+        None
+    };
+
+    // La regola K sotto la collation della colonna, per Upsert e
+    // `DeleteByKeys` (`crate::write::KeyCollationGuard`): la tabella delle
+    // chiavi si crea qui, prima della transazione; ogni blocco di chiavi vi
+    // entra prima del proprio statement sul target.
+    let mut guard_operation = operation.clone();
+    if operation.mapping_policy != plenora_database_core::loss::MappingPolicy::Strict
+        && operation.mode == plenora_database_core::plan::WriteMode::Update
+    {
+        guard_operation.mode = plenora_database_core::plan::WriteMode::Upsert;
+    }
+    let key_guard = match plan.key_collation_guard(
+        &guard_operation,
+        target,
+        provider.config.database(),
+        &format!(
+            "{}-{}",
+            std::process::id(),
+            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ),
+    )? {
+        Some((ddl, guard)) => {
+            session
+                .exec_control(&ddl, ErrorPhase::Prepare, token)
+                .await?;
+            Some(guard)
+        }
+        None => None,
+    };
+
+    Ok(WriteStages {
+        target: target.clone(),
+        staging_quoted,
+        serial_stage,
+        key_guard,
+    })
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn execute_mysql_write_locked(
     provider: &MysqlProvider,
@@ -1154,6 +1309,7 @@ async fn execute_mysql_write_locked(
     budget: &ResourceBudget,
     token: &CancellationToken,
     early: Option<&str>,
+    stages: Option<WriteStages>,
     frozen: &mut Option<crate::loss_execution::Evaluation>,
     frozen_catalog: Option<&crate::create_buffer::Catalog>,
 ) -> Result<WriteOutcome> {
@@ -1303,94 +1459,24 @@ async fn execute_mysql_write_locked(
         .await?;
     }
 
-    // Ogni bind entra in una colonna dichiarata dal catalogo. Il DML sul
-    // target usa soltanto quelle colonne, anche nei predicati DeleteByKeys.
-    let staging_quoted = {
-        let seed = format!(
-            "{}-{}",
-            std::process::id(),
-            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        );
-        let staging_name = plan.staging_temp_name(&seed);
-        let staging_ddl = crate::write::build_temp_staging_sql(
-            schema,
-            &staging_name,
-            provider.config.database(),
-            provider.profile,
-            &target,
-        )?;
-        session
-            .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
-            .await?;
-        let quoted = crate::write::quote_staging_name(&staging_name, provider.config.database())?;
-        quoted
-    };
-
-    let serial_stage = if evaluation.is_some()
-        && matches!(
-            operation.mode,
-            plenora_database_core::plan::WriteMode::Update
-                | plenora_database_core::plan::WriteMode::Upsert
-        ) {
-        let key_schema = std::sync::Arc::new(plenora_database_core::arrow::schema::Schema::new(
-            operation
-                .keys
-                .iter()
-                .map(|key| {
-                    schema
-                        .field_with_name(key)
-                        .cloned()
-                        .map_err(|_| crate::write::mapping_error("chiave assente"))
-                })
-                .collect::<Result<Vec<_>>>()?,
+    if stages
+        .as_ref()
+        .is_some_and(|stages| stages.target != target)
+    {
+        return Err(crate::write::mapping_error(
+            "catalogo staging incoerente sotto lock",
         ));
-        let name = plan.staging_temp_name(&format!(
-            "k{}",
-            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let ddl = crate::write::build_temp_staging_sql(
-            &key_schema,
-            &name,
-            provider.config.database(),
-            provider.profile,
-            &target,
-        )?;
-        session
-            .exec_control(&ddl, ErrorPhase::Prepare, token)
-            .await?;
-        Some(crate::write::quote_staging_name(
-            &name,
-            provider.config.database(),
-        )?)
-    } else {
-        None
-    };
-
-    // La regola K sotto la collation della colonna, per Upsert e
-    // `DeleteByKeys` (`crate::write::KeyCollationGuard`): la tabella delle
-    // chiavi si crea qui, prima della transazione; ogni blocco di chiavi vi
-    // entra prima del proprio statement sul target.
-    let mut guard_operation = operation.clone();
-    if evaluation.is_some() && operation.mode == plenora_database_core::plan::WriteMode::Update {
-        guard_operation.mode = plenora_database_core::plan::WriteMode::Upsert;
     }
-    let key_guard = match plan.key_collation_guard(
-        &guard_operation,
-        &target,
-        provider.config.database(),
-        &format!(
-            "{}-{}",
-            std::process::id(),
-            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ),
-    )? {
-        Some((ddl, guard)) => {
-            session
-                .exec_control(&ddl, ErrorPhase::Prepare, token)
-                .await?;
-            Some(guard)
+    let WriteStages {
+        target: _,
+        staging_quoted,
+        serial_stage,
+        key_guard,
+    } = match stages {
+        Some(stages) => stages,
+        None => {
+            prepare_write_stages(provider, session, operation, schema, plan, &target, token).await?
         }
-        None => None,
     };
 
     // Replace: il DELETE viene reso qui ma eseguito dentro la transazione,

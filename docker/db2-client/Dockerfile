@@ -13,7 +13,7 @@ FROM icr.io/db2_community/db2@sha256:2de8151713c261843868c5c3411b57be6ae79d99d70
 RUN dnf --disablerepo=CRB install --assumeyes \
         unixODBC \
         unixODBC-devel \
-        gcc make curl tar xz openssl-devel zlib-devel bzip2-devel \
+        gcc make curl-minimal tar xz openssl-devel zlib-devel bzip2-devel \
         libffi-devel sqlite-devel xz-devel readline-devel libuuid-devel \
     && dnf clean all
 

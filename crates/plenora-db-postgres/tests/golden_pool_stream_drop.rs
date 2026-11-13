@@ -1,7 +1,7 @@
 //! Golden test end-to-end su pool concorrenza, streaming stress e Drop
 //! implicito della transazione (quarantena connessione).
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -29,11 +29,10 @@ use plenora_db_postgres::PostgresProvider;
 use std::sync::Arc;
 use std::time::Duration;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -44,7 +43,7 @@ fn budget() -> ResourceBudget {
 //  H4.1 — Pool concorrenza: N tx parallele su pool size limitato
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn h4_pool_backpressure_supports_50_concurrent_tx_on_pool_8() {
     let provider =
@@ -91,7 +90,7 @@ async fn h4_pool_backpressure_supports_50_concurrent_tx_on_pool_8() {
 //  H4.2 — Streaming stress: 100k righe in batch da 500, cancel a metà
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_streaming_100k_rows_reaches_completion_without_oom() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -130,7 +129,7 @@ async fn h4_streaming_100k_rows_reaches_completion_without_oom() {
     );
 }
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_streaming_cancel_mid_flight_is_honored_promptly() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -189,7 +188,7 @@ async fn h4_streaming_cancel_mid_flight_is_honored_promptly() {
 //  mettere la connessione in quarantena (non riusata dal pool come sana)
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_transaction_drop_without_commit_does_not_leak_state_to_next_tx() {
     // Pool size 1 → se la connessione non viene invalidata, la stessa
@@ -242,7 +241,7 @@ async fn h4_transaction_drop_without_commit_does_not_leak_state_to_next_tx() {
     );
 }
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_transaction_drop_does_not_leave_pool_permanently_broken() {
     // Dopo il drop, il pool deve poter servire N tx consecutive senza errori.

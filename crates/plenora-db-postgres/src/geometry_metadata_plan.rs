@@ -61,6 +61,17 @@ impl SchemaPlan {
             .map(|(name, text)| Ok((name, text, decode(text.as_deref())?)))
             .collect::<Result<Vec<_>>>()?;
         self.unique_registered_ids(schema, comments)?;
+        // Legacy scalar input has no metadata to persist. In particular, a
+        // synthesized name ID is not a request to change catalog comments.
+        // Decode above still rejects corrupt registered metadata on the target.
+        if self.columns.iter().all(|column| {
+            column.physical.is_none()
+                && column.field.is_empty()
+                && column.schema.is_empty()
+                && column.omitted.is_empty()
+        }) {
+            return Ok(Vec::new());
+        }
         let mut history = Vec::new();
         let mut first = None;
         for (_, _, saved) in &existing {

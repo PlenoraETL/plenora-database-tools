@@ -9974,10 +9974,12 @@ async fn regola_a_write(
             &cancellation,
         )
         .await?;
-    assert!(
-        prepared.loss_report.losses.is_empty(),
-        "Strict: nessuna perdita dichiarata"
-    );
+    if operation.mapping_policy == MappingPolicy::Strict {
+        assert!(
+            prepared.loss_report.losses.is_empty(),
+            "Strict: nessuna perdita dichiarata"
+        );
+    }
     hooks
         .provider()
         .write(
@@ -15055,10 +15057,15 @@ async fn live_p3_loss_codec_boundaries() {
     async fn compare(
         session: &mut MysqlSession,
         cancel: &CancellationToken,
+        names: &[String; 3],
         original: Value,
+        raw_expected: Value,
         converted: Value,
     ) {
-        for (table, value) in [("_p3_raw", original), ("_p3_stage", converted.clone())] {
+        for (table, value) in [
+            (names[0].as_str(), original),
+            (names[1].as_str(), converted.clone()),
+        ] {
             session
                 .connection_mut()
                 .unwrap()
@@ -15080,21 +15087,21 @@ async fn live_p3_loss_codec_boundaries() {
         session
             .connection_mut()
             .unwrap()
-            .query_drop("DELETE FROM _p3_target")
+            .query_drop(format!("DELETE FROM {}", names[2]))
             .await
             .unwrap();
-        let sql = "INSERT INTO _p3_target SELECT v FROM _p3_stage";
+        let sql = format!("INSERT INTO {} SELECT v FROM {}", names[2], names[1]);
         session
             .connection_mut()
             .unwrap()
-            .query_drop(sql)
+            .query_drop(&sql)
             .await
             .unwrap();
         session
-            .check_warnings_for_sql(ErrorPhase::Write, cancel, sql)
+            .check_warnings_for_sql(ErrorPhase::Write, cancel, &sql)
             .await
             .unwrap();
-        for table in ["_p3_raw", "_p3_stage", "_p3_target"] {
+        for (path, table) in names.iter().enumerate() {
             let row: mysql_async::Row = session
                 .connection_mut()
                 .unwrap()
@@ -15102,14 +15109,20 @@ async fn live_p3_loss_codec_boundaries() {
                 .await
                 .unwrap()
                 .unwrap();
-            match (&converted, row.as_ref(0).unwrap()) {
-                (Value::Double(a), Value::Double(b)) => assert_eq!(a.to_bits(), b.to_bits()),
-                (a, b) => assert_eq!(a, b),
+            let expected = if path == 0 { &raw_expected } else { &converted };
+            match (expected, row.as_ref(0).unwrap()) {
+                (Value::Double(a), Value::Double(b)) => {
+                    assert_eq!(a.to_bits(), b.to_bits(), "qualification path {path}");
+                }
+                (a, b) => assert_eq!(a, b, "qualification path {path}"),
             }
         }
     }
-    async fn tables(session: &mut MysqlSession, native: &str) {
-        for name in ["_p3_raw", "_p3_stage", "_p3_target"] {
+    async fn tables(session: &mut MysqlSession, native: &str) -> [String; 3] {
+        // A new SQL identity per type also invalidates prepared parameter inference.
+        let suffix = native.replace(['(', ')', ','], "_");
+        let names = ["raw", "stage", "target"].map(|path| format!("_p3_{path}_{suffix}"));
+        for name in &names {
             session
                 .connection_mut()
                 .unwrap()
@@ -15123,6 +15136,7 @@ async fn live_p3_loss_codec_boundaries() {
                 .await
                 .unwrap();
         }
+        names
     }
     fn convert(codec: &RuleCodec, array: &dyn plenora_database_core::arrow::array::Array) -> Value {
         let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
@@ -15159,8 +15173,16 @@ async fn live_p3_loss_codec_boundaries() {
     for base in ["datetime", "timestamp"] {
         for p in 0..=6_u8 {
             let native = format!("{base}({p})");
-            tables(&mut session, &native).await;
-            compare(&mut session, &cancel, Value::NULL, Value::NULL).await;
+            let names = tables(&mut session, &native).await;
+            compare(
+                &mut session,
+                &cancel,
+                &names,
+                Value::NULL,
+                Value::NULL,
+                Value::NULL,
+            )
+            .await;
             let q = 10_i64.pow(6 - u32::from(p));
             let mut seconds = vec![
                 1_000_000,
@@ -15208,12 +15230,33 @@ async fn live_p3_loss_codec_boundaries() {
                         .unwrap();
                         convert(&codec, &TimestampMicrosecondArray::from(vec![input]))
                     };
-                    compare(&mut session, &cancel, original, converted).await;
+                    // MySQL 8.x date_add_interval loses year-zero dates on a
+                    // fractional carry (my_time.cc/get_date_from_daynr). Keep
+                    // this raw-server characterization separate from the codec:
+                    // explicit conversion and stage->target MUST retain the date.
+                    let raw_expected = match (&original, &converted) {
+                        (
+                            Value::Date(0, _, _, _, _, old_second, _),
+                            Value::Date(0, _, _, hour, minute, new_second, micros),
+                        ) if version.starts_with("8.") && old_second != new_second => {
+                            Value::Date(0, 0, 0, *hour, *minute, *new_second, *micros)
+                        }
+                        _ => converted.clone(),
+                    };
+                    compare(
+                        &mut session,
+                        &cancel,
+                        &names,
+                        original,
+                        raw_expected,
+                        converted,
+                    )
+                    .await;
                 }
             }
         }
     }
-    tables(&mut session, "double(255,30)").await;
+    let names = tables(&mut session, "double(255,30)").await;
     let codec = RuleCodec::new(
         ProviderKind::Mysql,
         0,
@@ -15247,7 +15290,9 @@ async fn live_p3_loss_codec_boundaries() {
         compare(
             &mut session,
             &cancel,
+            &names,
             Value::Double(input),
+            Value::Double(number),
             Value::Double(number),
         )
         .await;

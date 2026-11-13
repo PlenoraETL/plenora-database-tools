@@ -8786,7 +8786,7 @@
       "classification": "ingresso guardato",
       "reason": "Provider PostgreSQL: write::execute -> execute_inner; validated_batch precede valutazione, trasformazioni e codec, anche nel percorso diagnostico.",
       "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "68a676d514d53498e8fb8c09505562ac3b36f50ca1c23f1a410723bf6759e75d",
+      "review_sha256": "9f439aa06c473d925752ff6c734032c3053ae9a16763de67b5e9f7fa95002a39",
       "required": [
         "write::execute("
       ],
@@ -10033,7 +10033,7 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Unisce lo schema al catalogo validato dal codec, verifica identita e limiti finali prima del DDL; nessun buffer Arrow.",
       "signature": "pub fn registrations( &self, schema: &Schema, comments: &[(String, Option<String>)], ) -> Result<Vec<Registration>>",
-      "review_sha256": "147499557073425c02cf13cd40735348995ed870a0e3c2fb7b1e897f58a8dbe6"
+      "review_sha256": "580fd910dfdd4833e44982bba72fa8c3c67906c8eb4f3ccf2fe988c756e12bc9"
     },
     "crates/plenora-db-postgres/src/types.rs::arrow_data_type#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -10360,7 +10360,7 @@
       "reason": "locate e drain usano validated_batch; evaluation.batch precede bind/invio e segue la validazione."
     },
     "crates/plenora-db-mysql/src/provider.rs": {
-      "review_sha256": "a3a6c867d5bdfee20a5ea90c6cde1d161431ad42555bb96e05f802b09186beb0",
+      "review_sha256": "cd20efb5f77aa9244d1a8dd0e99a55136d3421102f4ea3b90e4cea50874a9c2c",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/row_diagnostics.rs": {
@@ -10445,7 +10445,7 @@
     },
     "crates/plenora-db-postgres/src/lib.rs": {
       "reason": "Dry run Deny delega alla variante con consenso: preparazione, guardia chiavi e verify_input_with_consent; nessun fetch non validato. Il fallback dopo prepare conserva il rischio senza sovrascrivere la valutazione del consumer.",
-      "review_sha256": "c7adcc5b6e35d38204160cce6f129d5db6d381c6814cc61cc058f8daf801193c"
+      "review_sha256": "75cdfde9bd7cc365b2748d1597109ecaf9a40aeecf48ba9147c6b3778ba139aa"
     },
     "crates/plenora-database-py/src/async_session_ops.rs": {
       "review_sha256": "0761d53ca477a5cd35f53896c0f3d17830c92864b3e254f420db6637d31b2896",
@@ -10596,7 +10596,7 @@
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/create_buffer.rs": {
-      "review_sha256": "fcd56f5913f0b2374c8e5791c3accf31676f552c6ea72c4c7c91fbe279ddf502",
+      "review_sha256": "26c764c98e736ffdd85e46de82f7aa39117de5af5ded529f92b0a9d1f9e0a089",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/lib.rs": {
@@ -10630,11 +10630,11 @@
       "reason": "Matrice SDK sync/async e reader originali: eseguita dal job sdk-offline."
     },
     ".github/workflows/rust-ci.yml": {
-      "review_sha256": "09656c76ca3590d60c62655c52ff27a4a208581867d25a2917ce04b28e05f659",
+      "review_sha256": "a0b676662d144dce85b8fe5269ad9c45f793956e8e6ee96a76bf8afa7d9825fe",
       "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     },
     ".github/scripts/offline_suite.sh": {
-      "review_sha256": "53f7414fb12a5e1858f65f17cacce8b46f6761f83afc71ac804dcb729c7f79e7",
+      "review_sha256": "a8a6383cdf6acb6d01d190933d52fdeafc3991f5012c72ffb2abe719108d65ba",
       "reason": "Gate inspect sulle funzioni e metodi reali del wheel installato, inclusi costruttori generati; eseguito dal workflow SDK."
     },
     "crates/plenora-database-py/src/stream_reader_tests.rs": {
