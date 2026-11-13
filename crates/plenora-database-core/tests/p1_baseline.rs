@@ -16,7 +16,17 @@ fn p1_registry_reports_and_authorization_baseline() {
         ProviderKind::Postgres,
         ProviderKind::Sqlserver,
     ] {
-        for &id in RuleId::ALL {
+        let baseline: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/mysql_permissive/core_baseline.json"
+        ))
+        .unwrap();
+        let ids: std::collections::BTreeSet<RuleId> = baseline
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| serde_json::from_value(entry["id"].clone()).unwrap())
+            .collect();
+        for id in ids {
             for policy in [
                 MappingPolicy::Strict,
                 MappingPolicy::Compatible,

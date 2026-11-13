@@ -66,6 +66,11 @@
     },
     "rule": {
       "enum": [
+        "mysql.double_underflow",
+        "mysql.fixed_double",
+        "mysql.fixed_float",
+        "mysql.fractional_seconds",
+        "mysql.negative_zero",
         "pg.add_nullable",
         "pg.arrow_mismatch",
         "pg.crs",

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Applicability {
+    Mysql,
     Postgres,
     Sqlserver,
     Shared,
@@ -76,6 +77,16 @@ pub struct RuleDefinition {
     pub mode: ClassificationMode,
     pub postgres_alias: Option<RuleId>,
 }
+impl RuleDefinition {
+    /// Alias per provider; il campo storico resta disponibile agli adapter esistenti.
+    #[must_use]
+    pub const fn alias_for(self, provider: ProviderKind) -> Option<RuleId> {
+        match provider {
+            ProviderKind::Postgres => self.postgres_alias,
+            _ => None,
+        }
+    }
+}
 macro_rules! rules {
     ($(($variant:ident, $wire:literal, $provider:ident, $category:ident, $severity:ident, $predicate:ident, $mode:ident, $alias:expr, $reason:literal)),* $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -96,6 +107,11 @@ macro_rules! rules {
     };
 }
 rules! {
+    (MysqlDoubleUnderflow, "mysql.double_underflow", Mysql, Precision, DataLoss, Underflow, HardReject, None, "soglia prudenziale MySQL non qualificata per la conversione"),
+    (MysqlFixedDouble, "mysql.fixed_double", Mysql, NativeType, DataLoss, Conservative, HardReject, None, "double MySQL a scala fissa non qualificato per la conversione"),
+    (MysqlFixedFloat, "mysql.fixed_float", Mysql, NativeType, DataLoss, Conservative, HardReject, None, "float MySQL a scala fissa non qualificato per la conversione"),
+    (MysqlFractionalSeconds, "mysql.fractional_seconds", Mysql, Precision, DataLoss, FractionalSeconds, Exact, None, "precisione temporale MySQL inferiore alla sorgente"),
+    (MysqlNegativeZero, "mysql.negative_zero", Mysql, Precision, DataLoss, NegativeZero, Exact, None, "il tipo numerico MySQL salva lo zero negativo come positivo"),
     (PgAddNullable, "pg.add_nullable", Postgres, NativeType, Information, NoChange, NoChange, None, "colonna aggiunta al target come nullable"),
     (PgArrowMismatch, "pg.arrow_mismatch", Postgres, NativeType, DataLoss, Conservative, Conservative, None, "tipo Arrow non equivalente al target PostgreSQL"),
     (PgCrs, "pg.crs", Postgres, Crs, DataLoss, Conservative, Conservative, None, "identificatore CRS sorgente e target differente"),
@@ -129,12 +145,10 @@ rules! {
 impl RuleId {
     #[must_use]
     pub const fn canonical(self, provider: ProviderKind) -> Self {
-        if matches!(provider, ProviderKind::Postgres) {
-            if let Some(alias) = self.definition().postgres_alias {
-                return alias;
-            }
+        match self.definition().alias_for(provider) {
+            Some(alias) => alias,
+            None => self,
         }
-        self
     }
 
     /// Vista v2: non aggiunge campi al contratto storico chiuso.
@@ -208,7 +222,8 @@ pub fn compile_instances(
         std::collections::BTreeMap::new();
     for mut instance in instances {
         let applicable = match instance.rule_id.definition().applicability {
-            Applicability::Shared => true,
+            Applicability::Shared => provider != ProviderKind::Mysql,
+            Applicability::Mysql => provider == ProviderKind::Mysql,
             Applicability::Postgres => provider == ProviderKind::Postgres,
             Applicability::Sqlserver => provider == ProviderKind::Sqlserver,
         };
@@ -242,4 +257,79 @@ pub fn compile_instances(
         controls.iter().map(|i| i.risk(policy)).collect(),
     )?;
     Ok((controls, report))
+}
+
+/// Risoluzione contestuale senza fallback Shared per MySQL.
+/// Non costituisce ammissione A né qualifica di una trasformazione.
+/// # Errors
+/// Rifiuta ogni coppia o parametro non presente nel perimetro dichiarato.
+pub fn resolve_rewrite(
+    provider: ProviderKind,
+    arrow: &arrow_schema::DataType,
+    native: &str,
+    rewrite: crate::store_rewrite::StoreRewrite,
+) -> crate::Result<RuleId> {
+    use crate::store_rewrite::StoreRewrite;
+    use arrow_schema::{DataType, TimeUnit};
+    if provider != ProviderKind::Mysql {
+        return Ok(rewrite.rule_id().canonical(provider));
+    }
+    let id = match (arrow, native, rewrite) {
+        (DataType::Float32, "float(7,3)" | "float(10,2)" | "float(12,0)", StoreRewrite::Every) => {
+            RuleId::MysqlFixedFloat
+        }
+        (
+            DataType::Float64,
+            "double(10,2)" | "double(16,4)" | "double(22,0)",
+            StoreRewrite::Every,
+        ) => RuleId::MysqlFixedDouble,
+        (DataType::Float64, "double(255,30)", StoreRewrite::Underflow { min_abs: 1e-10 }) => {
+            RuleId::MysqlDoubleUnderflow
+        }
+        (DataType::Float64, "double(255,30)", StoreRewrite::NegativeZero) => {
+            RuleId::MysqlNegativeZero
+        }
+        (
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            target,
+            StoreRewrite::FractionalSeconds { digits },
+        ) if digits < 6
+            && ["datetime", "timestamp"].into_iter().any(|base| {
+                (digits == 0 && target == base) || target == format!("{base}({digits})")
+            }) =>
+        {
+            RuleId::MysqlFractionalSeconds
+        }
+        _ => return Err(crate::execution_loss::invalid()),
+    };
+    Ok(id)
+}
+/// Predicato unico della rewrite contestuale; Strict continua a usare la guardia S.
+/// # Errors
+/// Rifiuta tipi, indici e contesti non classificabili, senza includere dati.
+pub fn classify_rewrite(
+    provider: ProviderKind,
+    native: &str,
+    rewrite: crate::store_rewrite::StoreRewrite,
+    array: &dyn arrow_array::Array,
+    row: usize,
+    unit: crate::store_rewrite::TextLengthUnit,
+) -> crate::Result<crate::loss_ledger::Classification> {
+    use crate::loss_ledger::Classification;
+    let id = resolve_rewrite(provider, array.data_type(), native, rewrite)?;
+    let classification = rewrite.classify(array, row, unit)?;
+    if classification == Classification::HardReject {
+        return Ok(classification);
+    }
+    Ok(
+        if id.definition().mode == ClassificationMode::HardReject
+            && matches!(classification, Classification::WouldChange(_))
+        {
+            Classification::HardReject
+        } else if id.definition().mode == ClassificationMode::HardReject {
+            Classification::Exact(crate::execution_loss::Basis::Exact)
+        } else {
+            classification
+        },
+    )
 }

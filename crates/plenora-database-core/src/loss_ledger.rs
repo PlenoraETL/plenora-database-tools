@@ -6,7 +6,23 @@ use crate::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeMap;
 
 type Key = (u32, RuleId, Basis);
-type Cell = (u64, u32, RuleId);
+type Row = (u64, u64, Option<(u32, RuleId)>);
+type Cell = (Row, u32, RuleId);
+
+/// Identità sorgente, indipendente dai batch di trasporto e dai retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LossToken {
+    owner: u64,
+    batch: u64,
+    row: u64,
+    field: u32,
+    rule: RuleId,
+}
+impl LossToken {
+    const fn row(self) -> Row {
+        (self.batch, self.row, Some((self.field, self.rule)))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Classification {
@@ -43,14 +59,16 @@ enum RowState {
 
 #[derive(Clone)]
 pub struct LossLedger {
+    identity: u64,
     report: ExecutionLossReport,
     batch: Option<u64>,
     retired: bool,
     cells: BTreeMap<Cell, Classification>,
-    rows: BTreeMap<u64, RowState>,
+    rows: BTreeMap<Row, RowState>,
     pending: BTreeMap<Key, u64>,
     sent: BTreeMap<Key, u64>,
     max_cells: usize,
+    persistent: bool,
 }
 impl LossLedger {
     /// # Errors
@@ -60,6 +78,14 @@ impl LossLedger {
         transport_bytes: usize,
         max_batch_cells: usize,
     ) -> Result<Self> {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let identity = NEXT_ID
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |id| id.checked_add(1),
+            )
+            .map_err(|_| limit())?;
         report.validate_transport_budget(transport_bytes)?;
         if report.evaluation != crate::execution_loss::Evaluation::default()
             || !report.effective.is_empty()
@@ -67,6 +93,7 @@ impl LossLedger {
             return Err(invalid());
         }
         Ok(Self {
+            identity,
             report,
             batch: None,
             retired: false,
@@ -75,11 +102,15 @@ impl LossLedger {
             pending: BTreeMap::new(),
             sent: BTreeMap::new(),
             max_cells: max_batch_cells,
+            persistent: false,
         })
     }
     /// # Errors
     /// Un batch vecchio non puo essere ricontato; il batch corrente e idempotente.
     pub fn begin_batch(&mut self, batch: u64) -> Result<()> {
+        if self.persistent {
+            return Err(invalid());
+        }
         if self.batch == Some(batch) {
             return if self.retired { Err(invalid()) } else { Ok(()) };
         }
@@ -101,6 +132,59 @@ impl LossLedger {
     pub fn observe(
         &mut self,
         row: u64,
+        field: u32,
+        rule: RuleId,
+        classification: Classification,
+    ) -> Result<()> {
+        if self.persistent {
+            return Err(invalid());
+        }
+        self.observe_cell(
+            (self.batch.ok_or_else(invalid)?, row, None),
+            field,
+            rule,
+            classification,
+        )
+    }
+    /// Conserva le identità fino all'esito target, anche fra batch sorgente.
+    /// # Errors
+    /// Rifiuta batch regressivi e la commistione con l'adapter storico.
+    pub fn begin_source_batch(&mut self, batch: u64) -> Result<()> {
+        if (!self.persistent && self.batch.is_some())
+            || self.retired
+            || self.batch.is_some_and(|last| batch < last)
+        {
+            return Err(invalid());
+        }
+        self.persistent = true;
+        self.batch = Some(batch);
+        Ok(())
+    }
+    /// # Errors
+    /// La stessa identità è idempotente solo con la stessa classificazione.
+    pub fn observe_token(
+        &mut self,
+        row: u64,
+        field: u32,
+        rule: RuleId,
+        classification: Classification,
+    ) -> Result<LossToken> {
+        if !self.persistent {
+            return Err(invalid());
+        }
+        let token = LossToken {
+            owner: self.identity,
+            batch: self.batch.ok_or_else(invalid)?,
+            row,
+            field,
+            rule,
+        };
+        self.observe_cell(token.row(), field, rule, classification)?;
+        Ok(token)
+    }
+    fn observe_cell(
+        &mut self,
+        row: Row,
         field: u32,
         rule: RuleId,
         classification: Classification,
@@ -166,7 +250,7 @@ impl LossLedger {
         self.rows.insert(row, RowState::Checked);
         Ok(())
     }
-    fn events(&self, row: u64) -> BTreeMap<Key, u64> {
+    fn events(&self, row: Row) -> BTreeMap<Key, u64> {
         self.cells
             .iter()
             .filter_map(|(&(r, field, rule), c)| {
@@ -183,6 +267,17 @@ impl LossLedger {
     /// # Errors
     /// Una riga non puo essere inviata due volte nel ledger.
     pub fn sent(&mut self, row: u64) -> Result<()> {
+        self.mark_sent((self.batch.ok_or_else(invalid)?, row, None))
+    }
+    /// # Errors
+    /// Separa l'invio al target dal semplice trasporto allo stage.
+    pub fn sent_token(&mut self, token: LossToken) -> Result<()> {
+        if token.owner != self.identity {
+            return Err(invalid());
+        }
+        self.mark_sent(token.row())
+    }
+    fn mark_sent(&mut self, row: Row) -> Result<()> {
         if self.rows.get(&row) != Some(&RowState::Checked) {
             return Err(invalid());
         }
@@ -194,6 +289,17 @@ impl LossLedger {
     /// # Errors
     /// Associa solo le righe realmente applicate, dopo successo dello statement.
     pub fn applied(&mut self, row: u64) -> Result<()> {
+        self.mark_applied((self.batch.ok_or_else(invalid)?, row, None))
+    }
+    /// # Errors
+    /// Conferma soltanto la cella attribuita dal chiamante.
+    pub fn applied_token(&mut self, token: LossToken) -> Result<()> {
+        if token.owner != self.identity {
+            return Err(invalid());
+        }
+        self.mark_applied(token.row())
+    }
+    fn mark_applied(&mut self, row: Row) -> Result<()> {
         if self.rows.get(&row) != Some(&RowState::Sent) {
             return Err(invalid());
         }
@@ -207,6 +313,28 @@ impl LossLedger {
     /// # Errors
     /// Rifiuta righe sconosciute; non cancella evaluation.
     pub fn discard(&mut self, row: u64) -> Result<()> {
+        self.mark_discarded((self.batch.ok_or_else(invalid)?, row, None))
+    }
+    /// # Errors
+    /// Scarta un ramo escluso o annullato senza cancellare evaluation.
+    pub fn discard_token(&mut self, token: LossToken) -> Result<()> {
+        if token.owner != self.identity {
+            return Err(invalid());
+        }
+        self.mark_discarded(token.row())
+    }
+    /// Riutilizza la conversione autorizzata dopo annullamento certo del tentativo.
+    /// # Errors
+    /// Solo Discarded può tornare Checked; evaluation non viene incrementata.
+    pub fn retry_token(&mut self, token: LossToken) -> Result<()> {
+        if token.owner != self.identity || self.rows.get(&token.row()) != Some(&RowState::Discarded)
+        {
+            return Err(invalid());
+        }
+        self.rows.insert(token.row(), RowState::Checked);
+        Ok(())
+    }
+    fn mark_discarded(&mut self, row: Row) -> Result<()> {
         let events = self.events(row);
         match self.rows.get(&row).ok_or_else(invalid)? {
             RowState::Sent => subtract(&mut self.sent, &events)?,

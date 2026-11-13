@@ -9,6 +9,11 @@ fn strict_rule_outcomes_match_903_baseline() {
     use LossSeverity::{DataLoss, Information, Warning};
     use RuleId::*;
     let baseline = [
+        (MysqlDoubleUnderflow, DataLoss),
+        (MysqlFixedDouble, DataLoss),
+        (MysqlFixedFloat, DataLoss),
+        (MysqlFractionalSeconds, DataLoss),
+        (MysqlNegativeZero, DataLoss),
         (PgAddNullable, Information),
         (PgArrowMismatch, DataLoss),
         (PgCrs, DataLoss),

@@ -15,6 +15,7 @@ pub mod ddl_residue;
 pub mod error;
 pub mod ewkb;
 pub mod execution_loss;
+pub mod execution_loss_context;
 pub mod facade;
 pub mod field_contract;
 pub mod fingerprint;

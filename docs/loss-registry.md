@@ -4,6 +4,11 @@ Generato da `loss_registry.rs` con `scripts/render_loss_registry.py`.
 
 | ID | Applicabilità | Categoria | Severità | Predicato | Modalità | Alias PostgreSQL |
 | --- | --- | --- | --- | --- | --- | --- |
+| mysql.double_underflow | Mysql | Precision | DataLoss | Underflow | HardReject | None |
+| mysql.fixed_double | Mysql | NativeType | DataLoss | Conservative | HardReject | None |
+| mysql.fixed_float | Mysql | NativeType | DataLoss | Conservative | HardReject | None |
+| mysql.fractional_seconds | Mysql | Precision | DataLoss | FractionalSeconds | Exact | None |
+| mysql.negative_zero | Mysql | Precision | DataLoss | NegativeZero | Exact | None |
 | pg.add_nullable | Postgres | NativeType | Information | NoChange | NoChange | None |
 | pg.arrow_mismatch | Postgres | NativeType | DataLoss | Conservative | Conservative | None |
 | pg.crs | Postgres | Crs | DataLoss | Conservative | Conservative | None |

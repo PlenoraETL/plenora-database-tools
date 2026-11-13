@@ -6,6 +6,15 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 11.0.0 — non pubblicata
+
+- **Cambio incompatibile:** estensione del vocabolario chiuso del rapporto
+  esecutivo v3; i reader 10.0.0 non accettano le nuove regole. Producer e reader
+  devono essere aggiornati insieme. Il rapporto legacy v2 resta invariato.
+- Fondazione comune per valutazione, attribuzione e consenso; i percorsi
+  esistenti PostgreSQL e SQL Server conservano la contabilita dei budget.
+  L'estensione del registro non costituisce qualifica o apertura di un provider.
+
 ## 10.0.0 — 2026-11-13
 
 - **Cambio incompatibile:** WriteOutcome v3 trasporta ExecutionLossReport v3

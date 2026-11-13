@@ -205,6 +205,7 @@ pub async fn execute(
     )
     .await;
     let mut result = result;
+    let mut evaluation = evaluation.into_context();
     let report = evaluation
         .ledger
         .finalize(&result, evaluation.confirmed)?

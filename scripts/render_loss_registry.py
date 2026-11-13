@@ -17,7 +17,7 @@ def rules():
     # Whitespace-independent, including cargo fmt's multiline tuples.
     pattern = r'\(\s*(\w+),\s*"([a-z_.]+)",\s*(\w+),\s*(\w+),\s*(\w+),\s*(\w+),\s*(\w+),\s*(None|Some\(RuleId::\w+\)),\s*("(?:[^"\\]|\\.)*")\s*,?\s*\)'
     rows = [m.groups() for m in re.finditer(pattern, body, re.S)]
-    if not rows or len(rows) != body.count('"pg.') + body.count('"ss.') + body.count('"store.'):
+    if not rows or len(rows) != body.count('"mysql.') + body.count('"pg.') + body.count('"ss.') + body.count('"store.'):
         raise ValueError('registro non analizzabile integralmente')
     if len({r[1] for r in rows}) != len(rows):
         raise ValueError('ID duplicato')

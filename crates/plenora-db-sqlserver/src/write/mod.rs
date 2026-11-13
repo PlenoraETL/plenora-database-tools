@@ -522,6 +522,7 @@ async fn execute_evaluated(
         fault,
     )
     .await;
+    let mut evaluation = evaluation.into_context();
     let report = evaluation
         .ledger
         .finalize(&result, evaluation.confirmed)?
