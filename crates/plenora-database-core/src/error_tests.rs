@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn unknown_effect_is_not_a_cause_category() {
     let error = DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Timeout,
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,
@@ -37,6 +38,7 @@ fn automatic_retry_and_manual_recovery_partition_the_dispositions() {
     ];
     for (retry, automatic, manual) in dispositions {
         let error = DatabaseError {
+            read_loss: None,
             category: ErrorCategory::Transient,
             phase: ErrorPhase::Write,
             remote_effect: RemoteEffect::None,
@@ -58,6 +60,7 @@ fn automatic_retry_and_manual_recovery_partition_the_dispositions() {
 #[test]
 fn quarantine_is_not_a_retryable_disposition() {
     let error = DatabaseError {
+        read_loss: None,
         category: ErrorCategory::DataMapping,
         phase: ErrorPhase::Rollback,
         remote_effect: RemoteEffect::Unknown,

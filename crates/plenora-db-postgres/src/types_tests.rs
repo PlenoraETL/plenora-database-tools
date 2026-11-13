@@ -25,6 +25,7 @@ fn geometry_column(spatial_type: Option<&str>, dimensions: Option<&str>) -> Colu
         collation: None,
         source: None,
         registered_field_id: None,
+        arrow_metadata: None,
         kind: ColumnKind::Geometry,
     }
 }
@@ -95,4 +96,37 @@ fn registered_identity_wins_over_provenance() {
         column.arrow_field().metadata()[protocol::FIELD_ID],
         "123456789012345678901234567890"
     );
+}
+
+#[test]
+fn registered_descriptor_and_ddl_share_the_typmod_decision() {
+    use crate::column_metadata::{ColumnMetadata, PhysicalGeometry};
+    for (declaration, types, dimensions, physical_type, expected_sql) in [
+        (
+            "exact",
+            "point,polygon",
+            "xy",
+            Some("Geometry"),
+            "geometry(Geometry,0)",
+        ),
+        ("mixed", "point", "xy", Some("Point"), "geometry(point,0)"),
+        ("exact", "point", "unknown", None, "geometry"),
+    ] {
+        let mut column = geometry_column(physical_type, (dimensions != "unknown").then_some("XY"));
+        column.spatial_srid = None;
+        column.spatial_crs_id = None;
+        let field = column.arrow_field();
+        let mut metadata = field.metadata().clone();
+        metadata.insert(protocol::GEOMETRY_TYPES_DECLARATION, declaration);
+        metadata.insert(protocol::GEOMETRY_TYPES, types);
+        let field = field.with_metadata(metadata);
+        assert_eq!(PhysicalGeometry::declaration(&field).unwrap(), expected_sql);
+        let schema = contract_schema(vec![field.clone()]).unwrap();
+        let saved = ColumnMetadata::plan(&field, &schema).unwrap();
+        column.registered_field_id = Some(saved.id.clone());
+        column.arrow_metadata = Some(saved);
+        crate::geometry_properties::validate_catalog(&column).unwrap();
+        column.spatial_dimensions = Some("XYZ".into());
+        assert!(crate::geometry_properties::validate_catalog(&column).is_err());
+    }
 }

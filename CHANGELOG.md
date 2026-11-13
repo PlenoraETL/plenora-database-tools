@@ -8,6 +8,29 @@ riassumono le note di quelle release.
 
 ## 11.0.0 — non pubblicata
 
+- PostgreSQL: protocollo versionato nel commento di colonna per conservare le
+  mappe Arrow di schema e campo, con digest e verifica del descrittore fisico.
+  Il commento umano resta integro. Il digest rileva corruzione accidentale,
+  non autentica un proprietario SQL; cancellare tutti i prefissi rende la
+  colonna indistinguibile da una sorgente legacy.
+- **Cambio incompatibile imposto dalla qualifica geometrica:** dimensions
+  unknown con SRID rifiuta prima degli effetti; un SRID presente soltanto nei
+  valori richiede prevalidazione dell'intero input entro il budget. La modalita
+  che richiederebbe staging prima di quella verifica rifiuta preventivamente.
+  Nessuna conversione implicita in XY. Strict rifiuta le rappresentazioni
+  geometriche che non si possono attestare identiche; le permissive richiedono
+  consenso alla regola `pg.geometry.representation`. La regola A resta attiva.
+- `read_loss` v1 distingue lettura aperta, completata, fallita e interrotta;
+  viene conservato anche negli errori. Gli stream Python espongono
+  `stream_state` e gli adattatori `ArrowStreamReader`/`AsyncArrowStreamReader`
+  mantengono gli errori strutturati senza interpretare il testo di ArrowInvalid.
+- Limiti del nuovo codec: 1 MiB per blocco serializzato e 16 MiB per operazione.
+  **Implementazione ancora in qualifica:** il superamento attualmente rifiuta
+  anche con consenso; manca la selezione puntuale delle chiavi sacrificabili.
+  L'adozione di colonne geometriche legacy popolate rifiuta finche il contratto
+  dei dati esistenti non e attestabile. Questi limiti non costituiscono una
+  chiusura della qualifica cross-component.
+
 - Apertura del percorso MySQL non-strict con consenso per valore comune a
   Rust (`LossConsent`), CLI (`--accept-loss`), Python sync/async
   (`accept_loss=True`) e `database.write@2` (`accept_loss`). MariaDB resta

@@ -130,6 +130,7 @@ impl WriteColumnPlan {
 /// prima di ogni effetto (GEO-000, verdetto di supporto) e prima di contattare
 /// il server: un dry run li vede come la scrittura.
 fn ensure_spatial_support(contract: &FieldContract<'_>) -> Result<()> {
+    crate::geometry_properties::validate_dimensions(contract)?;
     let canonical = contract.canonical;
     if !canonical.spatial {
         return Ok(());

@@ -81,6 +81,7 @@ pub fn scalar_opt(rows: Vec<Row>) -> Result<Option<ParameterValue>> {
 
 fn not_found(message: &str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::NotFound,
         phase: ErrorPhase::Read,
         remote_effect: crate::RemoteEffect::None,
@@ -95,6 +96,7 @@ fn not_found(message: &str) -> DatabaseError {
 
 fn too_many_rows(n: usize) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Conflict,
         phase: ErrorPhase::Read,
         remote_effect: crate::RemoteEffect::None,
@@ -109,6 +111,7 @@ fn too_many_rows(n: usize) -> DatabaseError {
 
 fn malformed(message: &str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::DataMapping,
         phase: ErrorPhase::Read,
         remote_effect: crate::RemoteEffect::None,

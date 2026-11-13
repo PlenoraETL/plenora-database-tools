@@ -381,6 +381,7 @@ fn mapping_error(message: impl Into<String>) -> DatabaseError {
 
 const fn mapping_error_owned(message: String) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::DataMapping,
         phase: ErrorPhase::Read,
         remote_effect: RemoteEffect::None,

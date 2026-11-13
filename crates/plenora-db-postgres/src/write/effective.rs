@@ -261,6 +261,27 @@ pub(super) fn classify(
         }
     }
     match rule {
+        RuleId::PgGeometryRepresentation => {
+            let array = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(invalid)?;
+            let exact = plenora_database_core::ewkb::has_ndr_layout(
+                array.value(row),
+                plan.encoding.as_deref() != Some("wkb"),
+                plan.target_srid,
+                32,
+                plan.semantics == super::plan::ColumnSemantics::Geography,
+            )?;
+            Ok(verdict(
+                !exact,
+                if exact {
+                    Basis::Exact
+                } else {
+                    Basis::Conservative
+                },
+            ))
+        }
         RuleId::PgNullability | RuleId::PgAddNullable => Ok(verdict(false, Basis::Exact)),
         RuleId::PgArrowMismatch | RuleId::PgMissingColumn | RuleId::PgSrid | RuleId::PgCrs => {
             Ok(verdict(true, Basis::Conservative))

@@ -630,26 +630,7 @@ pub async fn relation_columns(
 /// #135, `column_types::catalog_type`).
 #[must_use]
 pub fn catalog_type(name: &str, typmod: i32) -> plenora_database_core::cast_table::CatalogType {
-    let mut catalog = plenora_database_core::cast_table::CatalogType {
-        name: name.to_owned(),
-        ..plenora_database_core::cast_table::CatalogType::default()
-    };
-    if typmod < 0 {
-        return catalog;
-    }
-    match name {
-        "numeric" => {
-            let packed = typmod - 4;
-            catalog.precision = u64::try_from((packed >> 16) & 0xffff).ok();
-            // La scala e un intero a 11 bit con segno (PostgreSQL 15).
-            let scale = packed & 0x7ff;
-            catalog.scale = Some(i64::from(if scale > 1023 { scale - 2048 } else { scale }));
-        }
-        "varchar" | "bpchar" => catalog.length = u64::try_from(typmod - 4).ok(),
-        "timestamp" | "timestamptz" => catalog.datetime_precision = u64::try_from(typmod).ok(),
-        _ => {}
-    }
-    catalog
+    crate::column_types::catalog_type(name, typmod)
 }
 
 /// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`; la

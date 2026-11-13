@@ -699,6 +699,7 @@ mod tests {
                 collation: None,
                 source: None,
                 registered_field_id: None,
+                arrow_metadata: None,
                 kind: ColumnKind::Utf8,
             }
         }

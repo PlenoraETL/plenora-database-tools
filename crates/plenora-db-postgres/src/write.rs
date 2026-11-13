@@ -52,6 +52,7 @@ mod effective;
 mod intermediate;
 mod plan;
 mod prepared_codec;
+mod prevalidate;
 mod recovery;
 mod resources;
 mod row_diagnostics;
@@ -124,7 +125,7 @@ pub fn prepare_state(
         operation: operation.clone(),
         input_schema: schema.clone(),
         covered: false,
-        loss_instances: Vec::new(),
+        loss_instances: crate::geometry_properties::representation_rules(schema)?,
         snapshot: None,
         column_plans: compile_schema_plan(schema, operation)?,
     })
@@ -152,6 +153,7 @@ fn compile_schema_plan(
         ));
     }
     validate_schema_contract(schema)?;
+    crate::column_metadata::plan_schema(schema)?;
     plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     for field in schema.fields() {
         Identifier::new(field.name().clone())?;
@@ -267,6 +269,15 @@ async fn execute_inner(
         ));
     }
     let mut column_plans = prepared_state.column_plans;
+    input = prevalidate::input(
+        input,
+        &column_plans,
+        budget,
+        cancellation,
+        runtime.max_batch_bytes,
+        runtime.max_wkb_cell_bytes,
+    )
+    .await?;
     // Row-scoped diagnostics è supportata solo per Append + SingleTransaction
     // (l'unico scenario dove ha senso quarantinare righe: il target esiste
     // già e si stanno aggiungendo N righe di cui alcune possono fallire).
@@ -1155,6 +1166,15 @@ fn enforce_input_limits(
                         return Err(DatabaseError::resource_limit(
                             "budget componenti geometriche esaurito",
                         ));
+                    }
+                    if plan.dimensions.as_deref() == Some("unknown") && root_srid_flag(value) {
+                        plenora_database_core::ewkb::inspect_ewkb_detailed(
+                            value,
+                            remaining,
+                            max_geometry_depth,
+                        )?;
+                        return Err(public_error(ErrorCategory::Crs, ErrorPhase::Validate, false,
+                            "dimensioni geometriche unknown con SRID incorporato non rappresentabili in PostgreSQL"));
                     }
                     let inspection = verify_value(
                         plan.value_contract(),

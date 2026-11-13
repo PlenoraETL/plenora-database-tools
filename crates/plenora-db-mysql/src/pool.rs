@@ -60,6 +60,7 @@ impl MysqlPool {
     ) -> Result<Self> {
         if max_connections == 0 {
             return Err(plenora_database_core::DatabaseError {
+                read_loss: None,
                 category: plenora_database_core::ErrorCategory::InvalidConfiguration,
                 phase: ErrorPhase::Validate,
                 remote_effect: RemoteEffect::None,

@@ -7,12 +7,14 @@
 mod age;
 mod arrow;
 mod catalog;
+mod column_metadata;
 mod column_types;
 mod connection;
 mod control;
 mod error;
 mod field_contract;
 mod field_identity;
+mod geometry_properties;
 mod metrics;
 mod parameter_codec;
 mod pool;
@@ -1438,3 +1440,6 @@ mod audit900_live_tests;
 
 #[cfg(test)]
 mod effective_loss_live_tests;
+
+#[cfg(test)]
+mod geometry_qualification_live_tests;

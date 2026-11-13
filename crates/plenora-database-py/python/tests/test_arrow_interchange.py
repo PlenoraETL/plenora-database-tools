@@ -370,3 +370,80 @@ def test_reading_and_schema_from_two_threads_do_not_deadlock(session) -> None:
         assert "execution" in completed.stdout or "invalid_plan" in completed.stdout, completed.stdout
     finally:
         session.execute_sql("DROP VIEW IF EXISTS _pyx_slow_failure")
+
+
+@pytest.mark.parametrize("consumer", ["raw", "sdk", "source"])
+def test_b13_late_c_error_keeps_structured_state(session, consumer):
+    from plenora_database import ArrowStreamReader
+    from plenora_database.errors import PlenoraError
+    session.execute_sql("DROP TABLE IF EXISTS _pyx_geometry_error")
+    session.execute_sql("CREATE TABLE _pyx_geometry_error(id bigint, geom geometry)")
+    session.execute_sql("INSERT INTO _pyx_geometry_error SELECT gs, NULL FROM generate_series(1, 2048) gs")
+    session.execute_sql("INSERT INTO _pyx_geometry_error VALUES (2049, ST_SetSRID(ST_Point(12, 41), 4326))")
+    try:
+        reader = session.read("public", "_pyx_geometry_error", order_by=[("id", "asc")])
+        healthy = session.read("public", "_pyx_source")
+        imported = pyarrow.RecordBatchReader.from_stream(reader)
+        first = imported.read_next_batch()
+        assert first.num_rows > 0
+        if consumer == "raw":
+            with pytest.raises(pyarrow.ArrowException):
+                imported.read_all()
+        else:
+            adapted = ArrowStreamReader(reader, reader=imported)
+            with pytest.raises(PlenoraError):
+                adapted.read_all() if consumer == "sdk" else _to_ipc_bytes(adapted)
+        state = reader.stream_state
+        assert state["status"] == "failed"
+        error = state["error"]
+        assert (error.category, error.phase, error.remote_effect, error.retry["kind"]) == ("crs", "read", "none", "never")
+        assert state["read_loss"]["status"] == "failed"
+        reader.close()
+        assert healthy.stream_state["error"] is None
+        assert healthy.read_all().num_rows == 300
+        assert healthy.stream_state["status"] == "complete"
+        reader.close()
+        reader.close()
+        assert reader.stream_state["status"] == "failed"
+    finally:
+        session.execute_sql("DROP TABLE _pyx_geometry_error")
+
+
+@pytest.mark.asyncio
+async def test_b13_async_reader_state_after_late_error():
+    from ._harness import aconnect_postgres
+    from plenora_database import AsyncArrowStreamReader
+    from plenora_database.errors import PlenoraError
+    session = await aconnect_postgres()
+    try:
+        await session.execute_sql("DROP TABLE IF EXISTS _pyx_async_geometry_error")
+        await session.execute_sql("CREATE TABLE _pyx_async_geometry_error(id bigint, geom geometry)")
+        await session.execute_sql("INSERT INTO _pyx_async_geometry_error SELECT gs, NULL FROM generate_series(1, 2048) gs")
+        await session.execute_sql("INSERT INTO _pyx_async_geometry_error VALUES (2049, ST_SetSRID(ST_Point(12, 41), 4326))")
+        reader = await session.aread("public", "_pyx_async_geometry_error", order_by=[("id", "asc")])
+        adapted = AsyncArrowStreamReader(reader)
+        assert (await adapted.__anext__()).num_rows > 0
+        with pytest.raises(PlenoraError) as failure:
+            await adapted.read_all()
+        assert (failure.value.category, failure.value.phase, failure.value.remote_effect, failure.value.retry["kind"]) == ("crs", "read", "none", "never")
+        assert reader.stream_state["status"] == "failed"
+        assert reader.read_loss["status"] == "failed"
+    finally:
+        await session.execute_sql("DROP TABLE IF EXISTS _pyx_async_geometry_error")
+        await session.close()
+
+@pytest.mark.parametrize("adapter", ["consume", "translated"])
+def test_stream_adapter_discards_foreign_exception_context(adapter):
+    from plenora_database.arrow_stream import _consume
+    from plenora_database._arrow_io import _translated
+    from plenora_database.errors import PlenoraDataMappingError
+    def foreign():
+        raise ValueError("private-cell-value-sentinel")
+    with pytest.raises(PlenoraDataMappingError) as failure:
+        if adapter == "consume":
+            _consume(object(), foreign)
+        else:
+            _translated("read", "stream non leggibile", foreign)
+    assert failure.value.__context__ is None
+    assert failure.value.__cause__ is None
+    assert "private-cell-value-sentinel" not in str(failure.value)

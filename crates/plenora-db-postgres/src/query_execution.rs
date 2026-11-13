@@ -205,12 +205,7 @@ pub async fn read_stream(
     )
     .await?;
     let cancel_token = client.client()?.cancel_token();
-    let schema = contract_schema(
-        plan.columns
-            .iter()
-            .map(ColumnSpec::arrow_field)
-            .collect::<Vec<_>>(),
-    )?;
+    let schema = crate::geometry_properties::read_schema(&plan.columns)?;
     Ok(Box::new(PostgresBatchStream::new(
         provider,
         ReadStreamSource::new(client, cancel_token, Box::pin(rows), plan.columns, schema),

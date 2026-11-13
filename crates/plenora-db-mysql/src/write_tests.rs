@@ -1049,6 +1049,7 @@ fn pre_commit_errors_claim_rollback_only_when_it_is_confirmed() {
 #[test]
 fn an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable() {
     let quarantined = DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Protocol,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,

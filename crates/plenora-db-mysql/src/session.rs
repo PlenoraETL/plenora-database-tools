@@ -1062,6 +1062,7 @@ enum PumpOutcome {
 
 fn row_count_mismatch_error(profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Protocol,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,

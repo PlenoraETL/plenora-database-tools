@@ -20,6 +20,7 @@ Le API spatial, transazionali e asincrone sono esposte da `spatial`,
 `Transaction` / `AsyncTransaction` e dagli Engine sync/async.
 """
 
+from .arrow_stream import ArrowStreamReader, AsyncArrowStreamReader
 from . import spatial
 from ._async_session import AsyncSession, _AsyncInspector
 from ._async_transaction import AsyncTransaction

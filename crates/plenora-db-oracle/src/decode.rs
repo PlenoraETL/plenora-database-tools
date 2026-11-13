@@ -360,6 +360,7 @@ const fn oracle_type_name(value: OracleType) -> &'static str {
 
 fn mapping_error(phase: ErrorPhase, message: &'static str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::DataMapping,
         phase,
         remote_effect: RemoteEffect::None,

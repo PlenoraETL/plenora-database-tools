@@ -276,6 +276,7 @@ pub(crate) fn print_committed(
 /// dimostrabile (ERR-001).
 fn unknown_commit_error(commit: &CommitOutcome) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: commit.unknown_category().unwrap_or(ErrorCategory::Internal),
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,
@@ -1962,6 +1963,7 @@ async fn write_stream_to_ipc_with_cleanup(
     let (batches, rows) = match result {
         Ok(counts) => counts,
         Err(mut error) => {
+            error.database_error_mut().read_loss = stream.read_loss().map(Box::new);
             drop(file);
             match remove_temporary(&temporary) {
                 Ok(()) => {
@@ -2025,20 +2027,37 @@ async fn write_stream_to_ipc_with_cleanup(
             staging_cleanup_failure("artifact pubblicato; cleanup fallito", &temporary, &error),
         )
     })?;
+    Ok(ipc_materialization_report(
+        parent,
+        format,
+        batches,
+        rows,
+        stream.read_loss().as_ref(),
+    ))
+}
+
+fn ipc_materialization_report(
+    parent: &Path,
+    format: IpcOutput,
+    batches: u64,
+    rows: u64,
+    read_loss: Option<&plenora_database_core::read_loss::ReadLossReport>,
+) -> serde_json::Value {
     let durability = if sync_parent_directory(parent) {
         "confirmed"
     } else {
         "unconfirmed"
     };
-    Ok(json!({
+    json!({
         "schema_version": 1,
         "status": "materialized",
+        "read_loss": read_loss,
         "format": format.report_name(),
         "batches": batches,
         "rows": rows,
         "durability": durability,
         "staging_cleanup": "complete",
-    }))
+    })
 }
 
 /// Il messaggio di un artifact temporaneo che non si e potuto rimuovere.
@@ -2243,6 +2262,7 @@ fn local_artifact_error(
     message: impl Into<String>,
 ) -> CliError {
     CliError::Fatal(DatabaseError {
+        read_loss: None,
         category,
         phase,
         remote_effect,

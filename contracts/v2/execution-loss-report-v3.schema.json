@@ -74,6 +74,7 @@
         "pg.add_nullable",
         "pg.arrow_mismatch",
         "pg.crs",
+        "pg.geometry.representation",
         "pg.jsonb",
         "pg.missing_column",
         "pg.nullability",

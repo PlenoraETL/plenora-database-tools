@@ -43,6 +43,7 @@ pub struct PostgresBatchStream {
     track_byte_estimate: bool,
     batches_since_byte_estimate: u8,
     finished: bool,
+    read_loss: plenora_database_core::read_loss::ReadLossReport,
     /// Cursore delle righe già consegnate, base dell'indice sorgente
     /// pubblicato dalla diagnostica row-scoped di lettura.
     read_diagnostics: ReadDiagnosticsTracker,
@@ -107,7 +108,9 @@ impl PostgresBatchStream {
             columns,
             schema,
         } = source;
+        let read_loss = crate::geometry_properties::read_loss(&columns);
         Self {
+            read_loss,
             client,
             cancel_token,
             tls_mode: provider.tls_mode,
@@ -331,6 +334,10 @@ impl PostgresBatchStream {
 }
 
 impl BatchStream for PostgresBatchStream {
+    fn read_loss(&self) -> Option<plenora_database_core::read_loss::ReadLossReport> {
+        Some(self.read_loss.clone())
+    }
+
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
@@ -342,10 +349,18 @@ impl BatchStream for PostgresBatchStream {
         Box::pin(async move {
             // Stream già terminato: cancel su stream drenato non è un errore.
             if self.finished {
+                if self.read_loss.status == plenora_database_core::read_loss::ReadStatus::Open {
+                    self.read_loss.status = plenora_database_core::read_loss::ReadStatus::Complete;
+                }
                 return Ok(None);
             }
             if cancellation.is_cancelled() {
-                return self.cancelled(cancellation).await;
+                self.read_loss.status = plenora_database_core::read_loss::ReadStatus::Interrupted;
+                let mut result = self.cancelled(cancellation).await;
+                if let Err(error) = &mut result {
+                    error.read_loss = Some(Box::new(self.read_loss.clone()));
+                }
+                return result;
             }
             let completed = {
                 let next = self.next_batch_inner();
@@ -355,11 +370,29 @@ impl BatchStream for PostgresBatchStream {
                     _reason = cancellation.cancelled() => None,
                 }
             };
-            if let Some(result) = completed {
+            let mut result = if let Some(result) = completed {
                 result
             } else {
                 self.cancelled(cancellation).await
+            };
+            match &result {
+                Ok(None) => {
+                    self.read_loss.status = plenora_database_core::read_loss::ReadStatus::Complete;
+                }
+                Err(error) => {
+                    self.finished = true;
+                    self.read_loss.status = if error.category == ErrorCategory::Cancelled {
+                        plenora_database_core::read_loss::ReadStatus::Interrupted
+                    } else {
+                        plenora_database_core::read_loss::ReadStatus::Failed
+                    };
+                }
+                Ok(Some(_)) => (),
             }
+            if let Err(error) = &mut result {
+                error.read_loss = Some(Box::new(self.read_loss.clone()));
+            }
+            result
         })
     }
 }
@@ -474,6 +507,30 @@ fn enforce_batch_limits(
                 .ok_or_else(|| {
                     read_mapping_error("colonna spaziale PostgreSQL non codificata come Binary")
                 })?;
+            if column.arrow_metadata.is_some() {
+                let field = column.arrow_field();
+                let contract = plenora_database_core::field_contract::FieldContract::parse(&field)?;
+                for (row, value) in array.iter().enumerate() {
+                    if let Some(value) = value {
+                        plenora_database_core::geometry_value::verify_value(
+                            plenora_database_core::geometry_value::ValueContract::of(&contract),
+                            value,
+                            max_geometry_components,
+                            max_geometry_depth,
+                            ErrorPhase::Read,
+                        )
+                        .map_err(|error| {
+                            attribute_conversion_defect(
+                                diagnostics,
+                                columns,
+                                error,
+                                Some(row),
+                                Some(index),
+                            )
+                        })?;
+                    }
+                }
+            }
             arrays.push((index, array));
         }
     }
@@ -511,6 +568,24 @@ fn published_srid_conforms(
     inspection: &plenora_database_core::ewkb::EwkbInspection,
     column: usize,
 ) -> Result<()> {
+    if columns
+        .get(column)
+        .and_then(|spec| spec.arrow_metadata.as_ref())
+        .and_then(|saved| {
+            saved
+                .field
+                .get(plenora_database_core::protocol::GEOMETRY_ENCODING)
+        })
+        .is_some_and(|v| v == "wkb")
+    {
+        return if inspection.root.srid.is_none() {
+            Ok(())
+        } else {
+            Err(read_mapping_error(
+                "SRID incorporato nella proiezione WKB PostgreSQL",
+            ))
+        };
+    }
     let declared = columns.get(column).and_then(|spec| spec.spatial_srid);
     match (declared, inspection.root.srid) {
         (None, None | Some(0)) => Ok(()),

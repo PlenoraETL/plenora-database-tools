@@ -24,6 +24,7 @@ pub async fn write(
     Vec<RuleInstance>,
     Option<crate::catalog::CatalogSchemaToken>,
 )> {
+    crate::column_metadata::plan_schema(input_schema)?;
     let client = provider.connect_session(secret).await?;
     validate_resolved_crs_against_postgis(&client, input_schema).await?;
     let schema_name = crate::target_schema::schema_of(&operation.target)?;
@@ -137,7 +138,7 @@ pub async fn write(
     // In una chiave un valore riscritto si rifiuta con ogni politica (regola
     // S): non e una perdita da dichiarare.
     let is_key = |name: &str| operation.keys.iter().any(|key| key == name);
-    let mut losses = Vec::new();
+    let mut losses = crate::geometry_properties::representation_rules(input_schema)?;
     if exists && operation.mode != WriteMode::Create {
         let (target_columns, _schema_token) =
             provider.cached_columns(&client, &operation.target).await?;
@@ -414,6 +415,10 @@ pub async fn write(
         losses: execution
             .risk
             .iter()
+            .filter(|risk| {
+                operation.mapping_policy != MappingPolicy::Strict
+                    || risk.rule_id != RuleId::PgGeometryRepresentation
+            })
             .map(|risk| {
                 let mut loss = risk.rule_id.legacy(
                     risk.field_id,

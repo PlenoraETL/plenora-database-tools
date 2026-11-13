@@ -115,6 +115,19 @@ fn enumerate_non_exact_registry_rules_against_ordinary_postgres_values() {
         }
         audited.push(id);
         let sample = match id {
+            RuleId::PgGeometryRepresentation => {
+                let mut bytes = vec![1_u8];
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&[0; 16]);
+                let mut p = plan(LeafClass::Jsonb, SessionShape::Scalar);
+                p.encoding = Some("wkb".to_owned()); p.target_srid = None;
+                let array = arrow_array::BinaryArray::from(vec![Some(bytes.as_slice())]);
+                assert_eq!(classify(id, &p, &array, 0).unwrap(), Classification::Exact(Basis::Exact));
+                bytes[0] = 0; bytes[1..5].copy_from_slice(&1_u32.to_be_bytes());
+                let array = arrow_array::BinaryArray::from(vec![Some(bytes.as_slice())]);
+                assert_eq!(classify(id, &p, &array, 0).unwrap(), Classification::WouldChange(Basis::Conservative));
+                None
+            }
             RuleId::PgJsonb => Some((LeafClass::Jsonb, "{\"a\":1.5}")),
             RuleId::PgNumeric => Some((LeafClass::Numeric { precision: 5, scale: 2 }, "1.50")),
             RuleId::PgTemporal => Some((LeafClass::Session { leaf: SessionLeaf::Timestamp, fraction: 3, reduced: true }, "1970-01-01 00:00:00.001000")),
@@ -151,7 +164,7 @@ fn enumerate_non_exact_registry_rules_against_ordinary_postgres_values() {
             }
         }
     }
-    assert_eq!(audited.len(), 12);
+    assert_eq!(audited.len(), 13);
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/ammissione_scrittura/postgres.json"
     ))

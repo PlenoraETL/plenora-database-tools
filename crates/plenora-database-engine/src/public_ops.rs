@@ -381,6 +381,7 @@ pub async fn summarize_stream(
         "batches": batches,
         "rows": rows,
         "fields": fields,
+        "read_loss": stream.read_loss(),
     }))
 }
 

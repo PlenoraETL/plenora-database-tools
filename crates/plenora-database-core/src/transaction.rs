@@ -257,6 +257,7 @@ pub struct ConditionalUpdate<'a> {
 #[must_use]
 pub fn concurrent_modification_error(message: impl Into<String>) -> crate::DatabaseError {
     crate::DatabaseError {
+        read_loss: None,
         category: crate::ErrorCategory::ConcurrentModification,
         phase: crate::ErrorPhase::Write,
         remote_effect: crate::RemoteEffect::RolledBack,

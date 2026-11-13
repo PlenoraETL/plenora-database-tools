@@ -24,6 +24,7 @@ fn geometry_column(spatial_type: Option<&str>, dimensions: Option<&str>) -> Colu
         collation: None,
         source: None,
         registered_field_id: None,
+        arrow_metadata: None,
         kind: crate::types::ColumnKind::Geometry,
     }
 }

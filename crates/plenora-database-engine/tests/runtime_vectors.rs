@@ -396,6 +396,7 @@ impl Provider for Scripted {
                 .expect("outcome")),
                 // L'esito che il vettore `database-write-error` descrive.
                 WriteScript::CommitOutcomeUnknown => Err(DatabaseError {
+                    read_loss: None,
                     category: ErrorCategory::Internal,
                     phase: ErrorPhase::Commit,
                     remote_effect: RemoteEffect::Unknown,

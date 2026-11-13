@@ -113,10 +113,12 @@ pub enum RetryDisposition {
 /// identificare le righe sorgente rifiutate, il documento
 /// `plenora-row-diagnostics-v1` viaggia con l'errore invece di essere
 /// ricostruito dal testo del messaggio.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Error)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Error)]
 #[error("{category:?} during {phase:?} (effect={remote_effect:?}, retry={retry:?}): {message}")]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseError {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_loss: Option<Box<crate::read_loss::ReadLossReport>>,
     pub category: ErrorCategory,
     pub phase: ErrorPhase,
     pub remote_effect: RemoteEffect,
@@ -128,6 +130,27 @@ pub struct DatabaseError {
     pub diagnostics: Option<Box<RowDiagnostics>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loss_report: Option<Box<crate::execution_loss::VersionedLossReport>>,
+}
+
+// Keep the pre-existing diagnostic representation stable when no read report exists.
+impl std::fmt::Debug for DatabaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut value = formatter.debug_struct("DatabaseError");
+        value
+            .field("category", &self.category)
+            .field("phase", &self.phase)
+            .field("remote_effect", &self.remote_effect)
+            .field("retry", &self.retry)
+            .field("provider", &self.provider)
+            .field("execution_id", &self.execution_id)
+            .field("message", &self.message)
+            .field("diagnostics", &self.diagnostics)
+            .field("loss_report", &self.loss_report);
+        if let Some(report) = &self.read_loss {
+            value.field("read_loss", report);
+        }
+        value.finish()
+    }
 }
 
 /// Proiezione JSON conforme a `plenora-error-v1`.
@@ -152,6 +175,8 @@ pub struct PublicDatabaseError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublicErrorDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_loss: Option<crate::read_loss::ReadLossReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_diagnostics: Option<RowDiagnostics>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,6 +220,7 @@ impl DatabaseError {
             message: message.into(),
             loss_report: None,
             diagnostics: None,
+            read_loss: None,
         }
     }
 
@@ -404,11 +430,13 @@ impl DatabaseError {
             provider: self.provider,
             execution_id: self.execution_id.clone(),
             message: bounded_message(&self.message),
-            details: (self.diagnostics.is_some() || self.loss_report.is_some()).then(|| {
-                PublicErrorDetails {
-                    row_diagnostics: self.diagnostics.as_deref().cloned(),
-                    loss_report: self.loss_report.as_deref().cloned(),
-                }
+            details: (self.diagnostics.is_some()
+                || self.loss_report.is_some()
+                || self.read_loss.is_some())
+            .then(|| PublicErrorDetails {
+                read_loss: self.read_loss.as_deref().cloned(),
+                row_diagnostics: self.diagnostics.as_deref().cloned(),
+                loss_report: self.loss_report.as_deref().cloned(),
             }),
         }
     }

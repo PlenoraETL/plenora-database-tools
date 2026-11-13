@@ -225,6 +225,7 @@ impl PostgresTransaction {
         message: &str,
     ) -> DatabaseError {
         DatabaseError {
+            read_loss: None,
             category: crate::error::interruption_category(cancellation),
             phase,
             remote_effect: RemoteEffect::None,

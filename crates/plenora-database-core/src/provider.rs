@@ -49,6 +49,11 @@ pub trait SecretResolver: Send + Sync {
 }
 
 pub trait BatchStream: Send {
+    /// Snapshot della qualifica dei metadati; None significa non misurato.
+    fn read_loss(&self) -> Option<crate::read_loss::ReadLossReport> {
+        None
+    }
+
     fn schema(&self) -> SchemaRef;
 
     /// Produce il prossimo batch, rispettando il `CancellationToken`.

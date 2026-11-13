@@ -12,6 +12,7 @@ from itertools import chain
 from typing import Any
 
 from .errors import PlenoraDataMappingError, PlenoraInvalidPlanError, _SdkAxes
+from .arrow_stream import ArrowStreamReader, _consume, _native_reader, _sdk_source
 
 
 def _narrowed_type(field_type: Any, pa: Any) -> Any:
@@ -189,9 +190,8 @@ def _translated(phase: str, message: str, call: Any, *, trusted: bool = False) -
     Un `PlenoraError` qualunque resta tale solo con `trusted`, quando `call`
     non esegue codice del chiamante (il reader nativo). Da una sorgente di
     `copy_from` e esterno: il chiamante puo sollevarlo con qualunque
-    messaggio. Limite dichiarato: l'errore di un `BatchReader` del database
-    usato come sorgente attraversa lo stream C di pyarrow, che non conserva
-    la classe, e arriva come `data_mapping`.
+    messaggio. I reader nativi conservano lo stato strutturato accanto allo
+    stream C: il consumatore SDK lo consulta senza interpretare il testo.
     """
 
     from .errors import PlenoraError
@@ -203,9 +203,10 @@ def _translated(phase: str, message: str, call: Any, *, trusted: bool = False) -
     except PlenoraError:
         if trusted:
             raise
-        raise _mapping_error(message, phase) from None
     except Exception:
-        raise _mapping_error(message, phase) from None
+        pass
+    # Outside except so the foreign exception is not retained in __context__.
+    raise _mapping_error(message, phase) from None
 
 
 def _require_pyarrow() -> Any:
@@ -267,7 +268,7 @@ def table_from_reader(reader: Any) -> Any:
     return _translated(
         "read",
         "batch Arrow del reader non leggibile",
-        lambda: _record_batch_reader(reader).read_all(),
+        lambda: _consume(reader, _record_batch_reader(reader).read_all),
         trusted=True,
     )
 
@@ -322,7 +323,9 @@ def _to_ipc_bytes(source: Any) -> bytes:
     return _translated(
         "prepare",
         "copy_from: sorgente Arrow non leggibile",
-        lambda: _source_to_ipc(source, pa, ipc),
+        lambda: (_consume(source, lambda: _source_to_ipc(source, pa, ipc))
+                 if _sdk_source(source) else _source_to_ipc(source, pa, ipc)),
+        trusted=_sdk_source(source),
     )
 
 
@@ -352,7 +355,14 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
     if isinstance(source, (pa.Array, pa.ChunkedArray)):
         source.validate(full=True)
 
-    if isinstance(source, pa.Table):
+    if type(source) is ArrowStreamReader:
+        schema = source.schema
+        batches = source
+    elif _native_reader(source):
+        reader = ArrowStreamReader(source)
+        schema = reader.schema
+        batches = reader
+    elif isinstance(source, pa.Table):
         source.validate(full=True)
         schema = source.schema
         batches = source.to_batches()
@@ -436,4 +446,4 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
                 )
         return buf.getvalue()
 
-    return _translated("prepare", "copy_from: serializzazione Arrow non valida", serialize)
+    return _translated("prepare", "copy_from: serializzazione Arrow non valida", serialize, trusted=_sdk_source(source))

@@ -19,6 +19,7 @@ fn a_confirmed_batch_rollback_preserves_every_retry_disposition() {
         RetryDisposition::After(1),
     ] {
         let original = DatabaseError {
+            read_loss: None,
             category: ErrorCategory::Execution,
             phase: ErrorPhase::Write,
             remote_effect: RemoteEffect::Unknown,

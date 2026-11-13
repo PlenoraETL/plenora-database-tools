@@ -237,6 +237,7 @@ pub fn public_error_envelope(
     message: &str,
 ) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category,
         phase,
         remote_effect,

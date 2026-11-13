@@ -18,6 +18,7 @@ pub fn driver_error(phase: ErrorPhase, error: &Error) -> DatabaseError {
         || {
             let (category, message) = classify_driver_error(error);
             DatabaseError {
+                read_loss: None,
                 category,
                 phase,
                 remote_effect: RemoteEffect::None,
@@ -248,6 +249,7 @@ pub fn oracle_code_error(phase: ErrorPhase, code: u32) -> DatabaseError {
         _ => RetryDisposition::Never,
     };
     DatabaseError {
+        read_loss: None,
         category,
         phase,
         remote_effect: RemoteEffect::None,
@@ -267,6 +269,7 @@ pub fn oracle_code_error(phase: ErrorPhase, code: u32) -> DatabaseError {
 /// `connection::with_timeout_duration` applica la regola al comando in volo.
 pub fn interruption_error(cancellation: &CancellationToken, phase: ErrorPhase) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: interruption_category(cancellation),
         phase,
         remote_effect: RemoteEffect::None,

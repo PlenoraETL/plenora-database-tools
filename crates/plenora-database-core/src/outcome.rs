@@ -249,6 +249,7 @@ impl WriteOutcome {
         if self.validate().is_err() {
             return Err(Box::new(UnsettledWrite {
                 error: DatabaseError {
+                    read_loss: None,
                     category: ErrorCategory::Internal,
                     phase: self.last_phase(),
                     remote_effect: RemoteEffect::Unknown,
@@ -295,6 +296,7 @@ impl WriteOutcome {
             ),
         };
         let error = DatabaseError {
+            read_loss: None,
             category,
             phase,
             remote_effect: self.remote_effect(),

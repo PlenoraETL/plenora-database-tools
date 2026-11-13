@@ -439,6 +439,14 @@
     "prepared": 0,
     "write": 2
   },
+  "plenora-db-postgres/src/geometry_qualification_live_tests.rs": {
+    "consent": 0,
+    "direct": 0,
+    "overrides": 0,
+    "prepare": 1,
+    "prepared": 0,
+    "write": 1
+  },
   "plenora-db-postgres/src/lib.rs": {
     "consent": 0,
     "direct": 0,

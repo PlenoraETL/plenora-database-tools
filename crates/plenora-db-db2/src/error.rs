@@ -78,6 +78,7 @@ pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
         retry = RetryDisposition::RequiresRecovery;
     }
     DatabaseError {
+        read_loss: None,
         category,
         phase,
         remote_effect,
@@ -97,6 +98,7 @@ pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
 pub fn interruption_error(cancellation: &CancellationToken, phase: ErrorPhase) -> DatabaseError {
     let category = interruption_category(cancellation);
     DatabaseError {
+        read_loss: None,
         category,
         phase,
         remote_effect: RemoteEffect::None,
@@ -116,6 +118,7 @@ pub fn interruption_error(cancellation: &CancellationToken, phase: ErrorPhase) -
 pub fn task_error(phase: ErrorPhase) -> DatabaseError {
     let ambiguous = mutating_phase(phase);
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Protocol,
         phase,
         remote_effect: if ambiguous {

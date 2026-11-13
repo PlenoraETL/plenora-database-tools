@@ -1322,6 +1322,7 @@ async fn rollback_session(
 
 fn transport_loss_error(execution_id: &str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Io,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,

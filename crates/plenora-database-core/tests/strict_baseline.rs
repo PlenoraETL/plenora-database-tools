@@ -17,6 +17,8 @@ fn strict_rule_outcomes_match_903_baseline() {
         (PgAddNullable, Information),
         (PgArrowMismatch, DataLoss),
         (PgCrs, DataLoss),
+        // 11.0.0: rischio di layout; la decisione strict e per valore nel ledger.
+        (PgGeometryRepresentation, Warning),
         (PgJsonb, Warning),
         (PgMissingColumn, DataLoss),
         (PgNullability, DataLoss),

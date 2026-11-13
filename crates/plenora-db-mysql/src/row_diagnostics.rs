@@ -274,6 +274,7 @@ fn checked_consumed_batch_end(batch_start: u64, rows: u64, applied: u64) -> Resu
 
 fn row_error(message: &'static str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::InvalidPlan,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,
