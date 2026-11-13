@@ -4,6 +4,7 @@ name: rust-ci
 # richiedono fixture. Le campagne live appartengono ai workflow dei provider.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:

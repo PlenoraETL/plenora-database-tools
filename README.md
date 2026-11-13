@@ -428,7 +428,7 @@ artefatti sono descritti in [`docs/RELEASE.md`](docs/RELEASE.md).
 
 La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
 superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
-Strict e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
+Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
 registro generato; l'apertura del percorso non attesta la qualifica live,
 che richiede la matrice sul ref finale. I reader 10.0.0 non comprendono gli
 ID MySQL: aggiornare producer e reader insieme alla major 11.
@@ -451,15 +451,16 @@ con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
 altera i valori e dichiara le trasformazioni nel rapporto.
 
 Nei writer migrati, WriteOutcome v3 contiene in `loss_report`
-ExecutionLossReport v3:
+ExecutionLossReport v3 per i valori o v4 quando include soggetti metadata:
 `risk` descrive il piano; `evaluation` registra i valori controllati e quelli
 che cambierebbero; `effective` distingue `committed` da `uncertain`.
 Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
 confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
 non diventa un commit. `basis: conservative` conta valori trattati come perdita,
-non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+non alterazioni provate. Il conteggio dei valori è per cella sorgente e regola: sommare
 regole diverse non dà il numero di celle uniche. NULL e input vuoto non
-richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+richiedono consenso per il solo rischio dei valori; una perdita di metadata
+può invece richiederlo anche su una tabella vuota.
 Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
 Il perimetro è il mapping Arrow qualificato, non il confronto universale con
 trigger, default, funzioni o SQL nativo.

@@ -11,6 +11,7 @@ name: mysql-static-gate
 # questo file, e non esiste una seconda copia della verita da tenere allineata.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:

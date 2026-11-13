@@ -48,8 +48,9 @@ riassumono le note di quelle release.
   mantengono v1. Il dry run PostgreSQL espone `execution_loss` con valutazione
   e senza perdite effettive. Queste aggiunte e i nuovi campi/varianti Rust
   appartengono alla major 11.0.0. Regola A e comportamento strict dei valori
-  restano invariati. La matrice completa delle superfici e B-13 sono un passo
-  separato della qualifica, non attestato dalle prove offline del codec.
+  restano invariati salvo i nuovi rifiuti geometrici prima silenziosi descritti
+  sopra. La matrice Rust/CLI/SDK sync+async/runtime e le campagne B-13 sono
+  predisposte; le prove offline non attestano la qualifica live.
 
 - Apertura del percorso MySQL non-strict con consenso per valore comune a
   Rust (`LossConsent`), CLI (`--accept-loss`), Python sync/async
@@ -62,6 +63,14 @@ riassumono le note di quelle release.
   senza effetti. **Cambio incompatibile:** il risultato puo essere anche
   `dry_run`; i reader precedenti limitati a WriteOutcome devono aggiornarsi
   alla major 11 prima di usare questa opzione.
+- MySQL permissive: trasformazioni temporali e zero negativo nei percorsi
+  ammessi; float/double a precisione fissa e underflow conservativo restano
+  chiusi anche con consenso. Create prevalida prima del DDL; i rapporti
+  distinguono rollback DML, residuo DDL ed esito incerto.
+- Campagne: inventari derivati dai sorgenti e confronto con i casi eseguiti;
+  la matrice PostgreSQL include anche i test ignorati di conservazione e
+  perdita metadata. Raccolta completa dopo i fallimenti, senza promuovere
+  skip o fixture mancanti a qualifica. Nessuna capability promossa.
 - Vettori comuni offline, test live delle superfici collegati alle tre major
   MySQL. Qualifica live e rilascio restano subordinati alle campagne finali.
 

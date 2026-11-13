@@ -34,13 +34,36 @@ Un dry-run è una preparazione distinta e non misura perdite avvenute.
 
 ## Rapporto e migrazione
 
+### Compatibilita 11.0.0
+
+Aggiornare insieme producer e consumer: le nuove regole MySQL estendono il
+vocabolario chiuso; PostgreSQL può produrre rapporti con soggetti metadata.
+Le versioni dei rapporti e gli esempi sono nei
+[contratti](../contracts/v2/README.md), le regole nel
+[registro generato](loss-registry.md). Un rapporto assente non prova assenza
+di perdite; un rapporto di sola previsione non prova una trasformazione avvenuta.
+
+PostgreSQL conserva i metadati geometrici rappresentabili tramite typmod,
+SRID, catalogo e protocollo nel commento di colonna. Le omissioni sono
+localizzate nel rapporto e ripubblicate in `read_loss`; Strict le rifiuta,
+le permissive richiedono consenso solo alla perdita effettiva. Il consenso
+non rende sacrificabili i vincoli del contratto geometrico. Dimensions unknown
+con SRID rifiuta prima di ogni effetto (B-12), anche con consenso: questo
+rifiuto più severo è parte del cambio di major.
+
+`read_loss` distingue lettura in corso, completata, fallita e interrotta;
+non confondere un prefisso letto con la validazione dell'intera sorgente.
+Le omissioni metadata persistite sono visibili anche leggendo una tabella vuota.
+
+### Consenso ed esiti
+
 JSON, Markdown e JUnit conservano `risk`, `evaluation`, `effective` e gli assi
 dell'errore; selezionare il formato con `--format json|markdown|junit`.
 Non usare il solo exit code per decidere un retry.
 
 La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
 superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
-Strict e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
+Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
 registro generato; l'apertura del percorso non attesta la qualifica live,
 che richiede la matrice sul ref finale. I reader 10.0.0 non comprendono gli
 ID MySQL: aggiornare producer e reader insieme alla major 11.
@@ -63,15 +86,16 @@ con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
 altera i valori e dichiara le trasformazioni nel rapporto.
 
 Nei writer migrati, WriteOutcome v3 contiene in `loss_report`
-ExecutionLossReport v3:
+ExecutionLossReport v3 per i valori o v4 quando include soggetti metadata:
 `risk` descrive il piano; `evaluation` registra i valori controllati e quelli
 che cambierebbero; `effective` distingue `committed` da `uncertain`.
 Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
 confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
 non diventa un commit. `basis: conservative` conta valori trattati come perdita,
-non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+non alterazioni provate. Il conteggio dei valori è per cella sorgente e regola: sommare
 regole diverse non dà il numero di celle uniche. NULL e input vuoto non
-richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+richiedono consenso per il solo rischio dei valori; una perdita di metadata
+può invece richiederlo anche su una tabella vuota.
 Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
 Il perimetro è il mapping Arrow qualificato, non il confronto universale con
 trigger, default, funzioni o SQL nativo.

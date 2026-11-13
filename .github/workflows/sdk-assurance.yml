@@ -85,12 +85,10 @@ jobs:
     name: suite SDK relazionale e AGE
     # Il gate non installa Rust ne Python nel runner: costruisce dentro
     # le immagini Rust e Python fissate dal runner. Qui servono Docker,
-    # che il runner ha, e un Python qualunque per lanciare la campagna.
+    # che il runner ha, e il Python dichiarato per lanciare la campagna.
     runs-on: ubuntu-24.04
-    # La build in release del wheel e del CLI e la parte lunga, e la suite
-    # live ne aggiunge un'altra. Sessanta minuti sono il budget delle altre
-    # due campagne, e questa non ha ragione di averne uno diverso.
-    timeout-minutes: 60
+    # Include la compilazione CPython e la matrice completa delle superfici.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
