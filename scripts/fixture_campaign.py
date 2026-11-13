@@ -62,19 +62,25 @@ def compose(file: str, *arguments: str, capture: bool = False) -> str:
     return run(["docker", "compose", "-f", file, *arguments], capture=capture)
 
 
+from scripts.campaign_collection import Collection
+
+
 def start_fixtures(compose_files: Sequence[str], started: list[str]) -> None:
     """Avvia i riferimenti, annotando via via quali sono partiti."""
 
+    collection = Collection("fixture-startup")
     for file in compose_files:
-        compose(file, "config", "--quiet")
-        started.append(file)
-        # Prima si spegne, poi si accende: da uno stato noto la campagna misura
-        # il riferimento dichiarato e non l'accumulo di corse precedenti.
-        compose(file, "down", "-v")
-        # Mai `--remove-orphans`: ogni compose dichiara il proprio progetto, e
-        # su una macchina con piu riferimenti accesi quel flag cancella i
-        # container degli altri provider.
-        compose(file, "up", "-d", "--wait")
+        with collection.stage(file, "startup"):
+            compose(file, "config", "--quiet")
+            started.append(file)
+            # Prima si spegne, poi si accende: da uno stato noto la campagna misura
+            # il riferimento dichiarato e non l'accumulo di corse precedenti.
+            compose(file, "down", "-v")
+            # Mai `--remove-orphans`: ogni compose dichiara il proprio progetto, e
+            # su una macchina con piu riferimenti accesi quel flag cancella i
+            # container degli altri provider.
+            compose(file, "up", "-d", "--wait")
+    collection.finish()
 
 
 def stop_fixtures(started: Iterable[str]) -> list[str]:
@@ -186,14 +192,19 @@ def campaign(
     try:
         # L'avvio sta dentro il tentativo: se il secondo compose fallisce, il
         # primo e gia acceso e va spento.
-        start_fixtures(compose_files, started)
-        measured = measure()
+        collection = Collection("fixture-campaign")
+        with collection.stage("fixtures", "startup"):
+            start_fixtures(compose_files, started)
+        with collection.stage("fixtures", "measurement"):
+            measured = measure()
         # Il postflight sta **dentro** il tentativo. Fuori, un repository
         # cambiato durante la corsa faceva fallire la campagna saltando la
         # diagnostica e la pulizia: i tre server restavano accesi, ed e
         # esattamente la condizione in cui la corsa successiva misura un
         # accumulo invece di un riferimento.
-        confirm(preflight(), started_at)
+        with collection.stage("repository", "postflight"):
+            confirm(preflight(), started_at)
+        collection.finish()
     except BaseException:
         if diagnostics_directory is not None:
             diagnostics(diagnostics_directory, started)

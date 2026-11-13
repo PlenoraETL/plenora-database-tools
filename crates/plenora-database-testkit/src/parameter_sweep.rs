@@ -1686,6 +1686,71 @@ async fn stored_row(
     Ok(Written { stored })
 }
 
+// CHANGELOG 9.0.0: MySQL/MariaDB warnings close the scope and require
+// recovery; a savepoint cannot make it reusable. Keep every generated neighbour.
+const fn isolated_comparison(kind: plenora_database_core::plan::ProviderKind) -> bool {
+    use plenora_database_core::plan::ProviderKind;
+    matches!(
+        kind,
+        ProviderKind::Sqlserver | ProviderKind::Mysql | ProviderKind::Mariadb
+    )
+}
+
+fn mysql_warning(
+    error: &DatabaseError,
+    kind: plenora_database_core::plan::ProviderKind,
+    phase: ErrorPhase,
+) -> bool {
+    use plenora_database_core::{
+        plan::ProviderKind, ErrorCategory, RemoteEffect, RetryDisposition,
+    };
+    matches!(kind, ProviderKind::Mysql | ProviderKind::Mariadb)
+        && error.provider == Some(kind)
+        && error.category == ErrorCategory::DataMapping
+        && error.phase == phase
+        && error.remote_effect == RemoteEffect::Unknown
+        && error.retry == RetryDisposition::RequiresRecovery
+        && error.message
+            == "diagnostico server non qualificato come informativo: risultato rifiutato"
+}
+
+async fn finish_comparison(
+    scope: Box<dyn TransactionScope>,
+    recovery: bool,
+    sweep: &SweepTarget<'_>,
+    column: &Column,
+    id: i32,
+) -> Result<(), String> {
+    let kind = scope.provider_kind();
+    let result = scope.rollback(&CancellationToken::new()).await;
+    if !recovery {
+        return result.map_err(|error| format!("rollback confronto: {}", describe(&error)));
+    }
+    // Not a confirmed rollback: require precisely the documented axes, then
+    // prove absence of the row through a separate session before continuing.
+    match result {
+        Err(error) if mysql_warning(&error, kind, ErrorPhase::Rollback) => {}
+        other => return Err(format!("rollback dopo warning inatteso: {other:?}")),
+    }
+    let mut witness = begin(&sweep.target).await?;
+    let rows = witness
+        .query(
+            &Statement::new((sweep.target.native)(NativeSql::Select, column.name))
+                .with_params(vec![V::I32(id)]),
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| describe(&error))?;
+    witness
+        .rollback(&CancellationToken::new())
+        .await
+        .map_err(|error| describe(&error))?;
+    if !rows.is_empty() {
+        return Err("warning ha lasciato una riga nel testimone indipendente".into());
+    }
+    Ok(())
+}
+
 /// Un confronto `col = w` nella propria transazione, annullata dal chiamante:
 /// `None` se il confronto e rifiutato prima dell'invio o fallisce sul server.
 async fn compare(
@@ -1696,9 +1761,9 @@ async fn compare(
     id: i32,
     w: &V,
     outcome: &mut SweepOutcome,
-) -> Result<Option<u64>, String> {
+) -> Result<(Option<u64>, bool), String> {
     let target = &sweep.target;
-    let isolated = scope.provider_kind() == plenora_database_core::plan::ProviderKind::Sqlserver;
+    let isolated = isolated_comparison(scope.provider_kind());
     let rows = if native {
         let statement = Statement::new((target.native)(NativeSql::Count, column.name))
             .with_params(vec![V::I32(id), w.clone()]);
@@ -1727,20 +1792,23 @@ async fn compare(
         .map(|rows| Ok(u64::try_from(rows.len()).unwrap_or(u64::MAX)))
     };
     match rows {
-        Ok(count) => count.map(Some),
-        Err(error) if error.phase == ErrorPhase::Prepare => Ok(None),
+        Ok(count) => count.map(|count| (Some(count), false)),
+        Err(error) if error.phase == ErrorPhase::Prepare => Ok((None, false)),
         Err(error) => {
             outcome
                 .notes
                 .push(format!("confronto con {w:?}: {}", describe(&error)));
-            Ok(None)
+            Ok((
+                None,
+                mysql_warning(&error, scope.provider_kind(), ErrorPhase::Read),
+            ))
         }
     }
 }
 
-/// SQL Server richiede una transazione nuova per ogni confronto: un errore
-/// rende la sessione inutilizzabile fino al rollback completo. Gli altri
-/// provider isolano il confronto nel savepoint. Nessun vicino viene saltato.
+/// SQL Server e MySQL/MariaDB richiedono scope nuovi dopo i rifiuti che
+/// chiudono la sessione (CHANGELOG 9.0.0). Gli altri provider usano savepoint.
+/// Nessun vicino viene saltato; ogni riga viene ricreata e riletta.
 async fn write_and_compare(
     sweep: &SweepTarget<'_>,
     column: &Column,
@@ -1759,15 +1827,13 @@ async fn write_and_compare(
         probes.extend(comparisons(&set, index));
         let mut written = None;
         let mut scope = begin(&sweep.target).await?;
-        let isolated =
-            scope.provider_kind() == plenora_database_core::plan::ProviderKind::Sqlserver;
+        let isolated = isolated_comparison(scope.provider_kind());
+        let mut recovery = false;
         for (probe, (w, kind)) in probes.into_iter().enumerate() {
             if probe > 0 && isolated {
-                scope
-                    .rollback(&CancellationToken::new())
-                    .await
-                    .map_err(|error| format!("rollback confronto: {}", describe(&error)))?;
+                finish_comparison(scope, recovery, sweep, column, id).await?;
                 scope = begin(&sweep.target).await?;
+                recovery = false;
             }
             let result: Result<bool, String> = async {
                 if let Err(error) = if probe == 0 || isolated {
@@ -1775,6 +1841,7 @@ async fn write_and_compare(
                 } else {
                     Ok(1)
                 } {
+                    recovery = mysql_warning(&error, scope.provider_kind(), ErrorPhase::Write);
                     if probe == 0 {
                         judge_refusal(column, value, &error, sweep.facts, outcome);
                         return Ok(false);
@@ -1801,8 +1868,9 @@ async fn write_and_compare(
                     native,
                     what: if native { "col = ?" } else { "eq portable" },
                 };
-                let matched =
+                let (matched, requires_recovery) =
                     compare(sweep, scope.as_mut(), column, native, id, &w, outcome).await?;
+                recovery = requires_recovery;
                 judge_match(&context, &written.stored, &w, kind, matched, outcome);
                 Ok(true)
             }
@@ -1816,10 +1884,7 @@ async fn write_and_compare(
                 }
             }
         }
-        scope
-            .rollback(&CancellationToken::new())
-            .await
-            .map_err(|error| format!("rollback confronto: {}", describe(&error)))?;
+        finish_comparison(scope, recovery, sweep, column, id).await?;
     }
     Ok(())
 }
@@ -1940,7 +2005,10 @@ async fn read_path(
                 .map_err(|error| format!("commit: {}", describe(&error)))?;
             written.insert(id, (index, stored));
         } else {
-            let _ = scope.rollback(&CancellationToken::new()).await;
+            let recovery = inserted.as_ref().err().is_some_and(|error| {
+                mysql_warning(error, scope.provider_kind(), ErrorPhase::Write)
+            });
+            finish_comparison(scope, recovery, sweep, column, id).await?;
         }
     }
     let probe: Result<(), String> = async {

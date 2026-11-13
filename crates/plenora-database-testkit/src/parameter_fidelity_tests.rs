@@ -150,3 +150,43 @@ fn refusal_requires_expected_category_prepare_and_no_remote_effect() {
     late.phase = ErrorPhase::Write;
     assert!(super::refused(&Err(late), ErrorCategory::DataMapping).is_err());
 }
+
+#[test]
+fn read_refusal_before_io_checks_every_axis() {
+    use plenora_database_core::{
+        DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
+    };
+    let error = DatabaseError::new(
+        ErrorCategory::InvalidPlan,
+        ErrorPhase::Prepare,
+        None,
+        "JSON comparison",
+    );
+    assert!(super::read_refusal_before_io(
+        &error,
+        ErrorCategory::InvalidPlan
+    ));
+    for wrong in [
+        DatabaseError {
+            category: ErrorCategory::Unsupported,
+            ..error.clone()
+        },
+        DatabaseError {
+            phase: ErrorPhase::Validate,
+            ..error.clone()
+        },
+        DatabaseError {
+            remote_effect: RemoteEffect::Unknown,
+            ..error.clone()
+        },
+        DatabaseError {
+            retry: RetryDisposition::RequiresRecovery,
+            ..error
+        },
+    ] {
+        assert!(!super::read_refusal_before_io(
+            &wrong,
+            ErrorCategory::InvalidPlan
+        ));
+    }
+}

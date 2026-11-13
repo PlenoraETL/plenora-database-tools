@@ -32,7 +32,7 @@
 #![allow(clippy::significant_drop_tightening)]
 
 use crate::evidence::{condense, config, environment, Observation, Recorder};
-use crate::profile::MYSQL_PROFILE;
+use crate::profile::{MARIADB_PROFILE, MYSQL_PROFILE};
 use mysql_async::prelude::Queryable;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
@@ -140,7 +140,13 @@ fn record(
 }
 
 fn pool(connections: usize) -> Result<crate::MysqlPool, DatabaseError> {
-    crate::MysqlPool::new_with_profile(&config(), connections, &MYSQL_PROFILE)
+    let profile: &'static dyn crate::profile::ProductProfile =
+        match environment("PLENORA_MYSQL_PRODUCT", "").as_str() {
+            "mysql" => &MYSQL_PROFILE,
+            "mariadb" => &MARIADB_PROFILE,
+            _ => panic!("PLENORA_MYSQL_PRODUCT deve nominare il prodotto misurato"),
+        };
+    crate::MysqlPool::new_with_profile(&config(), connections, profile)
 }
 
 /// Le attese devono descrivere lo statement **intero**, non parte di esso.

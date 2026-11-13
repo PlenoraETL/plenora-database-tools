@@ -51,6 +51,7 @@ class EveryDigestHasOneHome(unittest.TestCase):
 
     #: Dove un digest puo comparire pur non essendo una fonte, e perche.
     DECLARED_COPIES = {
+        "tests/fixtures/mysql_permissive/inventory.json": "inventario generato da mysql_permissive_inventory.py dalle evidenze e dichiarazioni; il gate statico MySQL e test_mysql_permissive_inventory ne verificano la rigenerazione esatta, non configura il runner",
         "docker-compose.mysql.yml": "il Compose avvia l'immagine e il gate verifica che coincida con references.json",
         "docker-compose.mariadb.yml": "stessa ragione del Compose MySQL",
         "docker-compose.oracle.yml": "il cert-generator usa il baseline MySQL e il gate Oracle lo verifica da references.json",

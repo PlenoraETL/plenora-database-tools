@@ -13,6 +13,27 @@ from check_arrow_ingress import python_review_dump
 
 
 class ArrowInventoryTests(unittest.TestCase):
+    def test_evidence_review_updates_only_explicit_registered_paths(self):
+        import check_arrow_ingress as gate
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "workflow.yml").write_text("reviewed steps", encoding="utf-8")
+            registry = root / "registry.json"
+            document = {"evidence_sources": {
+                "workflow.yml": {"review_sha256": "old", "reason": "keep reason"},
+                "other.yml": {"review_sha256": "unchanged"}}, "functions": {"kept": {}}}
+            registry.write_text(json.dumps(document), encoding="utf-8")
+            with patch.object(gate, "ROOT", root), patch.object(gate, "REGISTRY", registry):
+                gate.review_evidence(["workflow.yml"])
+                changed = json.loads(registry.read_text(encoding="utf-8"))
+                self.assertEqual(changed["evidence_sources"]["workflow.yml"]["review_sha256"], gate.digest("reviewed steps"))
+                self.assertEqual(changed["evidence_sources"]["other.yml"], document["evidence_sources"]["other.yml"])
+                self.assertEqual(changed["functions"], document["functions"])
+                before = registry.read_bytes()
+                with self.assertRaises(ValueError):
+                    gate.review_evidence(["not-registered.yml"])
+                self.assertEqual(registry.read_bytes(), before)
+
     def test_review_dump_preserves_legacy_empty_fields_and_type_parameters(self):
         node = ast.parse('def f(): pass').body[0]
         expected = "FunctionDef(name='f', args=arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]), body=[Pass()], decorator_list=[])"
@@ -116,7 +137,7 @@ class ArrowInventoryTests(unittest.TestCase):
         import arrow_public_items as catalog
         packages = [{'name': name, 'version': '1.2.3', 'checksum': 'fixture'}
                     for name in ('arrow-new', 'arrow-schema', 'parquet')]
-        with tempfile.TemporaryDirectory(dir=catalog.ROOT / 'target') as directory:
+        with tempfile.TemporaryDirectory() as directory:
             for package in packages:
                 root = Path(directory) / 'registry/src/index' / (package['name'] + '-1.2.3') / 'src'
                 root.mkdir(parents=True)

@@ -137,6 +137,9 @@ SQLSERVER_TLS_HOST = "sqlserver"
 POSTGRES_PORT = 5432
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 @dataclass(frozen=True)
 class ScopeContract:
     """Quanti test deve aver eseguito uno scope, e quali puo aver saltato.
@@ -188,38 +191,38 @@ BENCH_SKIP = (
     "(atteso ~10s di walltime per la sessione)"
 )
 
-# Il contratto di ogni scope, in un posto solo. I numeri si aggiornano quando
-# la suite cambia — ed e il punto: un test aggiunto e visibile qui, mentre
-# "passed" da solo cresce senza dire di cosa.
-# PR #152: +343 offline cases (320 malformed matrix, 8 public copy,
-# 7 valid inputs, 2 reader exports, +6 bitmap input variants).
+# I casi e le dipendenze dalle fixture derivano dalla suite Python.
+from scripts.python_test_inventory import sdk_counts, count as count_python_tests
+
+_CASES = sdk_counts()
+_TOTAL = sum(_CASES.values())
+_SKIP_REASONS = {
+    "postgres": POSTGRES_SKIP, "mysql": MYSQL_SKIP, "mariadb": MARIADB_SKIP,
+    "sqlserver": SQLSERVER_SKIP, "db2": DB2_SKIP, "oracle": ORACLE_SKIP,
+    "age": AGE_SKIP, "bench": BENCH_SKIP,
+}
+MYSQL_SURFACE_TARGETS = ["test_loss_consent.py"]
+_MYSQL_SURFACE_CASES = sdk_counts(MYSQL_SURFACE_TARGETS)
 SCOPE_CONTRACTS = {
-    # Il gate SDK multipiattaforma qualifica il wheel standard, che non
-    # incorpora ODBC. I test Db2 e Oracle appartengono ai rispettivi gate live
-    # dedicati e qui devono restare skip espliciti, non essere assorbiti dal
-    # totale.
-    "mysql-surfaces": ScopeContract(passed=16, deselected=10, skips={}),
+    "mysql-surfaces": ScopeContract(
+        passed=_MYSQL_SURFACE_CASES["mysql"],
+        deselected=sum(_MYSQL_SURFACE_CASES.values()) - _MYSQL_SURFACE_CASES["mysql"],
+        skips={},
+    ),
     "live": ScopeContract(
-        passed=1025,
-        deselected=0,
-        skips={DB2_SKIP: 12, ORACLE_SKIP: 15},
+        passed=_TOTAL - _CASES["db2"] - _CASES["oracle"], deselected=0,
+        skips={_SKIP_REASONS[p]: _CASES[p] for p in ("db2", "oracle")},
     ),
     "offline": ScopeContract(
-        passed=706,
-        deselected=0,
-        skips={
-            POSTGRES_SKIP: 237,
-            MYSQL_SKIP: 53,
-            MARIADB_SKIP: 10,
-            SQLSERVER_SKIP: 14,
-            DB2_SKIP: 12,
-            ORACLE_SKIP: 15,
-            AGE_SKIP: 3,
-            BENCH_SKIP: 2,
-        },
+        passed=_CASES["offline"], deselected=0,
+        skips={reason: _CASES[p] for p, reason in _SKIP_REASONS.items()},
     ),
-    "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=1050, skips={}),
+    "stabilization": ScopeContract(
+        passed=count_python_tests(["test_stabilization.py"]), deselected=0, skips={},
+    ),
+    "benchmark": ScopeContract(
+        passed=_CASES["bench"], deselected=_TOTAL - _CASES["bench"], skips={},
+    ),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
@@ -247,6 +250,7 @@ def run(command: list[str], *, capture: bool = False) -> str:
     # thread di lettura moriva con `UnicodeDecodeError` e il runner
     # proseguiva con un output vuoto — cioe senza le righe che il verdetto
     # deve leggere, per una ragione che non riguarda ne build ne test.
+    command = complete_command(command)
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -255,6 +259,7 @@ def run(command: list[str], *, capture: bool = False) -> str:
         encoding="utf-8",
         errors="replace",
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if completed.returncode:
         if capture:
             sys.stderr.write(completed.stdout)
@@ -914,7 +919,7 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str, mysql_matrix=None
             "-e", "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
             "-e", f"PLENORA_CLI_BIN={cli_binary_path()}",
         ]
-        selection = ["tests/test_loss_consent.py", "-k", "mysql"]
+        selection = [*("tests/" + target for target in MYSQL_SURFACE_TARGETS), "-k", "mysql"]
     elif scope != "offline":
         command += compose_network_arguments(
             POSTGRES_CONTAINER,
@@ -952,7 +957,7 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str, mysql_matrix=None
         f"echo \"{PYTHON_MARKER}$(python -V 2>&1 | cut -d' ' -f2)\"; "
         f"echo \"{PACKAGES_MARKER}$(pip freeze | tr '\\n' ' ')\"; "
         f"python {REPOSITORY_MOUNT}/scripts/{PROBE.name}; "
-        f"python -m pytest {' '.join(selection)} -q -rs"
+        f"python -m pytest {' '.join(selection)} -q -rA"
     )
     command += [
         "-v",
@@ -1301,37 +1306,40 @@ def measure_scopes(
         # che non riguarda ne la build ne la suite. Si calcola una volta e si
         # riusa: gli scope girano sugli stessi due artefatti.
         images: dict[str, object] | None = None
+        collection = Collection("sdk-scopes")
         for scope in scopes:
-            output = run(
-                pytest_command(
-                    scope=scope, artifacts=artifacts, wheel=artifact["wheel"]
-                ),
-                capture=True,
-            )
-            assert_worktree_unchanged(before, f"l'esecuzione della suite ({scope})")
-            print(output)
-            if images is None:
-                images = {
-                    "build": image_identity(RUST_IMAGE),
-                    "test": image_identity(PYTHON_IMAGE),
-                }
-            summary = pytest_summary(output)
-            counts = assert_scope_contract(scope=scope, output=output, summary=summary)
-            # Copia, non aggiornamento in luogo: l'origine del package la
-            # dichiara l'interprete che ha eseguito **quello** scope, e
-            # sovrascriverla lascerebbe due verdetti che citano la stessa.
-            measured = dict(artifact)
-            measured.update(installed_origin(output))
-            documents[scope] = verdict(
-                scope=scope,
-                commit=commit,
-                dirty=dirty,
-                artifact=measured,
-                images=images,
-                versions=installed_versions(output),
-                counts=counts,
-                summary=summary,
-            )
+            with collection.stage(scope, "pytest"):
+                output = run(
+                    pytest_command(
+                        scope=scope, artifacts=artifacts, wheel=artifact["wheel"]
+                    ),
+                    capture=True,
+                )
+                assert_worktree_unchanged(before, f"l'esecuzione della suite ({scope})")
+                print(output)
+                if images is None:
+                    images = {
+                        "build": image_identity(RUST_IMAGE),
+                        "test": image_identity(PYTHON_IMAGE),
+                    }
+                summary = pytest_summary(output)
+                counts = assert_scope_contract(scope=scope, output=output, summary=summary)
+                # Copia, non aggiornamento in luogo: l'origine del package la
+                # dichiara l'interprete che ha eseguito **quello** scope, e
+                # sovrascriverla lascerebbe due verdetti che citano la stessa.
+                measured = dict(artifact)
+                measured.update(installed_origin(output))
+                documents[scope] = verdict(
+                    scope=scope,
+                    commit=commit,
+                    dirty=dirty,
+                    artifact=measured,
+                    images=images,
+                    versions=installed_versions(output),
+                    counts=counts,
+                    summary=summary,
+                )
+        collection.finish()
     return documents
 
 

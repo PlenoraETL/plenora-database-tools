@@ -5,7 +5,7 @@ Misurata attraverso il driver e il percorso reale del pool, non con il client. G
 Misurata da un albero pulito: il runner lo pretende prima di avviare Docker, e verifica che HEAD non si muova durante la corsa. Il commit e nel verdetto JSON.
 
 ```sql
-SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'
+SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_notes = 1, sql_select_limit = 18446744073709551615, character_set_client = 'utf8mb4', character_set_connection = 'utf8mb4', character_set_results = 'utf8mb4', collation_connection = 'utf8mb4_general_ci', div_precision_increment = 4, max_sort_length = 8388608, sql_auto_is_null = 0
 ```
 
 ## Riferimenti
@@ -23,9 +23,9 @@ SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'STRICT_TRANS_TABLE
 
 | sonda | superficie | `mysql` | `mariadb-12` | `mariadb-11` | `mariadb-10` | esito |
 | --- | --- | --- | --- | --- | --- | --- |
-| `bootstrap.statement` | bootstrap | accepted `73f668200524de79` | accepted `73f668200524de79` | accepted `73f668200524de79` | accepted `73f668200524de79` | same |
-| `bootstrap.pool` | bootstrap | accepted `73f668200524de79` | accepted `73f668200524de79` | accepted `73f668200524de79` | accepted `73f668200524de79` | same |
-| `bootstrap.after_return` | bootstrap | accepted `0a9a31068d3ce11a` | accepted `0a9a31068d3ce11a` | accepted `0a9a31068d3ce11a` | accepted `0a9a31068d3ce11a` | same |
+| `bootstrap.statement` | bootstrap | accepted `5410cc504308b6ff` | accepted `5410cc504308b6ff` | accepted `5410cc504308b6ff` | accepted `5410cc504308b6ff` | same |
+| `bootstrap.pool` | bootstrap | accepted `5410cc504308b6ff` | accepted `5410cc504308b6ff` | accepted `5410cc504308b6ff` | accepted `5410cc504308b6ff` | same |
+| `bootstrap.after_return` | bootstrap | accepted `f2e808a3f3417582` | accepted `f2e808a3f3417582` | accepted `f2e808a3f3417582` | accepted `f2e808a3f3417582` | same |
 | `transaction.isolation.read_uncommitted` | isolation | accepted `0a467d059c78cfb1` | accepted `0a467d059c78cfb1` | accepted `0a467d059c78cfb1` | accepted `0a467d059c78cfb1` | same |
 | `transaction.isolation.read_committed` | isolation | accepted `79c0b603bfcd8584` | accepted `79c0b603bfcd8584` | accepted `79c0b603bfcd8584` | accepted `79c0b603bfcd8584` | same |
 | `transaction.isolation.repeatable_read` | isolation | accepted `2153781dec3713d9` | accepted `2153781dec3713d9` | accepted `2153781dec3713d9` | accepted `2153781dec3713d9` | same |
@@ -43,28 +43,28 @@ SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'STRICT_TRANS_TABLE
 
 il server applica l'esatto SESSION_BOOTSTRAP_SQL del pool
 
-* **mysql** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-12** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-11** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-10** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+* **mysql** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-12** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-11** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-10** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
 
 ### `bootstrap.pool`
 
 il pool consegna sessioni gia bootstrappate
 
-* **mysql** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-12** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-11** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-10** — accepted: autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+* **mysql** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-12** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-11** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-10** — accepted: autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
 
 ### `bootstrap.after_return`
 
 una sessione consegnata dopo il rientro di una sporca e bootstrappata
 
-* **mysql** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-12** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-11** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
-* **mariadb-10** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+* **mysql** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-12** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-11** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
+* **mariadb-10** — accepted: connessione riusata=false autocommit=1 time_zone=+00:00 sql_mode=NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION foreign_key_checks=1 unique_checks=1 sql_notes=1 sql_select_limit=18446744073709551615 character_set_client=utf8mb4 character_set_connection=utf8mb4 character_set_results=utf8mb4 collation_connection=utf8mb4_general_ci div_precision_increment=4 max_sort_length=8388608 sql_auto_is_null=0
 
 ### `transaction.isolation.read_uncommitted`
 

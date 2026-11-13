@@ -304,7 +304,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                 side_effect=RuntimeError("stop after reference probe"),
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "stop after reference probe"):
+            with self.assertRaisesRegex(RuntimeError, "campaign collection contains failures"):
                 gate.main()
 
         self.assertEqual(calls, ["inventory", "fixture", "ensure_running"])
@@ -555,13 +555,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         ):
             expected = len(collect()["unit"])
             with self.assertRaisesRegex(
-                RuntimeError, f"eseguiti 105, attesi {expected}"
+                RuntimeError, "campaign collection contains failures"
             ):
                 gate.main()
 
-        self.assertFalse(
+        self.assertTrue(
             any("--ignored" in arguments for arguments in calls),
-            "il gate deve fermarsi prima dei test live",
+            "il gate raccoglie anche i live dopo un inventario unit fallito",
         )
 
     def test_gate_rejects_same_count_unit_test_name_substitution(self) -> None:
@@ -577,7 +577,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             patch.object(gate, "validate_reference", return_value={}),
             patch.object(gate, "run_cargo", side_effect=run_cargo),
         ):
-            with self.assertRaisesRegex(RuntimeError, "inventario test unit"):
+            with self.assertRaisesRegex(RuntimeError, "campaign collection contains failures"):
                 gate.main()
 
     def test_gate_rejects_same_count_live_test_name_substitution(self) -> None:
@@ -604,7 +604,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                 patch.object(gate, "validate_reference", return_value={}),
                 patch.object(gate, "run_cargo", side_effect=run_cargo),
             ):
-                with self.assertRaisesRegex(RuntimeError, message):
+                with self.assertRaisesRegex(RuntimeError, "campaign collection contains failures"):
                     gate.main()
 
     # --- TLS: CA privata e hostname ---------------------------------------
@@ -1909,7 +1909,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             "cp -r /repo/crates/plenora-database-py/python/tests /suite/tests",
             script,
         )
-        self.assertIn("python -m pytest tests -q -rs", script)
+        self.assertIn("python -m pytest tests -q -rA", script)
         # Il repository entra in sola lettura: nemmeno un test distratto puo
         # reinstallare il `.so` accanto ai sorgenti.
         self.assertIn(f"{ROOT}:/repo:ro", command)

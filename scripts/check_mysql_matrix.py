@@ -52,6 +52,9 @@ MatrixEntry = MysqlReference
 MATRIX = REFERENCES
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def server_command(entry: MatrixEntry) -> list[str]:
     """Le stesse difese del riferimento fissato, per ogni versione."""
     del entry
@@ -200,6 +203,7 @@ def run(
     timeout: int = 900,
     capture: bool = False,
 ) -> str:
+    command = complete_command(command)
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -209,6 +213,7 @@ def run(
         capture_output=capture,
         timeout=timeout,
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if capture:
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
@@ -412,35 +417,45 @@ def discard(entry: MatrixEntry) -> None:
 def qualify(entry: MatrixEntry, environment: dict[str, str], surfaces=None) -> dict[str, Any]:
     discard(entry)
     try:
-        generate_tls(entry)
-        start(entry, environment)
-        wait_ready(entry)
-        probe = probe_server(entry)
-        verify_hardening(entry, probe)
-        verify_live_inventory(
-            entry,
-            "live default",
-            EXPECTED_LIVE_DEFAULT_TESTS,
-            run_suite(entry, environment, live_default_command()),
-        )
-        verify_live_inventory(
-            entry,
-            "live reference",
-            EXPECTED_LIVE_REFERENCE_TESTS,
-            run_suite(entry, environment, live_reference_command()),
-        )
-        report = entry_report(entry, probe)
+        collection = Collection("mysql-version-" + entry.label)
+        ready = False
+        with collection.stage(entry.exact_version, "fixture-identity-and-hardening"):
+            generate_tls(entry)
+            start(entry, environment)
+            wait_ready(entry)
+            probe = probe_server(entry)
+            verify_hardening(entry, probe)
+            ready = True
+        for family, expected, command in (
+            ("live default", EXPECTED_LIVE_DEFAULT_TESTS, live_default_command()),
+            ("live reference", EXPECTED_LIVE_REFERENCE_TESTS, live_reference_command()),
+        ):
+            with collection.stage(entry.exact_version, family, expected):
+                if not ready:
+                    raise RuntimeError("fixture unavailable or identity not verified")
+                output = run_suite(entry, environment, command)
+                # Also observe injected runners used by the orchestration tests.
+                observe(output)
+                verify_live_inventory(entry, family, expected, output)
+        report = {}
         if surfaces is not None:
-            from scripts import check_sdk_tests as sdk
-            artifacts, artifact = surfaces
-            output = run(sdk.pytest_command(scope="mysql-surfaces", artifacts=artifacts,
-                wheel=artifact["wheel"], mysql_matrix=(NETWORK, entry.tls_volume)),
-                environment=environment, timeout=3600, capture=True)
-            summary = sdk.pytest_summary(output)
-            counts = sdk.assert_scope_contract(scope="mysql-surfaces", output=output, summary=summary)
-            report["surfaces"] = {"counts": counts, "artifact": artifact,
-                "origin": sdk.installed_origin(output), "versions": sdk.installed_versions(output)}
-        return report
+            with collection.stage(entry.exact_version, "mysql-surfaces"):
+                if not ready:
+                    raise RuntimeError("fixture unavailable or identity not verified")
+                from scripts import check_sdk_tests as sdk
+                artifacts, artifact = surfaces
+                if artifact is None:
+                    raise RuntimeError("surface artifacts unavailable")
+                output = run(sdk.pytest_command(scope="mysql-surfaces", artifacts=artifacts,
+                    wheel=artifact["wheel"], mysql_matrix=(NETWORK, entry.tls_volume)),
+                    environment=environment, timeout=3600, capture=True)
+                observe(output)
+                summary = sdk.pytest_summary(output)
+                counts = sdk.assert_scope_contract(scope="mysql-surfaces", output=output, summary=summary)
+                report["surfaces"] = {"counts": counts, "artifact": artifact,
+                    "origin": sdk.installed_origin(output), "versions": sdk.installed_versions(output)}
+        collection.finish()
+        return {**entry_report(entry, probe), **report}
     finally:
         discard(entry)
 
@@ -454,16 +469,24 @@ def main() -> int:
     environment["PLENORA_TEST_MYSQL_DATABASE"] = DATABASE
     environment["PLENORA_TEST_MYSQL_USER"] = USER
     results: list[dict[str, Any]] = []
+    collection = Collection("mysql-version-matrix-v1")
     try:
-        validate_inventory()
-        verify_candidate_unit()
-        ensure_network()
+        with collection.stage("offline", "inventory"):
+            validate_inventory()
+        with collection.stage("offline", "unit", EXPECTED_UNIT_TESTS):
+            verify_candidate_unit()
+        with collection.stage("fixtures", "network"):
+            ensure_network()
         from scripts import check_sdk_tests as sdk
         with tempfile.TemporaryDirectory(prefix="plenora-mysql-surfaces-") as staging:
             artifacts = Path(staging)
-            artifact = sdk.build_artifacts(artifacts)
+            artifact = None
+            with collection.stage("offline", "surface-artifacts"):
+                artifact = sdk.build_artifacts(artifacts)
             for entry in MATRIX:
-                results.append(qualify(entry, environment, (artifacts, artifact)))
+                with collection.stage(entry.exact_version, "reference"):
+                    results.append(qualify(entry, environment, (artifacts, artifact)))
+        collection.finish()
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         print(f"mysql matrix gate: {error}", file=sys.stderr)
         return 1

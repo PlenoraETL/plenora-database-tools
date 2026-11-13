@@ -340,6 +340,12 @@ def leaf(qualified: str) -> str:
     return qualified.rsplit("::", 1)[-1]
 
 
+def crate_sources(crate: Path) -> list[Path]:
+    """Tutte le sorgenti delle suite, anche i target di integrazione."""
+    return sorted(path for directory in ("src", "tests")
+                  for path in (crate / directory).rglob("*.rs"))
+
+
 def annotated_tests(source: str) -> list[str]:
     """I nomi delle funzioni annotate come test in un sorgente Rust.
 
