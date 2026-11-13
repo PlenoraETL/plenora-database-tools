@@ -1651,7 +1651,11 @@ class PythonSdkRunnerTests(unittest.TestCase):
             command = sdk_pytest_command("offline")
 
         self.assertNotIn("--network", command)
-        self.assertNotIn("-e", command)
+        # Only paths to this build's artifacts/fixtures; no endpoint or credential.
+        self.assertEqual(
+            [command[i + 1].split("=", 1)[0] for i, arg in enumerate(command) if arg == "-e"],
+            ["PLENORA_CLI_BIN", "PLENORA_PG_SURFACE_BIN", "PLENORA_PG_GEOMETRY_FIXTURES"],
+        )
 
     def test_the_build_is_locked_and_pins_a_maturin_the_package_declares(
         self,
@@ -2162,7 +2166,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertEqual(
             sdk.CLI_BUILD_COMMAND,
             "cargo build --release --locked -p plenora-database-cli "
-            "--no-default-features --features postgres,mysql,sqlserver",
+            "--no-default-features --features postgres,mysql,sqlserver --bins --example postgres-surfaces",
         )
 
         source = SDK_RUNNER.read_text(encoding="utf-8")

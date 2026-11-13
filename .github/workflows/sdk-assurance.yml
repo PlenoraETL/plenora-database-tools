@@ -40,6 +40,9 @@ on:
       - "crates/plenora-database-cli/**"
       - "crates/plenora-database-py/**"
       - "crates/plenora-database-core/**"
+      - "crates/plenora-database-engine/**"
+      - "tests/fixtures/postgres_geometry_qualification.json"
+      - "scripts/test_postgres_surface_matrix.py"
       - "crates/plenora-db-mysql/**"
       - "crates/plenora-db-postgres/**"
       - "crates/plenora-db-sqlserver/**"
@@ -97,6 +100,9 @@ jobs:
       - name: dipendenze dei gate Python
         run: python3 -m pip install -r requirements-self-tests.txt
 
+      - name: enumerazione e architettura DB-b
+        run: python3 -m unittest discover -s scripts -p test_postgres_surface_matrix.py
+
       # Log e diagnostica vivono **fuori** dal repository: il preflight della
       # campagna pretende un albero pulito, e un file scritto qui dentro
       # sarebbe proprio cio che lo fa fallire.
@@ -112,7 +118,7 @@ jobs:
             | tee "$RUNNER_TEMP/sdk-assurance/sdk-assurance.log"
 
       - name: diagnostica
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdk-assurance-results

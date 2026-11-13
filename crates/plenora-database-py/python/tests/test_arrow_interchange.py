@@ -430,7 +430,7 @@ async def test_b13_async_reader_state_after_late_error():
         assert reader.read_loss["status"] == "failed"
     finally:
         await session.execute_sql("DROP TABLE IF EXISTS _pyx_async_geometry_error")
-        await session.close()
+        await session.aclose()
 
 @pytest.mark.parametrize("adapter", ["consume", "translated"])
 def test_stream_adapter_discards_foreign_exception_context(adapter):
