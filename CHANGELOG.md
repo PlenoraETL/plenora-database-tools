@@ -6,7 +6,7 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## 10.0.0 — non pubblicata
+## 10.0.0 — 2026-11-13
 
 - **Cambio incompatibile:** WriteOutcome v3 trasporta ExecutionLossReport v3
   (`risk` / `evaluation` / `effective`). Reader legacy v2 restano leggibili,
