@@ -25,11 +25,16 @@ struct Evidence {
 struct Fake {
     evidence: Arc<Mutex<Evidence>>,
     rollback_fails: bool,
+    kind: ProviderKind,
+    residue: bool,
 }
 struct Scope {
     evidence: Arc<Mutex<Evidence>>,
     poisoned: bool,
     rollback_fails: bool,
+    kind: ProviderKind,
+    residue: bool,
+    inserted: usize,
 }
 fn refusal() -> DatabaseError {
     DatabaseError::new(
@@ -44,7 +49,7 @@ fn row(value: V) -> Vec<Row> {
 }
 impl Provider for Fake {
     fn kind(&self) -> ProviderKind {
-        ProviderKind::Sqlserver
+        self.kind
     }
     fn test_connection<'a>(
         &'a self,
@@ -123,13 +128,16 @@ impl Provider for Fake {
                 evidence: Arc::clone(&self.evidence),
                 poisoned: false,
                 rollback_fails: self.rollback_fails,
+                kind: self.kind,
+                residue: self.residue,
+                inserted: 0,
             }) as Box<dyn TransactionScope>)
         }))
     }
 }
 impl TransactionScope for Scope {
     fn provider_kind(&self) -> ProviderKind {
-        ProviderKind::Sqlserver
+        self.kind
     }
     fn execute<'a>(
         &'a mut self,
@@ -137,6 +145,9 @@ impl TransactionScope for Scope {
         _cancel: &'a CancellationToken,
     ) -> ProviderFuture<'a, u64> {
         assert!(!self.poisoned);
+        if statement.sql == "Insert" {
+            self.inserted += 1;
+        }
         if statement.sql == "Delete" {
             self.evidence
                 .lock()
@@ -157,11 +168,20 @@ impl TransactionScope for Scope {
         );
         let result = match statement.sql.as_str() {
             "raw" => Ok(row(V::String("1".to_owned()))),
+            "Select"
+                if self.kind != ProviderKind::Sqlserver && self.inserted == 0 && !self.residue =>
+            {
+                Ok(Vec::new())
+            }
             "Select" => Ok(row(V::I32(1))),
             "Count" => {
                 self.evidence.lock().expect("evidence").compared += 1;
                 self.poisoned = true;
-                Err(refusal())
+                Err(if self.kind == ProviderKind::Sqlserver {
+                    refusal()
+                } else {
+                    warning(self.kind, ErrorPhase::Read)
+                })
             }
             other => panic!("query inattesa: {other}"),
         };
@@ -214,6 +234,8 @@ impl TransactionScope for Scope {
         Box::pin(async move {
             if self.rollback_fails {
                 Err(refusal())
+            } else if self.poisoned && self.kind != ProviderKind::Sqlserver {
+                Err(warning(self.kind, ErrorPhase::Rollback))
             } else {
                 Ok(())
             }
@@ -227,6 +249,8 @@ fn read_partition_only_cleans_and_reads_its_own_ids() {
     let provider = Fake {
         evidence: Arc::clone(&evidence),
         rollback_fails: false,
+        kind: ProviderKind::Sqlserver,
+        residue: false,
     };
     let secret = SecretString::new("unused");
     let sweep = SweepTarget {
@@ -289,6 +313,8 @@ fn poisoned_comparisons_get_fresh_transactions_and_cleanup_is_required() {
         let provider = Fake {
             evidence: Arc::clone(&evidence),
             rollback_fails,
+            kind: ProviderKind::Sqlserver,
+            residue: false,
         };
         let secret = SecretString::new("unused");
         let sweep = SweepTarget {
@@ -334,5 +360,135 @@ fn poisoned_comparisons_get_fresh_transactions_and_cleanup_is_required() {
         assert_eq!(evidence.compared, if rollback_fails { 1 } else { expected });
         assert_eq!(evidence.opened, evidence.compared);
         assert_eq!(evidence.rolled_back, evidence.compared);
+    }
+}
+
+fn warning(kind: ProviderKind, phase: ErrorPhase) -> DatabaseError {
+    DatabaseError {
+        remote_effect: plenora_database_core::RemoteEffect::Unknown,
+        retry: plenora_database_core::RetryDisposition::RequiresRecovery,
+        ..DatabaseError::new(
+            ErrorCategory::DataMapping,
+            phase,
+            Some(kind),
+            "diagnostico server non qualificato come informativo: risultato rifiutato",
+        )
+    }
+}
+
+#[test]
+fn mysql_warning_axes_are_exact() {
+    for kind in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+        let error = warning(kind, ErrorPhase::Read);
+        assert!(mysql_warning(&error, kind, ErrorPhase::Read));
+        for wrong in [
+            DatabaseError {
+                category: ErrorCategory::Execution,
+                ..error.clone()
+            },
+            DatabaseError {
+                phase: ErrorPhase::Prepare,
+                ..error.clone()
+            },
+            DatabaseError {
+                remote_effect: plenora_database_core::RemoteEffect::None,
+                ..error.clone()
+            },
+            DatabaseError {
+                retry: plenora_database_core::RetryDisposition::Never,
+                ..error.clone()
+            },
+            DatabaseError {
+                provider: Some(ProviderKind::Sqlserver),
+                ..error.clone()
+            },
+        ] {
+            assert!(!mysql_warning(&wrong, kind, ErrorPhase::Read));
+        }
+    }
+}
+
+#[test]
+fn mysql_warnings_keep_all_neighbours_and_require_absent_rows() {
+    let kind = Kind::Integer {
+        min: -100,
+        max: 100,
+    };
+    let set = values(kind);
+    let index = set
+        .iter()
+        .position(|v| *v == V::I64(1))
+        .expect("uno generato");
+    let expected = 1 + comparisons(&set, index).len();
+    assert!(expected > 1);
+    for (provider_kind, rollback_fails, residue) in [
+        (ProviderKind::Mysql, false, false),
+        (ProviderKind::Mariadb, false, false),
+        (ProviderKind::Mysql, true, false),
+        (ProviderKind::Mariadb, true, false),
+        (ProviderKind::Mysql, false, true),
+        (ProviderKind::Mariadb, false, true),
+    ] {
+        let evidence = Arc::new(Mutex::new(Evidence::default()));
+        let provider = Fake {
+            evidence: Arc::clone(&evidence),
+            rollback_fails,
+            kind: provider_kind,
+            residue,
+        };
+        let secret = SecretString::new("unused");
+        let sweep = SweepTarget {
+            target: Target {
+                provider: &provider,
+                secret: &secret,
+                limits: ResourceLimits::default(),
+                table: ObjectRef {
+                    catalog: None,
+                    schema: None,
+                    object: "t".to_owned(),
+                },
+                id_column: "id",
+                native: &|op, _| format!("{op:?}"),
+                native_cross_type_declared: false,
+            },
+            raw: &|_| "raw".to_owned(),
+            facts: ServerFacts::default(),
+            part: Some(index..index + 1),
+        };
+        let column = Column {
+            name: "v",
+            kind,
+            render: Render::Decimal,
+        };
+        let mut outcome = SweepOutcome::default();
+        let mut future = Box::pin(write_and_compare(
+            &sweep,
+            &column,
+            FidelityPath::Native,
+            1,
+            &mut outcome,
+        ));
+        let result = match future
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        {
+            std::task::Poll::Ready(result) => result,
+            std::task::Poll::Pending => panic!("finto sincrono"),
+        };
+        assert_eq!(result.is_err(), rollback_fails || residue);
+        let evidence = evidence.lock().expect("evidence");
+        assert_eq!(
+            evidence.compared,
+            if rollback_fails || residue {
+                1
+            } else {
+                expected
+            }
+        );
+        assert_eq!(
+            evidence.opened,
+            evidence.compared * if rollback_fails { 1 } else { 2 }
+        );
+        assert_eq!(evidence.rolled_back, evidence.opened);
     }
 }

@@ -11609,6 +11609,12 @@ fn fidelity_cases() -> Vec<FidelityCase> {
                 fidelity_exact(&fidelity_text("{\"a\": 1}"), "{\"a\": 1}")
             },
         )
+        // CHANGELOG 9.0.0, audit JSON: the catalog rejects unqualified JSON
+        // comparisons before the binder, including SQL NULL.
+        .on(
+            FidelityPath::Read,
+            FidelityExpect::ReadRefusedBeforeIo(ErrorCategory::InvalidPlan),
+        )
         .comparison_refused(FidelityPath::Portable, ErrorCategory::InvalidPlan)
         .comparison_refused(FidelityPath::Read, ErrorCategory::InvalidPlan),
         FidelityCase::new(
@@ -14786,18 +14792,24 @@ async fn live_audit900_lb_srid_before_io() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+#[ignore = "richiede MySQL o MariaDB live"]
 async fn live_audit900_la_json_read() {
     use plenora_database_core::provider::ParameterValue as V;
-    assert!(fidelity_mariadb());
     let provider = provider900();
     let secret = live_secret();
     let cancel = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
-    for declaration in [
-        "JSON",
-        "LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT')",
-    ] {
+    // CHANGELOG 9.0.0 audit JSON: native JSON on MySQL; JSON alias and
+    // CHECK-constrained LONGTEXT on MariaDB. Both catalog paths must refuse.
+    let declarations: &[&str] = if fidelity_mariadb() {
+        &[
+            "JSON",
+            "LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT')",
+        ]
+    } else {
+        &["JSON"]
+    };
+    for declaration in declarations {
         provider
             .execute_ddl(&secret, "DROP TABLE IF EXISTS audit900_read_json", &cancel)
             .await
@@ -14826,6 +14838,11 @@ async fn live_audit900_la_json_read() {
             };
             assert_eq!(error.category, ErrorCategory::InvalidPlan);
             assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+            assert_eq!(
+                error.remote_effect,
+                plenora_database_core::RemoteEffect::None
+            );
+            assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
         }
     }
     provider
@@ -14835,15 +14852,19 @@ async fn live_audit900_la_json_read() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+#[ignore = "richiede MySQL o MariaDB live"]
 async fn live_audit900_lc_json_arrow_key() {
-    assert!(fidelity_mariadb());
     let provider = provider900();
     let secret = live_secret();
     let cancel = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
-    for sql in ["DROP TABLE IF EXISTS audit900_json_key",
-        "CREATE TABLE audit900_json_key(payload LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT'), v INT)"] {
+    // Same 9.0.0 JSON-key prohibition, with each product's catalog encoding.
+    let create = if fidelity_mariadb() {
+        "CREATE TABLE audit900_json_key(payload LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT'), v INT)"
+    } else {
+        "CREATE TABLE audit900_json_key(payload JSON, v INT)"
+    };
+    for sql in ["DROP TABLE IF EXISTS audit900_json_key", create] {
         provider.execute_ddl(&secret, sql, &cancel).await.unwrap();
     }
     let operation = WriteOperation {
@@ -14884,6 +14905,12 @@ async fn live_audit900_lc_json_arrow_key() {
         "{}",
         error.message
     );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::None
+    );
+    assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
     assert!(
         error.message.contains("JSON"),
         "{:?}: {}",
@@ -14897,10 +14924,9 @@ async fn live_audit900_lc_json_arrow_key() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MariaDB e account plenora_minimal senza SHOW VIEW"]
+#[ignore = "richiede MySQL o MariaDB e account plenora_minimal senza SHOW VIEW"]
 async fn live_audit900_ld_view_without_show_view() {
     use plenora_database_core::transaction::TransactionOptions;
-    assert!(fidelity_mariadb());
     let admin = provider900();
     let secret = live_secret();
     let cancel = CancellationToken::new();
@@ -14923,7 +14949,11 @@ async fn live_audit900_ld_view_without_show_view() {
     )
     .with_port(base.port())
     .with_private_ca_certificate(std::env::var("PLENORA_MYSQL_CA").unwrap());
-    let provider = MariadbProvider::new(config, 2).unwrap();
+    let provider: Box<dyn Provider> = if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(config, 2).unwrap())
+    } else {
+        Box::new(MysqlProvider::new(config, 2).unwrap())
+    };
     let mut tx = provider
         .begin_transaction(&password, &TransactionOptions::default(), &budget, &cancel)
         .await
@@ -14934,7 +14964,18 @@ async fn live_audit900_ld_view_without_show_view() {
             &cancel,
         )
         .await;
-    assert!(denied.is_err(), "il fixture deve negare SHOW VIEW");
+    // 9.0.0 caller SQL: a server refusal after sending is not proof of no effect.
+    let denied = denied.expect_err("il fixture deve negare SHOW VIEW");
+    assert_eq!(denied.category, ErrorCategory::Authorization);
+    assert_eq!(denied.phase, plenora_database_core::ErrorPhase::Read);
+    assert_eq!(
+        denied.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        denied.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
     tx.rollback(&cancel).await.unwrap();
     let query = serde_json::from_value(serde_json::json!({
         "source":{"object":{"catalog":null,"schema":base.database(),"object":"audit900_view"},"alias":null},
