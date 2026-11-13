@@ -21,12 +21,14 @@ fn terminal_error_is_structured_isolated_and_survives_close() {
     state.observe::<()>(&Ok(None));
     state.report(Some(ReadLossReport::new(Vec::new())));
     let terminal = state.0.lock().unwrap();
-    assert_eq!(terminal.error, Some(error));
+    let mut expected = error;
+    expected.read_loss = terminal.read_loss.clone().map(Box::new);
+    assert_eq!(terminal.error, Some(expected));
     assert_eq!(
         terminal.read_loss.as_ref().unwrap().status,
         ReadStatus::Failed
     );
-    assert!(!terminal.complete);
+    assert_eq!(terminal.status, Status::Failed);
     drop(terminal);
     assert!(healthy.0.lock().unwrap().error.is_none());
 }
@@ -42,5 +44,5 @@ fn close_before_eof_is_interruption_and_eof_remains_complete() {
     let state = StreamState::default();
     state.observe::<()>(&Ok(None));
     state.close();
-    assert!(state.0.lock().unwrap().complete);
+    assert_eq!(state.0.lock().unwrap().status, Status::Complete);
 }

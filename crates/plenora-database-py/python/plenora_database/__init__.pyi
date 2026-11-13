@@ -596,3 +596,5 @@ __all__: list[str]
 class MappingLossWarning(UserWarning):
     """Perdite effettive committate; con filtro error conserva il commit."""
     write_outcome: dict
+
+from .arrow_stream import ArrowStreamReader as ArrowStreamReader, AsyncArrowStreamReader as AsyncArrowStreamReader

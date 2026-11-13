@@ -661,6 +661,7 @@ class BatchReader:
 
 class AsyncBatchReader:
     def close(self) -> None: ...
+    def aclose(self) -> Any: ...  # awaitable: release completed
     @property
     def stream_state(self) -> dict[str, Any]: ...
     @property

@@ -10,10 +10,18 @@ pub struct StreamState(Arc<Mutex<Terminal>>);
 
 #[derive(Clone, Default)]
 struct Terminal {
-    complete: bool,
-    closed: bool,
+    status: Status,
     error: Option<DatabaseError>,
     read_loss: Option<plenora_database_core::read_loss::ReadLossReport>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Status {
+    #[default]
+    Open,
+    Complete,
+    Failed,
+    Interrupted,
 }
 
 impl StreamState {
@@ -22,12 +30,32 @@ impl StreamState {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.closed = true;
-        if let Some(report) = &mut state.read_loss {
-            if report.status == plenora_database_core::read_loss::ReadStatus::Open {
+        if state.status == Status::Open {
+            state.status = Status::Interrupted;
+            if let Some(report) = &mut state.read_loss {
                 report.status = plenora_database_core::read_loss::ReadStatus::Interrupted;
             }
+            let mut error = Self::interrupted();
+            error.read_loss = state.read_loss.clone().map(Box::new);
+            state.error = Some(error);
         }
+    }
+
+    pub fn interrupted() -> DatabaseError {
+        DatabaseError::new(
+            plenora_database_core::ErrorCategory::Cancelled,
+            plenora_database_core::ErrorPhase::Read,
+            None,
+            "lettura Arrow interrotta",
+        )
+    }
+
+    pub fn error(&self) -> Option<DatabaseError> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .error
+            .clone()
     }
 
     pub fn report(&self, report: Option<plenora_database_core::read_loss::ReadLossReport>) {
@@ -35,35 +63,86 @@ impl StreamState {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.complete && !state.closed && state.error.is_none() {
+        if state.status == Status::Open {
             state.read_loss = report;
         }
     }
 
-    pub fn observe<T>(&self, result: &Result<Option<T>, DatabaseError>) {
+    #[cfg(test)]
+    pub fn observe<T: Clone>(&self, result: &Result<Option<T>, DatabaseError>) {
+        let _ = self.publish(result.clone());
+    }
+
+    pub fn publish<T>(
+        &self,
+        mut result: Result<Option<T>, DatabaseError>,
+    ) -> Result<Option<T>, DatabaseError> {
         let mut state = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.error.is_none() && !state.closed && !state.complete {
-            match result {
+        if let Some(error) = &state.error {
+            return Err(error.clone());
+        }
+        if state.status == Status::Open {
+            match &mut result {
                 Err(error) => {
-                    state.error = Some(error.clone());
+                    if state.read_loss.is_none() {
+                        state.read_loss = error.read_loss.as_deref().cloned();
+                    }
+                    state.status = Status::Failed;
                     if let Some(report) = &mut state.read_loss {
                         if report.status == plenora_database_core::read_loss::ReadStatus::Open {
                             report.status = plenora_database_core::read_loss::ReadStatus::Failed;
                         }
                     }
+                    if error.read_loss.is_none() {
+                        error.read_loss = state.read_loss.clone().map(Box::new);
+                    }
+                    state.error = Some(error.clone());
                 }
-                Ok(None) => state.complete = true,
+                Ok(None) => {
+                    state.status = Status::Complete;
+                    if let Some(report) = &mut state.read_loss {
+                        report.status = plenora_database_core::read_loss::ReadStatus::Complete;
+                    }
+                }
                 Ok(Some(_)) => (),
             }
         }
+        result
     }
 
-    pub fn failure(&self, error: DatabaseError) -> PyErr {
-        self.observe::<()>(&Err(error.clone()));
-        to_py_err(error)
+    pub fn record_failure(&self, mut error: DatabaseError) -> DatabaseError {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(original) = &state.error {
+            return original.clone();
+        }
+        if state.read_loss.is_none() {
+            state.read_loss = error.read_loss.as_deref().cloned();
+        }
+        let interrupted = error.category == plenora_database_core::ErrorCategory::Cancelled;
+        state.status = if interrupted {
+            Status::Interrupted
+        } else {
+            Status::Failed
+        };
+        if let Some(report) = &mut state.read_loss {
+            report.status = if interrupted {
+                plenora_database_core::read_loss::ReadStatus::Interrupted
+            } else {
+                plenora_database_core::read_loss::ReadStatus::Failed
+            };
+        }
+        if error.read_loss.is_none() {
+            error.read_loss = state.read_loss.clone().map(Box::new);
+        }
+        state.error = Some(error.clone());
+        drop(state);
+        error
     }
 
     pub fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -83,14 +162,11 @@ impl StreamState {
         )?;
         dict.set_item(
             "status",
-            if state.error.is_some() {
-                "failed"
-            } else if state.complete {
-                "complete"
-            } else if state.closed {
-                "interrupted"
-            } else {
-                "open"
+            match state.status {
+                Status::Open => "open",
+                Status::Complete => "complete",
+                Status::Failed => "failed",
+                Status::Interrupted => "interrupted",
             },
         )?;
         if let Some(error) = &state.error {

@@ -24,6 +24,14 @@ riassumono le note di quelle release.
   viene conservato anche negli errori. Gli stream Python espongono
   `stream_state` e gli adattatori `ArrowStreamReader`/`AsyncArrowStreamReader`
   mantengono gli errori strutturati senza interpretare il testo di ArrowInvalid.
+- DB-c / B-13: reader sync e async condividono stato e rilascio; EOF, errore
+  e close rilasciano lo stream conservando il primo errore e il read_loss.
+  Gli adapter C registrano anche gli errori locali di decoding. `aclose()`
+  attende il rilascio async. Nella major 11 la cancellazione dell'adapter
+  async espone PlenoraCancelledError con assi, invece di perdere lo stato
+  in asyncio.CancelledError; il reader nativo conserva lo stato anche quando
+  viene annullato direttamente il suo awaitable. I consumer C esterni possono
+  ancora ricevere ArrowInvalid: lo stato della sorgente resta interrogabile.
 - DB-a / B-07: il piano delle 15 proprieta governa conservazione, verifiche,
   proiezioni e regole. I metadati opzionali oltre 1 MiB per colonna o 16 MiB
   per operazione vengono omessi come chiavi intere, con localizzazione redatta

@@ -15,18 +15,51 @@ def _sdk_source(source: Any) -> bool:
     return _native_reader(source) or type(source) is ArrowStreamReader
 
 
+def _stream_failure(source: Any) -> Exception:
+    if _sdk_source(source):
+        native = source._source if type(source) is ArrowStreamReader else source
+        error = native.stream_state["error"]
+        return error if error is not None else native._record_arrow_failure()
+    from ._arrow_io import _mapping_error
+    return _mapping_error("stream Arrow SDK non leggibile", "read")
+
+
+def _interrupt(source: Any) -> Exception:
+    if _sdk_source(source):
+        native = source._source if type(source) is ArrowStreamReader else source
+        error = native._record_arrow_cancellation()
+        native.close()
+        return error
+    return _stream_failure(source)
+
+
 def _consume(source: Any, call: Any) -> Any:
-    """Il testo di ArrowInvalid non e mai un protocollo di errore."""
+    """State is the only error channel, never the text of ArrowInvalid."""
+    if _sdk_source(source):
+        error = source.stream_state["error"]
+        if error is not None:
+            raise error from None
     try:
         return call()
     except (StopIteration, StopAsyncIteration):
         raise
+    except KeyboardInterrupt:
+        error = _interrupt(source)
     except Exception:
-        error = source.stream_state["error"] if _sdk_source(source) else None
-        if error is None:
-            from ._arrow_io import _mapping_error
-            error = _mapping_error("stream Arrow SDK non leggibile", "read")
-    # Raise outside the except block: suppressed __context__ still retains data.
+        error = _stream_failure(source)
+    raise error from None
+
+
+async def _await_source(source: Any, awaitable: Any) -> Any:
+    try:
+        return await awaitable
+    except (StopIteration, StopAsyncIteration):
+        raise
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        error = _interrupt(source)
+        await asyncio.shield(source.aclose())
+    except Exception:
+        error = _stream_failure(source)
     raise error from None
 
 
@@ -76,7 +109,13 @@ class ArrowStreamReader:
 
     def close(self) -> None:
         self._source.close()
-        self._reader.close()
+        try:
+            self._reader.close()
+        except Exception:
+            error = _stream_failure(self._source)
+        else:
+            return
+        raise error from None
 
     def __enter__(self) -> ArrowStreamReader:
         return self
@@ -102,22 +141,40 @@ class AsyncArrowStreamReader:
     def __aiter__(self) -> AsyncArrowStreamReader:
         return self
 
+    async def _schema(self) -> Any:
+        from ._arrow_io import _require_pyarrow
+        if not hasattr(self, "_cached_schema"):
+            raw = await _await_source(self._source, self._source.schema_bytes())
+            pa = _require_pyarrow()
+            self._cached_schema = await _await_source(self._source, asyncio.to_thread(
+                _consume, self._source, lambda: pa.ipc.open_stream(pa.py_buffer(raw)).schema))
+        return self._cached_schema
+
     async def __anext__(self) -> Any:
-        from ._arrow_io import _require_pyarrow, _translated
-        chunk = await self._source.__anext__()
-        pa = _require_pyarrow()
-        return await asyncio.to_thread(
-            _translated, "read", "batch Arrow async non leggibile",
-            lambda: _validated(pa.ipc.open_stream(pa.py_buffer(chunk)).read_next_batch()))
+        from ._arrow_io import _decode_chunk
+        schema = await self._schema()
+        chunk = await _await_source(self._source, self._source.__anext__())
+        batches = await _await_source(self._source, asyncio.to_thread(
+            _consume, self._source, lambda: _decode_chunk(chunk, schema)))
+        if len(batches) != 1:
+            raise _stream_failure(self._source) from None
+        return batches[0]
 
     async def read_all(self) -> Any:
-        from ._arrow_io import _require_pyarrow, _translated
-        pa = _require_pyarrow()
-        schema_bytes = await self._source.schema_bytes()
-        schema = await asyncio.to_thread(
-            _translated, "read", "schema Arrow async non leggibile",
-            lambda: pa.ipc.open_stream(pa.py_buffer(schema_bytes)).schema)
+        from ._arrow_io import _require_pyarrow
+        schema = await self._schema()
         batches = [batch async for batch in self]
-        return await asyncio.to_thread(
-            _translated, "read", "tabella Arrow async non leggibile",
-            lambda: _validated(pa.Table.from_batches(batches, schema)))
+        return await _await_source(self._source, asyncio.to_thread(_consume, self._source,
+            lambda: _validated(_require_pyarrow().Table.from_batches(batches, schema))))
+
+    async def aclose(self) -> None:
+        await self._source.aclose()
+
+    async def close(self) -> None:
+        await self.aclose()
+
+    async def __aenter__(self) -> AsyncArrowStreamReader:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()

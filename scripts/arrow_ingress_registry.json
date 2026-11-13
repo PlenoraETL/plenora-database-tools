@@ -238,7 +238,7 @@
     "crates/plenora-database-py/python/plenora_database/_arrow_io.py::c_stream_from_reader": {
       "classification": "ingresso guardato",
       "reason": "Esportazione dal reader nativo: _record_batch_reader valida ogni batch IPC prima dello yield.",
-      "review_sha256": "d3bf8af5b805c760e849910597ab4f88c883dfa166b04555feea83330b6d0caf",
+      "review_sha256": "4b1e0519fd25885cdae579c124ad3646c952efdbfb02e3d858f814f88804dfef",
       "required": [
         "_record_batch_reader"
       ],
@@ -248,7 +248,7 @@
     "crates/plenora-database-py/python/plenora_database/_arrow_io.py::table_from_reader": {
       "classification": "ingresso guardato",
       "reason": "Esportazione dal reader nativo: _record_batch_reader valida ogni batch IPC prima dello yield.",
-      "review_sha256": "2c8e577320808481549b4a8ed3ab5a61760f0dde6f37ba020965cada6bcb4d44",
+      "review_sha256": "56c1528cc86ef4e1a5e57cd667feddf2c5686fbf1a9cfcec23fcac7027eeaacd",
       "required": [
         "_record_batch_reader"
       ],
@@ -660,19 +660,19 @@
     "crates/plenora-database-py/src/arrow_reader.rs::batch_to_ipc_bytes#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Serializzatore privato: batch proveniente dal fetch validato in arrow_reader.rs, fissato nei support_sources.",
-      "review_sha256": "77bd1a3340cf737a5c555f25a4a64fb35ab1602f415deb98db75afa08423458f",
-      "signature": "fn batch_to_ipc_bytes( batch: &plenora_database_core::arrow::RecordBatch, ) -> Result<Vec<u8>, DatabaseError>"
+      "review_sha256": "961cc5549bf07f1eb4faecbc29a4ffe4fa44bc789eaaf8ce36b4f99799f07073",
+      "signature": "pub(crate) fn batch_to_ipc_bytes( batch: &plenora_database_core::arrow::RecordBatch, ) -> Result<Vec<u8>, DatabaseError>"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::new#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Adapter interno a visibilita ristretta: riceve batch dal consumer validato, non e una superficie Rust pubblica. Catena fissata nei support_sources.",
-      "review_sha256": "38a71efdd82f9a219c83d37b13016bb8e1b2da48fef773e23b8f2ebe2e8d58db",
+      "review_sha256": "fd2a7a8572eaa2c85aa0d3814ca12f29060894a8c540d9be1561c8cd2f8ba364",
       "signature": "pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::new#2": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Adapter interno a visibilita ristretta: riceve batch dal consumer validato, non e una superficie Rust pubblica. Catena fissata nei support_sources.",
-      "review_sha256": "20daee45842cff72e64e0a3c31b156bdb880a186ff9b14442eb8c2bd2ff62913",
+      "review_sha256": "fd2a7a8572eaa2c85aa0d3814ca12f29060894a8c540d9be1561c8cd2f8ba364",
       "signature": "pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::open_reader#1": {
@@ -686,12 +686,6 @@
       "reason": "Arrow solo nel risultato: costruisce array/stream da valori del driver o restituisce metadati; nessun buffer Arrow esterno in ingresso.",
       "review_sha256": "b190f382c29cce6c5f392c78798b90c36672edb1ef8cc073a387ccfbdfe4995e",
       "signature": "pub(crate) async fn open_reader_async( provider: Arc<PostgresProvider>, secret: SecretString, operation: ReadOperation, parameters: ParameterBag, cancellation: CancellationToken, ) -> Result<AsyncBatchReader, DatabaseError>"
-    },
-    "crates/plenora-database-py/src/arrow_reader.rs::wrap#1": {
-      "classification": "non riceve dati Arrow esterni",
-      "reason": "Adapter interno a visibilita ristretta: riceve batch dal consumer validato, non e una superficie Rust pubblica. Catena fissata nei support_sources.",
-      "review_sha256": "64ee59a0f9db528a2b0a572c122357cdf789b741b92d4a436dd9abc97ca1ae7b",
-      "signature": "fn wrap(stream: Box<dyn BatchStream>) -> SharedStream"
     },
     "crates/plenora-database-py/src/async_session.rs::acopy_from#1": {
       "classification": "ingresso guardato",
@@ -5636,7 +5630,7 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
       "signature": "fn reader_poisoned() -> PyErr",
-      "review_sha256": "2a24c44895071a5749963d25e913431e4c657e253bd7fc5ed09dbbe532714e48"
+      "review_sha256": "883dd330ce262b46c92132b23f7cc11449db7100a51325f85992d478f6e9ffdf"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::__iter__#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -5648,13 +5642,13 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
       "signature": "fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>>",
-      "review_sha256": "6bde43f4e0dd967e221239b83f6456077190d7f61782c94bf1c9c2635198b4a6"
+      "review_sha256": "616a690042a0b48dfd6b08d70377ad3f8e477f3349da1263dbb35806e56e3522"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::schema_bytes#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
       "signature": "fn schema_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>>",
-      "review_sha256": "3ae83e3c706803315d0e3cd9ecdf057d6e6d0be5bb511c1a3a8b06ca8c3fdc88"
+      "review_sha256": "155bd6bd5bf7484265ab57b63ab9f8c07700992301b372218e3f2316381347f9"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::read_all#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -5690,13 +5684,13 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
       "signature": "fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>",
-      "review_sha256": "37b5027abb15325fd7b5635556d72702ed30849917b6695d18b92de5ce466d03"
+      "review_sha256": "bb067111e172d6de30abc486b0b5f66f61d90ecdacb6d7daff8840b70910d806"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::schema_bytes#2": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Binding nativo: lifecycle, configurazione, conversione scalare/JSON/EWKB o output del database; questa funzione non importa buffer Arrow esterni.",
       "signature": "fn schema_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>",
-      "review_sha256": "f8c5acd865a3ab759ab4a19e6622c547aecd1748932644590cadd2b278fe4983"
+      "review_sha256": "686317de14f24922794c4b0615a9e42853b6148c1b33cfaae5b917068a57ebe2"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::__repr__#2": {
       "classification": "non riceve dati Arrow esterni",
@@ -9787,7 +9781,7 @@
     "crates/plenora-database-py/python/plenora_database/arrow_stream.py::ArrowStreamReader.close": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "c694e51de1a8804840d46b8950aae0cdab00e32e498ab71c6167a50ae111b7ee",
+      "review_sha256": "4c381c55db95f7113d14aef851e4e6cd0f55070c559ef4a04abff87a8a401f06",
       "signature": "(self) -> 'None'"
     },
     "crates/plenora-database-py/python/plenora_database/arrow_stream.py::ArrowStreamReader.__enter__": {
@@ -9827,93 +9821,91 @@
     "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.__anext__": {
       "classification": "ingresso guardato",
       "reason": "Reader SDK riconosciuto per tipo; i batch esportati sono validati integralmente, errori recuperati dallo stato nativo e sorgenti esterne redatte.",
-      "review_sha256": "cb5a3860f4f2e049d727721e673d9d1958aaf303d301a21bcfeeaeedcba6c6b7",
+      "review_sha256": "c41238a8f8adfb1d34613f1c69c6ca5f84902c04b44c95fd2d3a40aa341e2ef4",
       "signature": "(self) -> 'Any'",
       "required": [
-        "_validated"
+        "_decode_chunk",
+        "_consume",
+        "_await_source"
       ],
       "proof": "crates/plenora-database-py/python/tests/test_arrow_interchange.py"
     },
     "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.read_all": {
       "classification": "ingresso guardato",
       "reason": "Reader SDK riconosciuto per tipo; i batch esportati sono validati integralmente, errori recuperati dallo stato nativo e sorgenti esterne redatte.",
-      "review_sha256": "e238633ea6ff3a6bbfbc8b79d90085d4f24a5357bc026ea856f26a5b2f52222a",
+      "review_sha256": "5b24a5f765bab7a976baaa0afb554b6a3e32840019fa733be5e97e4a254bf1aa",
       "signature": "(self) -> 'Any'",
       "required": [
-        "_translated"
+        "_validated",
+        "_consume",
+        "_await_source"
       ],
       "proof": "crates/plenora-database-py/python/tests/test_arrow_interchange.py"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::schema_to_ipc_bytes#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "b18f10be8ac58ea95401fa6121bffbde55ec43861d030239b81aa94b8994e64d",
-      "signature": "fn schema_to_ipc_bytes( schema: &plenora_database_core::arrow::Schema, ) -> Result<Vec<u8>, DatabaseError>"
+      "review_sha256": "4b9841bcb15c034fcbe10e401e8a7b459a3b4aff3d397c00f20b65e316025e81",
+      "signature": "pub(crate) fn schema_to_ipc_bytes( schema: &plenora_database_core::arrow::Schema, ) -> Result<Vec<u8>, DatabaseError>"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::close#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "0c0effd7299c0fe1fc036fb590aa25657de2835b20aa27bb2615af664490a454",
+      "review_sha256": "a71324d155cd4e2ec2e9230a97b52271d81da156f64559d5808fd51c25ccb2ad",
       "signature": "fn close(&self, py: Python<'_>)"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::stream_state#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "945b3c5c9ace6a49a38ff7cdf0c9d4ec793334d23d051eb91797be0fec2ea5e2",
+      "review_sha256": "e57c38e6a8fc9ac199163a1680e2ba5863f377a72599f3b4b96dde4f8c2cc128",
       "signature": "fn stream_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>>"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::read_loss#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "66c3d844709afe21954e846c8a309be512b85fe7d2ad64ce4c522598dbc881f7",
+      "review_sha256": "d92292e93a756bc01329bc2a66e082e6cdf9957aa4096ad4966140ce48ffc83c",
       "signature": "fn read_loss<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::close#2": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "443eadd8cc940cc19d2160c551189d49a3ffa65dc2da458199b60123f9c07d1f",
+      "review_sha256": "2ec31376334b4f647e9a2258115c4356a3ffce5961e6d8eef1dba0bd8efe4aed",
       "signature": "fn close(&self)"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::stream_state#2": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "945b3c5c9ace6a49a38ff7cdf0c9d4ec793334d23d051eb91797be0fec2ea5e2",
+      "review_sha256": "e57c38e6a8fc9ac199163a1680e2ba5863f377a72599f3b4b96dde4f8c2cc128",
       "signature": "fn stream_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>>"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::read_loss#2": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "66c3d844709afe21954e846c8a309be512b85fe7d2ad64ce4c522598dbc881f7",
+      "review_sha256": "d92292e93a756bc01329bc2a66e082e6cdf9957aa4096ad4966140ce48ffc83c",
       "signature": "fn read_loss<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>"
     },
     "crates/plenora-database-py/src/stream_state.rs::close#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "f327eba42cbf13ea1fc15bc17d804a2b5aefbddff6f14b298774e1e99465c6c3",
+      "review_sha256": "bb5d34a11ff685be6ccbfceed1a006af4ffa5d9b2b3aabaf068035832a71f9ce",
       "signature": "pub fn close(&self)"
     },
     "crates/plenora-database-py/src/stream_state.rs::report#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "d230f522d3e3a8d7b2e6baf03da3e87ec5ce45c2c0cea09a1755a428d2b8a186",
+      "review_sha256": "f4aab7a797ff665329ee6b3a060ac69796bd29802a2ea314cf2686240eaf472d",
       "signature": "pub fn report(&self, report: Option<plenora_database_core::read_loss::ReadLossReport>)"
     },
     "crates/plenora-database-py/src/stream_state.rs::observe#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "3250abfa7608bfe0e58f1f410216829210720964d9d9ff0af62b0c022c219d87",
-      "signature": "pub fn observe<T>(&self, result: &Result<Option<T>, DatabaseError>)"
-    },
-    "crates/plenora-database-py/src/stream_state.rs::failure#1": {
-      "classification": "non riceve dati Arrow esterni",
-      "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "2756f4d8643e6a71abfe5b0518aff0ee1795ef00b191eda15e87e3300abf0bd7",
-      "signature": "pub fn failure(&self, error: DatabaseError) -> PyErr"
+      "review_sha256": "6d7bec11b3c76344dd01c268de7aaee66d12ac8ecd5b19d9f59954b4e93e62be",
+      "signature": "pub fn observe<T: Clone>(&self, result: &Result<Option<T>, DatabaseError>)"
     },
     "crates/plenora-database-py/src/stream_state.rs::snapshot#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "9135b53c32d0bfd05ec0c55a327da3dba1f0349956b21d2d4d15ed064f5cbf11",
+      "review_sha256": "5d18ff771551589ceccb34f6d04bea88028b5fd015951dd4fb4cce48d3232d0a",
       "signature": "pub fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>>"
     },
     "crates/plenora-db-postgres/src/column_metadata.rs::plan#1": {
@@ -9980,13 +9972,13 @@
     "crates/plenora-database-py/src/stream_state_tests.rs::terminal_error_is_structured_isolated_and_survives_close#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Test dello stato posseduto, oppure pianificazione della sola dichiarazione di schema; nessun buffer esterno consumato.",
-      "review_sha256": "3d1f7ed4826cb431a844081a18b577b2b6a0ee5389b1a5fa76b819c335e4d74a",
+      "review_sha256": "84520311bb9beaeee55c14e20ffb2920bf1e397fb6ce44105547e79ec5bf851a",
       "signature": "fn terminal_error_is_structured_isolated_and_survives_close()"
     },
     "crates/plenora-database-py/src/stream_state_tests.rs::close_before_eof_is_interruption_and_eof_remains_complete#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Test dello stato posseduto, oppure pianificazione della sola dichiarazione di schema; nessun buffer esterno consumato.",
-      "review_sha256": "b4f32c2a122f4cb24aaa4884fe28be3fe950589109440e552491e0e65502fe05",
+      "review_sha256": "3ae334f6e12b975415da5b0ef09ba34b42b779610335be65eae700b9a672b669",
       "signature": "fn close_before_eof_is_interruption_and_eof_remains_complete()"
     },
     "crates/plenora-db-postgres/src/geometry_metadata_plan.rs::compile#1": {
@@ -10048,6 +10040,274 @@
       "reason": "Costruisce un tipo Arrow dal descrittore di catalogo, senza ricevere array o buffer.",
       "signature": "pub fn arrow_data_type(&self) -> DataType",
       "review_sha256": "f7891a7127c5a57564216b9b10f59ddac103a72ca704d53f8d118bcaa5c9e64b"
+    },
+    "crates/plenora-database-py/python/plenora_database/_arrow_io.py::_NativeBatches.__init__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "7d6a37bdf0d41e3cfccc2ca399f4cf69123f683e3b4cc4026764da8b4896cc22",
+      "signature": "(self, source: 'Any', schema: 'Any') -> 'None'"
+    },
+    "crates/plenora-database-py/python/plenora_database/_arrow_io.py::_NativeBatches.__iter__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "72f73257318fba01d2ba3fff9f1070632fc9adabf9a958b7cddbfc57d4db5d26",
+      "signature": "(self) -> 'Any'"
+    },
+    "crates/plenora-database-py/python/plenora_database/_arrow_io.py::_NativeBatches.__next__": {
+      "classification": "ingresso guardato",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "66e405685ddf2cdde907fb794841971dc20636b1869e9bfe5fc95a7aef209358",
+      "signature": "(self) -> 'Any'",
+      "required": [
+        "_decode_chunk(",
+        "_consume("
+      ],
+      "proof": "python/tests/test_stream_channel.py: real C capsule, late and local failure"
+    },
+    "crates/plenora-database-py/python/plenora_database/_arrow_io.py::_NativeBatches.__del__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "413e66b4713431a0ab951648655eebd372ad6c8923eb17703e9c250a54bce2fe",
+      "signature": "(self) -> 'None'"
+    },
+    "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.aclose": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "9467fe14d7f7b4e52bef4b02d4cf2736493782bfc4cd87f864c545ef12eda978",
+      "signature": "(self) -> 'None'"
+    },
+    "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.close": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "87bcf483d9c07cd3514e97b38cff299a6ceed500e09c582d2d70d60b9e6a02af",
+      "signature": "(self) -> 'None'"
+    },
+    "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.__aenter__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "080d5398ad4a642a8be37c08cca5f700cfae4bf4ef261e94ba82e68610baaaa0",
+      "signature": "(self) -> 'AsyncArrowStreamReader'"
+    },
+    "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.__aexit__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "deceb526cd36557275bc48fc839609b8b7a8665fce126694bbccab6a59a924aa",
+      "signature": "(self, *args: 'Any') -> 'None'"
+    },
+    "crates/plenora-database-py/src/arrow_reader.rs::drop#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "92afa9bc5a98f7f077770f21addc26033000c0e86eabca4aa7841a1821773f9e",
+      "signature": "fn drop(&mut self)"
+    },
+    "crates/plenora-database-py/src/arrow_reader.rs::_record_arrow_failure#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "ee7193aff3e71b4ac82f7f31fd5b97b9ad28f3e92b360102a31b706ebb42e9cc",
+      "signature": "fn _record_arrow_failure(&self, py: Python<'_>) -> Py<PyAny>"
+    },
+    "crates/plenora-database-py/src/arrow_reader.rs::drop#2": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "92afa9bc5a98f7f077770f21addc26033000c0e86eabca4aa7841a1821773f9e",
+      "signature": "fn drop(&mut self)"
+    },
+    "crates/plenora-database-py/src/arrow_reader.rs::aclose#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "d976b67ae67ca757cb9ba4a8aa3f525e7680eedd7ec7975c6c5c4a85a0f0292f",
+      "signature": "fn aclose<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>"
+    },
+    "crates/plenora-database-py/src/arrow_reader.rs::_record_arrow_failure#2": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "ee7193aff3e71b4ac82f7f31fd5b97b9ad28f3e92b360102a31b706ebb42e9cc",
+      "signature": "fn _record_arrow_failure(&self, py: Python<'_>) -> Py<PyAny>"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::new#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "020494d3433ff52bf41fabba14543a2aced6be075aef3f7ade929674a71af9e3",
+      "signature": "pub fn new(stream: Box<dyn BatchStream>, parent: CancellationToken) -> Self"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::close#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "097fbed00061dc25b8a667266a0fd490415f35e9574b75d13ee30a4635987742",
+      "signature": "pub fn close(&self)"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::released#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "a764578b3e86e08008f4fcb14b8415d0d924a669f91930fc07f179a4808060cc",
+      "signature": "pub async fn released(&self)"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::mapping_failure#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "1a7e7118b1d034d47330330660e44574b37df595c88b4628805cfd4a3d6a04eb",
+      "signature": "pub fn mapping_failure(&self) -> DatabaseError"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::schema_bytes#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "b4263664618eda888355bf33fc5af6b54dedc2a9a7db2b465013723ed43bc8c9",
+      "signature": "pub fn schema_bytes(&self) -> Result<Vec<u8>>"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::next#1": {
+      "classification": "ingresso guardato",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "5ba9a6bfcdd7c82de753ffa5f1f91af6cbc372eb3490620ea1049507eaf43cf9",
+      "signature": "pub async fn next(&self) -> Result<Option<Vec<u8>>>",
+      "required": [
+        "validated_batch(",
+        "self.state.publish(result)"
+      ],
+      "proof": "stream_reader_tests.rs: provider doubles and actual Python consumers; scripts/test_sdk_stream_boundaries.py: unique delegation"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::cancelled#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "b3c2e8effd3770e457fafdbad8057038b602493557ce1e4cd8b36d1b043d1a57",
+      "signature": "fn cancelled(reason: CancellationReason) -> DatabaseError"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::flight#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "15f761763958f8beb03fed06ce2a468a6ce1e246fbc428e92dba8111dc118b33",
+      "signature": "pub fn flight(&self) -> Flight"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::finish#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "de74b5c0e2fc06c92bc24aaaef54e43a559d444f0d3f25b8a05c59d7a7ca597e",
+      "signature": "pub const fn finish(&mut self)"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::drop#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "3654a50eb26acc72fd0a6b05844c84b07e6434ce13ac388c8887d0d19a3e66a5",
+      "signature": "fn drop(&mut self)"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::drop#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "13452cab79cee244dd8a89154b39929c7d3ac8b1dd6d6f8f75924353c640cbf4",
+      "signature": "fn drop(&mut self)"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::schema#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "15adb4ee448ff46922790c3aac59492250ec96f24b78b5289d5203eeb4378f39",
+      "signature": "fn schema(&self) -> SchemaRef"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::next_batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "2125dfa334f6b009fd69c630902480cbdf83c705211c2bd70a255b6c18da9186",
+      "signature": "fn next_batch<'a>( &'a mut self, _: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::reader#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "9391cf582b61d9eac64aaa2e6616566e4b474aa140da9e87318f1d9326eff1d5",
+      "signature": "fn reader( responses: Vec<Result<Option<RecordBatch>>>, entered: Option<Arc<tokio::sync::Notify>>, ) -> (Reader, Arc<AtomicUsize>)"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "1bf57d66ca4de344735341e3c1e3b29cd48cc78cefbbdb48fbfc1ff7d01c02fc",
+      "signature": "fn batch() -> RecordBatch"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::server_failures_preserve_all_axes_at_every_lazy_position_and_release#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "a589e1ef6ea4022feba21a3824b5058d4f38917abea537f71b34b62e9b7b6b4b",
+      "signature": "fn server_failures_preserve_all_axes_at_every_lazy_position_and_release()"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::eof_releases_without_losing_schema_or_becoming_cancelled#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "cd28cc62f2dbcb40bd9ccdb8979b148b220fe3912fea90515cd49857a36047ab",
+      "signature": "fn eof_releases_without_losing_schema_or_becoming_cancelled()"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::dropping_await_before_poll_or_in_flight_releases_and_preserves_interruption#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "d9fdeb4253a0a027323af9f80fbb151b88e3c666a690e74c3c3f77397d83198a",
+      "signature": "fn dropping_await_before_poll_or_in_flight_releases_and_preserves_interruption()"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::deadline_and_close_wake_pending_server_without_parent_cancellation#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "5c328b36829d80ff49dd3d6f66392088e7e7ef7e3b26f816e590aad909d56e92",
+      "signature": "fn deadline_and_close_wake_pending_server_without_parent_cancellation()"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::close_before_publication_wins_over_a_ready_batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "850309bf9bf827650945d5c2eebe7f6ef0fdb87a8978f8bcf85339e47429dff8",
+      "signature": "fn close_before_publication_wins_over_a_ready_batch()"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "6202ccf270bcf91987440734cf4df0ea74a881ee3fcca7d42ffd756e302c3162",
+      "signature": "fn actual_python_sync_and_async_consumers_receive_structured_lazy_errors()"
+    },
+    "crates/plenora-database-py/src/stream_state.rs::interrupted#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "ee3b9226062b369eb07245793ec83bf137630f21883ced47b27a2bee2c709c33",
+      "signature": "pub fn interrupted() -> DatabaseError"
+    },
+    "crates/plenora-database-py/src/stream_state.rs::error#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "fe407b500bc4247096c1059f1a751d9b05c778d1cf963662878071b8aee9d03f",
+      "signature": "pub fn error(&self) -> Option<DatabaseError>"
+    },
+    "crates/plenora-database-py/src/stream_state.rs::publish#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "176094063ca2aa70e60a222ac2a169d2e00ef787807b36d3e564c42b19548c4d",
+      "signature": "pub fn publish<T>( &self, mut result: Result<Option<T>, DatabaseError>, ) -> Result<Option<T>, DatabaseError>"
+    },
+    "crates/plenora-database-py/src/stream_state.rs::record_failure#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "ba8be516c4fc70a5b751cf4a09253c32305731b2e67bd548595be6e689640979",
+      "signature": "pub fn record_failure(&self, mut error: DatabaseError) -> DatabaseError"
+    },
+    "crates/plenora-database-py/src/arrow_reader.rs::_record_arrow_cancellation#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "43d6a6046d8a7dcc566f1afe869722c1944ec04642a405440906bad4951ca007",
+      "signature": "fn _record_arrow_cancellation(&self, py: Python<'_>) -> Py<PyAny>"
+    },
+    "crates/plenora-database-py/src/arrow_reader.rs::_record_arrow_cancellation#2": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "43d6a6046d8a7dcc566f1afe869722c1944ec04642a405440906bad4951ca007",
+      "signature": "fn _record_arrow_cancellation(&self, py: Python<'_>) -> Py<PyAny>"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::interruption#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "3b808c443dbb6ed8f6669235c6c15cc6da7986a2fd4f42de3e716c6d44a35b39",
+      "signature": "pub fn interruption(&self) -> DatabaseError"
+    },
+    "crates/plenora-database-py/src/stream_reader.rs::local_failure#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "76d0f6f341f4c2e8ee76ccd081576f06a3cbf5467721191f14717f500c0fed1e",
+      "signature": "fn local_failure(&self, error: DatabaseError) -> DatabaseError"
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs::cancellation_of_python_finalization_after_eof_is_structured#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
+      "review_sha256": "55c782e41b920c5be574108815124f04c39ab36551c77b4985d202743cd72f93",
+      "signature": "fn cancellation_of_python_finalization_after_eof_is_structured()"
     }
   },
   "support_sources": {
@@ -10136,8 +10396,8 @@
       "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
     },
     "crates/plenora-database-py/src/arrow_reader.rs": {
-      "review_sha256": "2d443bbfec63978a5c5f4bb5287bf7fa6b917fabc43528eeaf7a9e01e1daf7a0",
-      "reason": "Aggiunto loss_report None in internal_error; batch originali validati dal fetch prima di IPC/esportazione C attraverso _arrow_io."
+      "review_sha256": "aa03c081c501f9ac5e71fa4e97c2a3216b9b9b48dd8b8343c41f725f7558b1e7",
+      "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
     },
     "crates/plenora-database-py/src/family_write.rs": {
       "review_sha256": "c8110eae0b9a3a76076d827b338ab48fe65f1021602a9d45a501fe8352a5fa23",
@@ -10148,8 +10408,8 @@
       "reason": "decode_ipc_stream controlla framing e validate_batch prima di VecBatchStream; consenso e warning operano sul piano/outcome, non rimuovono guardie."
     },
     "crates/plenora-database-py/python/plenora_database/_arrow_io.py": {
-      "review_sha256": "0935e344b5405f0e5113a15366dde7413f4ecfb0c33521fb9b3f1c8c7854a48b",
-      "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
+      "review_sha256": "0d1b89d5270428378ec9c728be495ab9c701179dc183939b923920ba09570e0a",
+      "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
     },
     "crates/plenora-database-py/python/plenora_database/_async_session.py": {
       "review_sha256": "0d8b28bb312109864f7a36f494332db28789e027b95512a26b668e944ce5bc74",
@@ -10220,8 +10480,8 @@
       "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
     },
     "crates/plenora-database-py/src/lib.rs": {
-      "review_sha256": "911f42c5f2c30e64b57338b4c711b7034e49f604e98b13b90c803f10facf5bce",
-      "reason": "Implementazione nativa incluse macro di factory; inventario runtime sul wheel."
+      "review_sha256": "6a02f15226bb4c0a3fc3fb680b7d6d2ec79e4a07d9618cde2f4ac15298329838",
+      "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
     },
     "crates/plenora-database-py/src/py_convert.rs": {
       "review_sha256": "4e1b2dec52f119d115d365691538da54a3c7a461f65c6479186e60e80b223c2f",
@@ -10344,8 +10604,16 @@
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-database-py/python/plenora_database/arrow_stream.py": {
-      "reason": "Confine C SDK rivisto: sorgenti native riconosciute per tipo, errori dallo stato; PyArrow validato prima della pubblicazione.",
-      "review_sha256": "654d337147d799cc9db28b8e941e3dfe5d45b38aac88848c9d0de6799085fe4b"
+      "review_sha256": "f0eba2efc45caef4a6e9c1552c7231ecc8858df59594e60883ef565d99915444",
+      "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
+    },
+    "crates/plenora-database-py/src/stream_reader.rs": {
+      "review_sha256": "ce8420627ac3ed050923bc4677c28ee00b37aab7ff0f1abca8765e19792b2c6e",
+      "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
+    },
+    "crates/plenora-database-py/src/stream_state.rs": {
+      "review_sha256": "88f2f42c3dc216ae386570f36fb403034a5e7a50ab59fd6493772d310f35110c",
+      "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
     }
   },
   "evidence_sources": {
@@ -10362,12 +10630,28 @@
       "reason": "Matrice SDK sync/async e reader originali: eseguita dal job sdk-offline."
     },
     ".github/workflows/rust-ci.yml": {
-      "review_sha256": "71eafee493e7b2d64c8b89200c5e51d36eed3bd58676966ca2ae5116818bced4",
-      "reason": "Conserva gate statico, self-test inventario, catalogo Arrow, test Rust e suite SDK su Windows/Linux; aggiunge unittest execution_loss senza rimuovere prove ingress."
+      "review_sha256": "dd9deea69185ea9bda21c3fc398a240383ec4ab9925efdeaee989a8a88ab3fba",
+      "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     },
     ".github/scripts/offline_suite.sh": {
       "review_sha256": "53f7414fb12a5e1858f65f17cacce8b46f6761f83afc71ac804dcb729c7f79e7",
       "reason": "Gate inspect sulle funzioni e metodi reali del wheel installato, inclusi costruttori generati; eseguito dal workflow SDK."
+    },
+    "crates/plenora-database-py/src/stream_reader_tests.rs": {
+      "review_sha256": "d044bd1ecef1fc17e6aa162011adafc9ddf7a4012a0ef5c203333bfdea8c51a4",
+      "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
+    },
+    "crates/plenora-database-py/python/tests/test_stream_channel.py": {
+      "review_sha256": "2363d82ff3574e0ad19b5a2824855828568aaf9f280c40357f048fa725fb4edb",
+      "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
+    },
+    "crates/plenora-database-py/python/tests/test_stream_live.py": {
+      "review_sha256": "3190904ac65dbeb20536787ffb184f04ee6d47f4755af73cdb4d5f3e64701074",
+      "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
+    },
+    "scripts/test_sdk_stream_boundaries.py": {
+      "review_sha256": "db068e2ab61138e05cd530e74208ba3cdc839852b46e3c17a0f8ec333e70fd61",
+      "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     }
   },
   "rust_forms": {
@@ -10734,10 +11018,6 @@
     "crates/plenora-db-oracle/src/lib.rs::reexport::pub use types::{OracleColumnKind, OracleColumnSpec, OracleReadPlan};#1": {
       "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",
       "review_sha256": "681d5cc63aaa073924966cd635f833cbae28732453090ff5e2a6dc6e5a098f26"
-    },
-    "crates/plenora-database-py/src/arrow_reader.rs::alias::type SharedStream = Arc<Mutex<Option<Box<dyn BatchStream>>>>;#1": {
-      "reason": "Alias privato del reader nativo: stream creato dal provider; ingressi di scrittura distinti e classificati. Preservato per non cambiare API.",
-      "review_sha256": "71bf1286a3cb02823c32289ca01a2dcb9d4cc4b14d042361fd2fc978f3b15fe2"
     },
     "crates/plenora-database-py/src/arrow_reader.rs::reexport::pub(crate) use crate::budget::session_budget as default_budget;#1": {
       "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",
@@ -47896,6 +48176,69 @@
       "reason": "Alias importato di typing.Any, non un costruttore Arrow; il sorgente revisionato contiene soltanto l'import del tipo.",
       "sources": [
         "crates/plenora-database-py/python/plenora_database/arrow_stream.py"
+      ]
+    },
+    "plenora_database._native::AsyncBatchReader.aclose": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/src/arrow_reader.rs::aclose#1"
+      ]
+    },
+    "plenora_database.arrow_stream::AsyncArrowStreamReader.__aenter__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.__aenter__"
+      ]
+    },
+    "plenora_database.arrow_stream::AsyncArrowStreamReader.__aexit__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.__aexit__"
+      ]
+    },
+    "plenora_database.arrow_stream::AsyncArrowStreamReader.aclose": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.aclose"
+      ]
+    },
+    "plenora_database.arrow_stream::AsyncArrowStreamReader.close": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.close"
+      ]
+    },
+    "plenora_database::AsyncArrowStreamReader.__aenter__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.__aenter__"
+      ]
+    },
+    "plenora_database::AsyncArrowStreamReader.__aexit__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.__aexit__"
+      ]
+    },
+    "plenora_database::AsyncArrowStreamReader.aclose": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.aclose"
+      ]
+    },
+    "plenora_database::AsyncArrowStreamReader.close": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-c: context manager/rilascio del reader, senza importazione di buffer; delega alla chiusura unica.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/arrow_stream.py::AsyncArrowStreamReader.close"
       ]
     }
   }

@@ -1135,3 +1135,30 @@ L'inventario dichiarativo delle firme e delle prove e in
 [`arrow_ingress_registry.json`](../../scripts/arrow_ingress_registry.json).
 Distingue le prove dinamiche dei confini comuni dalle deleghe verificate
 staticamente; queste ultime non costituiscono una prova live dei provider.
+
+### Stato degli stream Arrow (11.0.0)
+
+`ArrowStreamReader(source)` e `AsyncArrowStreamReader(source)` mantengono il
+canale strutturato della sorgente nativa durante il consumo lazy. Le eccezioni
+espongono `category`, `phase`, `remote_effect`, `retry`, `provider`, `details`
+e `read_loss`: non interpretare il testo di `ArrowInvalid`.
+
+`source.stream_state` conserva il primo errore anche dopo `close()`, insieme
+allo stato `open`, `complete`, `failed` o `interrupted`. EOF ed errore rilasciano
+lo stream. Per una chiusura anticipata usare `close()` sul reader sync e
+`await aclose()` sul reader async (anche gli adapter supportano i context
+manager corrispondenti). La chiusura async non bloccante `source.close()`
+richiede il rilascio; `await source.aclose()` ne attende il completamento.
+
+Un consumer C esterno puo esporre soltanto `ArrowInvalid`: conservare la
+sorgente e consultarne `stream_state`, oppure associare il reader importato con
+`ArrowStreamReader(source, reader=imported)`. Non esiste un registro globale
+di indirizzi delle capsule. Uno stream esterno non associato allo SDK non puo
+attribuirsi assi attendibili mediante il testo dell'errore.
+
+La cancellazione dell'adapter async viene tradotta nell'errore strutturato
+salvato sulla sorgente; annullando direttamente l'awaitable nativo il protocollo
+asyncio puo consegnare `CancelledError`, mentre lo stato nativo conserva la
+cancellazione. Il decoding Python avviene fuori dal loop: il worker eventualmente
+gia avviato puo finire, ma la cancellazione chiude la sorgente e non pubblica
+il suo risultato come un nuovo batch.
