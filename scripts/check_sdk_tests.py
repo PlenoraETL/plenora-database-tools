@@ -188,37 +188,31 @@ BENCH_SKIP = (
     "(atteso ~10s di walltime per la sessione)"
 )
 
-# Il contratto di ogni scope, in un posto solo. I numeri si aggiornano quando
-# la suite cambia — ed e il punto: un test aggiunto e visibile qui, mentre
-# "passed" da solo cresce senza dire di cosa.
-# PR #152: +343 offline cases (320 malformed matrix, 8 public copy,
-# 7 valid inputs, 2 reader exports, +6 bitmap input variants).
+# I casi e le dipendenze dalle fixture derivano dalla suite Python.
+from scripts.python_test_inventory import sdk_counts, count as count_python_tests
+
+_CASES = sdk_counts()
+_TOTAL = sum(_CASES.values())
+_SKIP_REASONS = {
+    "postgres": POSTGRES_SKIP, "mysql": MYSQL_SKIP, "mariadb": MARIADB_SKIP,
+    "sqlserver": SQLSERVER_SKIP, "db2": DB2_SKIP, "oracle": ORACLE_SKIP,
+    "age": AGE_SKIP, "bench": BENCH_SKIP,
+}
 SCOPE_CONTRACTS = {
-    # Il gate SDK multipiattaforma qualifica il wheel standard, che non
-    # incorpora ODBC. I test Db2 e Oracle appartengono ai rispettivi gate live
-    # dedicati e qui devono restare skip espliciti, non essere assorbiti dal
-    # totale.
     "live": ScopeContract(
-        passed=1009,
-        deselected=0,
-        skips={DB2_SKIP: 12, ORACLE_SKIP: 15},
+        passed=_TOTAL - _CASES["db2"] - _CASES["oracle"], deselected=0,
+        skips={_SKIP_REASONS[p]: _CASES[p] for p in ("db2", "oracle")},
     ),
     "offline": ScopeContract(
-        passed=706,
-        deselected=0,
-        skips={
-            POSTGRES_SKIP: 237,
-            MYSQL_SKIP: 37,
-            MARIADB_SKIP: 10,
-            SQLSERVER_SKIP: 14,
-            DB2_SKIP: 12,
-            ORACLE_SKIP: 15,
-            AGE_SKIP: 3,
-            BENCH_SKIP: 2,
-        },
+        passed=_CASES["offline"], deselected=0,
+        skips={reason: _CASES[p] for p, reason in _SKIP_REASONS.items()},
     ),
-    "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=1034, skips={}),
+    "stabilization": ScopeContract(
+        passed=count_python_tests(["test_stabilization.py"]), deselected=0, skips={},
+    ),
+    "benchmark": ScopeContract(
+        passed=_CASES["bench"], deselected=_TOTAL - _CASES["bench"], skips={},
+    ),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende

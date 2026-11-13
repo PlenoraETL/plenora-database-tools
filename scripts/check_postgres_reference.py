@@ -216,7 +216,7 @@ def live_test_inventory() -> set[str]:
     """
 
     return live_inventory.source_inventory(
-        list(PROVIDER_SOURCES.rglob("*.rs")),
+        live_inventory.crate_sources(PROVIDER_SOURCES.parent),
         keep=lambda name: name.startswith("live_"),
     )
 

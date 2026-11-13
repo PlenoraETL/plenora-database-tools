@@ -72,7 +72,7 @@ def live_test_inventory() -> set[str]:
     """Legge i nomi dei test live dai sorgenti per verificarne identita ed esito."""
 
     return live_inventory.source_inventory(
-        list(LIVE_TEST_SOURCE.parent.rglob("*.rs")),
+        live_inventory.crate_sources(LIVE_TEST_SOURCE.parent.parent),
         keep=lambda name: name.startswith("live_") or name in SKIPPED_LIVE_TESTS,
     )
 

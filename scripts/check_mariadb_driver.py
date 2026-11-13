@@ -718,6 +718,7 @@ def measure(
         "-e",
         f"PLENORA_MYSQL_PASSWORD="
         f"{container_variable(server.container, server.password_variable)}",
+        "-e", "PLENORA_MYSQL_PRODUCT=" + ("mysql" if server.key == "mysql" else "mariadb"),
         "-e", f"PLENORA_EVIDENCE_LABEL={server.label}",
         "-e", f"PLENORA_EVIDENCE_DIGEST={server.digest}",
         # L'ambiente della misura e **dichiarato**, non ereditato: e cio che

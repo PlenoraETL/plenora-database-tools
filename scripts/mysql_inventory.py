@@ -4,7 +4,7 @@
 Il gate fissa per nome ogni test che si aspetta di vedere passare. Un
 inventario scritto a mano invecchia in silenzio: un test aggiunto e mai
 eseguito, o rimosso e mai notato, non produce alcun segnale. Questo modulo
-estrae l'inventario reale da `crates/plenora-db-mysql/src/**.rs` e permette
+estrae l'inventario reale dalle sorgenti lib e dai target di integrazione e permette
 al gate di fallire chiuso appena la lista dichiarata e la sorgente divergono.
 
 Le tre famiglie hanno runner diversi e vanno tenute distinte:
@@ -222,7 +222,7 @@ def _scan(source: Path, module_path: str | None = None) -> list[MysqlTest]:
                 f"{source.name}: il test {name} non appartiene a un modulo "
                 "esterno dichiarato cfg(test)"
             )
-        found.append(MysqlTest(f"{module_path}::{name}", ignored, live=False))
+        found.append(MysqlTest("::".join(part for part in (module_path, name) if part), ignored, live=False))
     return found
 
 
@@ -264,6 +264,15 @@ def collect() -> dict[str, frozenset[str]]:
         if source.name in EXCLUDED_SOURCES:
             continue
         for test in _scan(source, test_modules.get(source)):
+            if test.path in families[test.family]:
+                raise RuntimeError(f"test duplicato nell'inventario: {test.path}")
+            families[test.family].add(test.path)
+    # Cargo esegue anche tests/*.rs: il nome del target non compare nel
+    # nome stampato dal test harness. Le directory di supporto non sono target.
+    for source in sorted((SOURCE_DIR.parent / "tests").glob("*.rs")):
+        for test in _scan(source, ""):
+            if test.ignored:
+                raise RuntimeError(f"integration test ignorato senza runner: {test.path}")
             if test.path in families[test.family]:
                 raise RuntimeError(f"test duplicato nell'inventario: {test.path}")
             families[test.family].add(test.path)

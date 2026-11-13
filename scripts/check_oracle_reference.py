@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.python_test_inventory import count as count_python_tests
 from scripts import live_inventory
 from scripts.compose_network import container_variable
 
@@ -118,7 +119,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_binary_float_in_json_reads_the_stored_value",
     }
 )
-PYTHON_LIVE_EXPECTED = 15
+PYTHON_LIVE_EXPECTED = count_python_tests(["test_oracle_session.py"])
 SERVER_VERSION_SQL = (
     "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION "
     "WHERE PRODUCT LIKE 'Oracle%Database%' FETCH FIRST 1 ROW ONLY"
@@ -205,7 +206,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE, REWRITE_LIVE_SOURCE, ADMISSION_LIVE_SOURCE, ROOT / "crates/plenora-db-oracle/src/sospetti_live_tests.rs"],
+        live_inventory.crate_sources(ROOT / "crates/plenora-db-oracle"),
         keep=lambda name: name.startswith("live_"),
     )
 

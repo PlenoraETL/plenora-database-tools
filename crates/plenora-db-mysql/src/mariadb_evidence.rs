@@ -2500,8 +2500,8 @@ async fn paginating_stream_probe(
     }
 }
 
-/// Uno stream lasciato a meta non impedisce alla transazione di scrivere e
-/// committare.
+/// Uno stream senza EOF non certifica i warning: scrittura e commit restano
+/// chiusi e la rilettura esterna deve confermare l'assenza di effetti.
 async fn abandoned_stream_probe(
     recorder: &mut Recorder,
     provider: &MysqlProvider,
@@ -2526,10 +2526,8 @@ async fn abandoned_stream_probe(
             // che nessuno abbia cancellato niente.
             stream.next_batch(cancellation).await?;
         }
-        // La scrittura viaggia sulla **stessa** connessione: se i pacchetti
-        // non letti fossero rimasti in coda, sarebbe questa a leggerli al
-        // posto della propria risposta.
-        transaction
+        // Nessun comando deve riusare una risposta non certificata a EOF.
+        let write = transaction
             .execute(
                 &Statement {
                     sql: format!(
@@ -2539,14 +2537,24 @@ async fn abandoned_stream_probe(
                 },
                 cancellation,
             )
-            .await?;
-        transaction.commit(cancellation).await
+            .await;
+        let commit = transaction.commit(cancellation).await;
+        let write_closed = write.is_err_and(|error| {
+            error.category == ErrorCategory::InvalidPlan
+                && error.phase == ErrorPhase::Write
+                && error.remote_effect == RemoteEffect::None
+        });
+        let commit_closed = commit.is_err_and(|error| {
+            error.category == ErrorCategory::InvalidPlan
+                && error.phase == ErrorPhase::Commit
+                && error.remote_effect == RemoteEffect::Unknown
+                && error.retry == RetryDisposition::RequiresRecovery
+        });
+        Ok::<bool, plenora_database_core::DatabaseError>(write_closed && commit_closed)
     }
     .await;
 
-    // La rilettura arriva da un'altra connessione: che il commit dica
-    // `Committed` e cio che il provider crede, e la riga sul server e cio che
-    // e successo.
+    // La rilettura esterna verifica gli effetti, oltre al rifiuto locale.
     let landed = connection
         .query_first::<i64, _>(format!(
             "SELECT COUNT(*) FROM {SCRATCH_ROWS} WHERE id = {marker}"
@@ -2556,21 +2564,21 @@ async fn abandoned_stream_probe(
             |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
             |count| format!("righe={}", count.unwrap_or_default()),
         );
-    let question = "una transazione che abbandona uno stream a meta scrive e committa lo stesso";
+    let question = "uno stream abbandonato chiude scrittura e commit senza lasciare righe";
     match abandoned {
-        Ok(outcome) if outcome.is_committed() && landed == "righe=1" => recorder.accepted(
+        Ok(true) if landed == "righe=0" => recorder.accepted(
             "provider.transaction_row_stream_abandoned",
             "provider",
             "profilo",
             question,
-            format!("commit=Committed — {landed}"),
+            format!("scrittura e commit rifiutati; recovery richiesta — {landed}"),
         ),
         Ok(outcome) => recorder.rejected(
             "provider.transaction_row_stream_abandoned",
             "provider",
             "profilo",
             question,
-            condense(&format!("il commit ha dichiarato {outcome:?} — {landed}")),
+            condense(&format!("chiusura verificata={outcome:?} — {landed}")),
             None,
         ),
         Err(error) => recorder.rejected(
@@ -2825,8 +2833,8 @@ async fn upsert_preflight_probes(
             vec!["id".to_owned()],
             vec![field("id", integer.clone()), field("name", text.clone())],
             "l'Upsert sulla chiave primaria si ferma davanti al secondo indice unico",
-            ErrorCategory::Unsupported,
-            "altro PK/UNIQUE index",
+            ErrorCategory::Schema,
+            plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX,
         ),
         (
             "provider.profile_upsert_on_generated_key",
@@ -2838,8 +2846,8 @@ async fn upsert_preflight_probes(
                 field("lname", text.clone()),
             ],
             "l'Upsert sulla colonna generata si ferma davanti alla chiave primaria",
-            ErrorCategory::Unsupported,
-            "altro PK/UNIQUE index",
+            ErrorCategory::Schema,
+            plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX,
         ),
         (
             // La forma in cui il preflight sugli indici non ha niente da
@@ -3136,9 +3144,9 @@ fn outcome_mismatch(
     if outcome.recovery.is_some() {
         return Some("l'esito porta un recovery che una scrittura riuscita non ha".to_owned());
     }
-    if outcome.schema_version != 2 {
+    if outcome.schema_version != 3 {
         return Some(format!(
-            "schema_version {} invece di 2",
+            "schema_version {} invece di 3",
             outcome.schema_version
         ));
     }
@@ -3468,7 +3476,7 @@ async fn append_cancellation_probe(
     // deve ripulire, non ritentare.
     let contract = RefusalContract {
         category: ErrorCategory::Cancelled,
-        phase: ErrorPhase::Write,
+        phase: ErrorPhase::Rollback,
         remote_effect: RemoteEffect::Unknown,
         retry: RetryDisposition::RequiresRecovery,
         // Il frammento non nomina il prodotto: il messaggio lo porta gia, e
@@ -3884,7 +3892,7 @@ async fn create_cancellation_probe(
     let interrupted = CancellationToken::new();
     let contract = RefusalContract {
         category: ErrorCategory::Cancelled,
-        phase: ErrorPhase::Write,
+        phase: ErrorPhase::Rollback,
         remote_effect: RemoteEffect::Unknown,
         retry: RetryDisposition::RequiresRecovery,
         message_contains: "la tabella creata da mode='create' e rimasta",
@@ -4264,7 +4272,7 @@ async fn update_cancellation_probe(
     let interrupted = CancellationToken::new();
     let contract = RefusalContract {
         category: ErrorCategory::Cancelled,
-        phase: ErrorPhase::Write,
+        phase: ErrorPhase::Rollback,
         remote_effect: RemoteEffect::Unknown,
         retry: RetryDisposition::RequiresRecovery,
         message_contains: "quarantinata",
@@ -4516,17 +4524,15 @@ async fn remaining_write_probes(
 
 /// Il rifiuto di un valore che non entra nella colonna.
 ///
-/// `DataMapping`/`Never`: il dato in ingresso e sbagliato e lo corregge chi
-/// chiama. Il codice 1406 non deve diventare un generico `Execution`, che non
-/// indica il rimedio. La sonda
-/// verifica oltre alla categoria e che l'effetto sia `RolledBack`: nessuna di
+/// La regola P rifiuta il valore prima dell'invio. La sonda verifica il
+/// motivo comune, la categoria e l'effetto `RolledBack`: nessuna di
 /// queste mode esegue DDL, quindi il rollback e pieno e non lascia residui.
 const TOO_LONG_REFUSAL: RefusalContract = RefusalContract {
     category: ErrorCategory::DataMapping,
     phase: ErrorPhase::Write,
     remote_effect: RemoteEffect::RolledBack,
     retry: RetryDisposition::Never,
-    message_contains: "oltre la larghezza della colonna",
+    message_contains: crate::write::LOSSY_VALUE,
 };
 
 /// Il rifiuto di una cancellazione trattenuta da un vincolo referenziale.
@@ -4546,7 +4552,7 @@ const FOREIGN_KEY_REFUSAL: RefusalContract = RefusalContract {
 /// Il rifiuto di una cancellazione, uguale per le tre mode.
 const CANCELLED_REFUSAL: RefusalContract = RefusalContract {
     category: ErrorCategory::Cancelled,
-    phase: ErrorPhase::Write,
+    phase: ErrorPhase::Rollback,
     remote_effect: RemoteEffect::Unknown,
     retry: RetryDisposition::RequiresRecovery,
     message_contains: "quarantinata",
@@ -8094,7 +8100,7 @@ async fn savepoint_partial_rollback_probe(
                 "provider",
                 "profilo",
                 question,
-                format!("commit=Committed — {contents}"),
+                format!("scrittura e commit rifiutati; recovery richiesta — {contents}"),
             ),
         Ok(outcome) => recorder.rejected(
             "provider.profile_savepoint_partial_rollback",

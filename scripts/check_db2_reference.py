@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.python_test_inventory import count as count_python_tests
 from scripts import live_inventory  # noqa: E402
 
 
@@ -165,7 +166,7 @@ def compose_exec(
 
 def live_test_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        list(LIVE_SOURCES), keep=lambda name: name.startswith("live_")
+        live_inventory.crate_sources(ROOT / "crates/plenora-db-db2"), keep=lambda name: name.startswith("live_")
     )
 
 
@@ -339,7 +340,7 @@ PYTHON_LIVE_TARGETS = (
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_migration_dag_is_idempotent_and_reversible",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_advanced_orm_qualification",
 )
-PYTHON_LIVE_EXPECTED = 12
+PYTHON_LIVE_EXPECTED = count_python_tests(PYTHON_LIVE_TARGETS)
 
 
 def run_python_live() -> None:
