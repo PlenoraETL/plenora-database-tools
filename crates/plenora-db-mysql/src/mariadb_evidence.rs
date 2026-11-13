@@ -4966,7 +4966,8 @@ async fn replace_probes(
                 confirmed: 1,
                 inserted: Some(1),
                 updated: Some(0),
-                deleted: Some(0),
+                // Replace non pubblica il numero di righe svuotate, anche in ripresa.
+                deleted: None,
                 skipped: 0,
             };
             let recovered = scripted_write(
