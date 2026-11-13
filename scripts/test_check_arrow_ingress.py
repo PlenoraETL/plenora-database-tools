@@ -34,9 +34,9 @@ class ArrowInventoryTests(unittest.TestCase):
                     gate.review_evidence(["not-registered.yml"])
                 self.assertEqual(registry.read_bytes(), before)
 
-    def test_review_dump_preserves_legacy_empty_fields_and_type_parameters(self):
+    def test_review_dump_preserves_empty_fields_and_type_parameters(self):
         node = ast.parse('def f(): pass').body[0]
-        expected = "FunctionDef(name='f', args=arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]), body=[Pass()], decorator_list=[])"
+        expected = "FunctionDef(name='f', args=arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]), body=[Pass()], decorator_list=[], type_params=[])"
         self.assertEqual(python_review_dump(node), expected)
         node._fields = (*[f for f in node._fields if f != 'type_params'], 'type_params')
         node.type_params = []

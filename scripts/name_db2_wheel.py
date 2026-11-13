@@ -10,10 +10,10 @@ from pathlib import Path
 
 
 UNTAGGED = re.compile(
-    r"^(plenora_database)-([^-]+)-(cp310)-(abi3)-(linux_x86_64)\.whl$"
+    r"^(plenora_database)-([^-]+)-(cp314)-(abi3)-(linux_x86_64)\.whl$"
 )
 TAGGED = re.compile(
-    r"^(plenora_database)-([^-]+)-(1db2)-(cp310)-(abi3)-(linux_x86_64)\.whl$"
+    r"^(plenora_database)-([^-]+)-(1db2)-(cp314)-(abi3)-(linux_x86_64)\.whl$"
 )
 
 

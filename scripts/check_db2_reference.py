@@ -233,11 +233,11 @@ def validate_build_contract() -> dict[str, str]:
         raise RuntimeError("Dockerfile Db2 senza due immagini fissate per digest")
     for required in (
         "--disablerepo=CRB",
-        "python3.12 -m maturin build",
+        "python3.14 -m maturin build",
         "--features db2",
         "--auditwheel skip",
         "name_db2_wheel.py /opt/plenora-wheel",
-        "*-1db2-cp310-abi3-linux_x86_64.whl",
+        "*-1db2-cp314-abi3-linux_x86_64.whl",
         'ENTRYPOINT ["/usr/local/bin/plenora-db2-entrypoint"]',
     ):
         if required not in source:
@@ -246,7 +246,7 @@ def validate_build_contract() -> dict[str, str]:
     wheel_namer = WHEEL_NAMER.read_text(encoding="utf-8")
     for required in (
         "1db2",
-        "cp310",
+        "cp314",
         "abi3",
         "linux_x86_64",
         "GITHUB_EVENT_NAME",
@@ -357,8 +357,8 @@ def run_python_live() -> None:
         "cp -R /workspace/crates/plenora-database-py/python/tests/. /tmp/db2_sdk_gate_tests/ && "
         "cd /tmp && "
         "PLENORA_EXPECT_DB2_RUNTIME=1 "
-        "python3.12 /workspace/.github/scripts/verify_wheel.py && "
-        "python3.12 -m pytest -q -rA " + " ".join(PYTHON_LIVE_TARGETS)
+        "python3.14 /workspace/.github/scripts/verify_wheel.py && "
+        "python3.14 -m pytest -q -rA " + " ".join(PYTHON_LIVE_TARGETS)
     )
     output = compose_exec(["sh", "-lc", script], PYTHON_ENV)
     if not re.search(rf"\b{PYTHON_LIVE_EXPECTED} passed in ", output):

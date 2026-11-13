@@ -144,7 +144,7 @@ def _narrowed_batch(
 
 
 def _mapping_error(message: str, phase: str) -> Exception:
-    """Un `PlenoraDataMappingError` con gli assi pubblici (PYTHON-SDK Â§6).
+    """Un `PlenoraDataMappingError` con gli assi pubblici (PYTHON-SDK §6).
 
     E anche un `ValueError`, come le conversioni fallite prima di questa
     regola, cosi chi le intercettava cosi continua a farlo. Il messaggio
@@ -168,7 +168,7 @@ class _ArrowSourceError(_SdkAxes, PlenoraDataMappingError, ValueError):
 class _SourceArgumentError(_SdkAxes, PlenoraInvalidPlanError):
     """Un argomento sbagliato riconosciuto dallo SDK stesso: il messaggio e
     suo, senza dati, e resta un `TypeError`/`ValueError` come prima. E
-    anche un `PlenoraInvalidPlanError`, con gli assi di PYTHON-SDK Â§6."""
+    anche un `PlenoraInvalidPlanError`, con gli assi di PYTHON-SDK §6."""
 
     _category = "invalid_plan"
     _phase = "validate"
@@ -282,25 +282,25 @@ def _to_ipc_bytes(source: Any) -> bytes:
     """Serializza `source` in bytes Arrow IPC stream self-contained.
 
     Accetta:
-      - `bytes` â€” passato-through (assunto IPC valido, verificato dal Rust)
-      - `pyarrow.Table` â€” batches iterati e scritti
-      - `pyarrow.RecordBatch` â€” un unico batch
+      - `bytes` — passato-through (assunto IPC valido, verificato dal Rust)
+      - `pyarrow.Table` — batches iterati e scritti
+      - `pyarrow.RecordBatch` — un unico batch
       - iterabile di `pyarrow.RecordBatch` (tutti con stesso schema)
-      - `pandas.DataFrame` â€” convertito via `pyarrow.Table.from_pandas`
-      - `list[dict]` â€” convertito via `pyarrow.Table.from_pylist`
+      - `pandas.DataFrame` — convertito via `pyarrow.Table.from_pandas`
+      - `list[dict]` — convertito via `pyarrow.Table.from_pylist`
       - qualunque oggetto con `__arrow_c_stream__` (Arrow PyCapsule
         Interface): `pyarrow.RecordBatchReader`, il `BatchReader` di
         `Session.read`, tabelle di altre librerie
 
     Raises:
-      - `TypeError` se il tipo non Ã¨ supportato
-      - `ValueError` se la lista Ã¨ vuota o gli elementi hanno tipi misti
+      - `TypeError` se il tipo non è supportato
+      - `ValueError` se la lista è vuota o gli elementi hanno tipi misti
       - `PlenoraDataMappingError` (anche `ValueError`) se la conversione o
         la sorgente falliscono, anche con un `PlenoraError` della sorgente:
         e codice del chiamante, e il suo messaggio non si propaga
       - `TypeError`/`ValueError` per un argomento rifiutato sono anche
         `PlenoraInvalidPlanError`, con gli assi pubblici
-      - `ImportError` se pyarrow non Ã¨ installato (a meno di bytes)
+      - `ImportError` se pyarrow non è installato (a meno di bytes)
     """
     # Anche il riconoscimento dei `bytes` passa dalla traduzione: una
     # sottoclasse puo ridefinire `__bytes__`, e `isinstance` puo eseguire
@@ -319,11 +319,11 @@ def _to_ipc_bytes(source: Any) -> bytes:
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
             "copy_from richiede pyarrow installato quando `source` "
-            "non Ã¨ giÃ  bytes: `pip install pyarrow`"
+            "non è già bytes: `pip install pyarrow`"
         ) from exc
 
-    # Tutto cio che tocca la sorgente â€” `hasattr`, `iter`, il primo `next`,
-    # la serializzazione â€” passa dalla traduzione: un produttore puo
+    # Tutto cio che tocca la sorgente — `hasattr`, `iter`, il primo `next`,
+    # la serializzazione — passa dalla traduzione: un produttore puo
     # sollevare in qualunque punto, con qualunque messaggio.
     return _translated(
         "prepare",
@@ -346,7 +346,7 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
     """Il corpo di `_to_ipc_bytes`, sempre chiamato attraverso
     `_translated`."""
 
-    # pandas DataFrame â€” richiede pandas installato solo se usato
+    # pandas DataFrame — richiede pandas installato solo se usato
     if type(source).__name__ == "DataFrame" and hasattr(source, "to_dict"):
         # duck-type: pandas.DataFrame ha to_dict + iloc + columns
         source = _translated(
@@ -401,11 +401,11 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
             raise _SourceValueError("copy_from: lista vuota")
         first = source[0]
         if isinstance(first, pa.RecordBatch):
-            # lista di RecordBatch â€” tutti devono avere stesso schema
+            # lista di RecordBatch — tutti devono avere stesso schema
             batches = source
             schema = first.schema
         elif isinstance(first, dict):
-            # lista di dict â€” convertibile via pyarrow.Table.from_pylist
+            # lista di dict — convertibile via pyarrow.Table.from_pylist
             tbl = _translated(
                 "prepare",
                 "copy_from: conversione record Arrow non valida",

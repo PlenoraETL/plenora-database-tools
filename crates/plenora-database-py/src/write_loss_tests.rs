@@ -1,7 +1,7 @@
 use super::*;
 use plenora_database_core::execution_loss::{Basis, ExecutionLossReport};
 
-// Python 3.11 warning filters are process-global. Serialize the two tests
+// Python warning filters can be process-global. Serialize the two tests
 // before acquiring the GIL so catch_warnings cannot restore another test's filter.
 static WARNING_FILTERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

@@ -13,9 +13,14 @@ FROM icr.io/db2_community/db2@sha256:2de8151713c261843868c5c3411b57be6ae79d99d70
 RUN dnf --disablerepo=CRB install --assumeyes \
         unixODBC \
         unixODBC-devel \
-        python3.12 \
-        python3.12-pip \
+        gcc make curl tar xz openssl-devel zlib-devel bzip2-devel \
+        libffi-devel sqlite-devel xz-devel readline-devel libuuid-devel \
     && dnf clean all
+
+COPY scripts/install_python.sh /tmp/install_python.sh
+RUN sh /tmp/install_python.sh /opt/plenora-python
+ENV PATH=/opt/plenora-python/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/plenora-python/lib
 
 COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
@@ -32,7 +37,7 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH=/usr/local/cargo/bin:${PATH}
 ENV DB2DIR=/opt/ibm/db2/V12.1
 ENV IBM_DB_HOME=/opt/ibm/db2/V12.1
-ENV LD_LIBRARY_PATH=/opt/ibm/db2/V12.1/lib64
+ENV LD_LIBRARY_PATH=/opt/ibm/db2/V12.1/lib64:/opt/plenora-python/lib
 
 WORKDIR /workspace
 
@@ -42,20 +47,20 @@ RUN chmod 0755 \
         /var/custom/10-plenora-fixture.sh \
     && cargo test --locked --package plenora-db-db2 --no-run \
     && cargo build --locked --package plenora-database-cli --no-default-features --features db2 \
-    && python3.12 -m pip install --no-cache-dir \
+    && python3.14 -m pip install --no-cache-dir \
         --requirement requirements-sdk-build.txt \
         --requirement requirements-sdk-tests.txt \
     && cd crates/plenora-database-py \
-    && python3.12 -m maturin build \
+    && python3.14 -m maturin build \
         --release \
         --locked \
         --features db2 \
         --auditwheel skip \
         --out /opt/plenora-wheel \
-    && python3.12 /workspace/scripts/licenze_artefatto.py --profile wheel-db2-linux /opt/plenora-wheel/*.whl \
-    && python3.12 /workspace/scripts/check-licenze-artefatto.py --profile wheel-db2-linux /opt/plenora-wheel/*.whl \
-    && python3.12 /workspace/scripts/name_db2_wheel.py /opt/plenora-wheel \
-    && python3.12 -m pip install --no-cache-dir --no-deps \
-        /opt/plenora-wheel/*-1db2-cp310-abi3-linux_x86_64.whl
+    && python3.14 /workspace/scripts/licenze_artefatto.py --profile wheel-db2-linux /opt/plenora-wheel/*.whl \
+    && python3.14 /workspace/scripts/check-licenze-artefatto.py --profile wheel-db2-linux /opt/plenora-wheel/*.whl \
+    && python3.14 /workspace/scripts/name_db2_wheel.py /opt/plenora-wheel \
+    && python3.14 -m pip install --no-cache-dir --no-deps \
+        /opt/plenora-wheel/*-1db2-cp314-abi3-linux_x86_64.whl
 
 ENTRYPOINT ["/usr/local/bin/plenora-db2-entrypoint"]

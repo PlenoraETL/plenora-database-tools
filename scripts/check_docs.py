@@ -11,10 +11,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
+import tomllib
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path

@@ -16,10 +16,7 @@ import json
 import re
 import sys
 from functools import lru_cache
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10 in the SDK matrix
-    import tomli as tomllib
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "scripts/arrow_ingress_registry.json"
@@ -141,17 +138,9 @@ def rust_functions(path, source):
 
 
 def python_review_dump(node):
-    """Keep the reviewed 3.10/3.11 AST representation across Python minors.
+    """Fingerprint the complete AST of the supported interpreter, including empty fields."""
+    return ast.dump(node, include_attributes=False, show_empty=True)
 
-    Empty PEP 695 parameters add no semantics; nonempty parameters remain
-    fingerprinted. Python 3.13+ must still emit all other empty lists.
-    """
-    node = copy.deepcopy(node)
-    for child in ast.walk(node):
-        if 'type_params' in child._fields and not child.type_params:
-            child._fields = tuple(field for field in child._fields if field != 'type_params')
-    options = {'show_empty': True} if 'show_empty' in inspect.signature(ast.dump).parameters else {}
-    return ast.dump(node, include_attributes=False, **options)
 
 
 def python_functions(path, source):

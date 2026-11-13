@@ -6,7 +6,7 @@
 //! Formato di ogni chunk emesso:
 //!   - Arrow IPC stream self-contained: schema header + 1 record batch +
 //!     EOS marker. Il consumer parsea con
-//!     `pyarrow.ipc.open_stream(io.BytesIO(chunk)).read_all()` â†’
+//!     `pyarrow.ipc.open_stream(io.BytesIO(chunk)).read_all()` →
 //!     `pa.Table` con 1 batch.
 //!
 //! Schema viene ripetuto in ogni chunk (~1KB): trascurabile per batch
@@ -182,8 +182,8 @@ impl BatchReader {
 
     /// Arrow PyCapsule Interface: lo stream C dei batch ancora da leggere.
     ///
-    /// Qualunque consumatore di `__arrow_c_stream__` â€” `pyarrow`,
-    /// `plenora_data.run`, polars, DuckDB â€” legge il reader direttamente,
+    /// Qualunque consumatore di `__arrow_c_stream__` — `pyarrow`,
+    /// `plenora_data.run`, polars, DuckDB — legge il reader direttamente,
     /// senza passare dai `bytes`. Il lettore resta lazy: ogni batch si legge
     /// dal database quando il consumatore lo chiede. Consuma il reader come
     /// l'iterazione.
@@ -221,7 +221,7 @@ impl BatchReader {
 ///
 /// # Errors
 ///
-/// `PlenoraError::invalid_plan` se la direzione ORDER BY non Ã¨
+/// `PlenoraError::invalid_plan` se la direzione ORDER BY non è
 /// `"asc"` o `"desc"`.
 pub(crate) fn make_qualified_read_operation(
     catalog: Option<&str>,
@@ -281,7 +281,7 @@ pub(crate) fn prepare_resumable_read(
 
 /// Apre un BatchReader su una tabella/vista Postgres.
 ///
-/// La size dei batch prodotti dallo stream Ã¨ decisa internamente dal
+/// La size dei batch prodotti dallo stream è decisa internamente dal
 /// provider (per Postgres: bounded dal buffer del cursore server-side).
 ///
 /// # Errors

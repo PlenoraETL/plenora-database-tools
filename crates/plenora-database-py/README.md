@@ -18,8 +18,8 @@ transazioni.
 
 ## Install
 
-Richiede Python **3.10+**. Il wheel è `abi3-py310` → un unico wheel
-copre 3.10 / 3.11 / 3.12 / 3.13 / 3.14 per la stessa piattaforma.
+Richiede Python **3.14+**. Il wheel è `abi3-py314` → un unico wheel
+copre il minimo dichiarato e le versioni successive per la stessa piattaforma.
 
 ### Da wheel pre-costruito (produzione)
 
@@ -28,7 +28,7 @@ Scaricare l'asset appropriato dalla
 quindi installare il file locale:
 
 ```bash
-pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
+pip install ./plenora_database-<version>-cp314-abi3-<platform>.whl
 ```
 
 Gli asset standard ufficiali sono pubblicati nelle release GitHub per Linux
@@ -36,7 +36,7 @@ x86_64 e Windows x86_64. Db2 usa invece l'asset Linux x86_64 con build tag
 `1db2`, installabile esplicitamente:
 
 ```bash
-pip install ./plenora_database-<version>-1db2-cp310-abi3-linux_x86_64.whl
+pip install ./plenora_database-<version>-1db2-cp314-abi3-linux_x86_64.whl
 ```
 
 Il runtime Db2 richiede unixODBC e il client IBM Db2 12.1 sul sistema. Il

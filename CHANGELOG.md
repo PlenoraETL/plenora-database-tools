@@ -8,6 +8,8 @@ riassumono le note di quelle release.
 
 ## 11.0.0 — non pubblicata
 
+- **Python minimo 3.14**: SDK, ABI stabile dei wheel, CI, rilascio e campagne
+  usano il minimo dichiarato in `.python-version`. Rimossi i fallback precedenti.
 - PostgreSQL: protocollo versionato nel commento di colonna per conservare le
   mappe Arrow di schema e campo, con digest e verifica del descrittore fisico.
   Il commento umano resta integro. Il digest rileva corruzione accidentale,

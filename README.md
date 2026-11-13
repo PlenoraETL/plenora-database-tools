@@ -126,7 +126,7 @@ Scaricare il wheel adatto dalla
 e installare il file locale:
 
 ```bash
-python -m pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
+python -m pip install ./plenora_database-<version>-cp314-abi3-<platform>.whl
 ```
 
 Gli asset ufficiali sono distribuiti soltanto tramite GitHub Releases. Il
@@ -471,3 +471,6 @@ il [README Python](crates/plenora-database-py/README.md#bulk-write-arrow)
 e la [guida operativa](docs/operativo.md#scritture-arrow-rapporto-e-consenso).
 Il binding `database.write@2` richiede adozione anche in runtime-tools:
 catalogo, `accept_loss` e WriteOutcome v3; vedere [runtime](docs/runtime.md).
+
+Il minimo Python della release 11.0.0 e 3.14, dichiarato in `.python-version`;
+il gate `scripts/check_python_version.py` verifica packaging, CI e campagne.

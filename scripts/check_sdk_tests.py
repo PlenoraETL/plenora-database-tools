@@ -64,10 +64,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -90,7 +87,7 @@ PROBE = Path(__file__).resolve().parent / "sdk_wheel_probe.py"
 BUILD_REQUIREMENTS = ROOT / "requirements-sdk-build.txt"
 TEST_REQUIREMENTS = ROOT / "requirements-sdk-tests.txt"
 RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
-PYTHON_IMAGE = "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
+PYTHON_IMAGE = "python@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144"
 
 # Il repository entra nel container dei test in sola lettura, e la suite gira
 # altrove: `python/tests` e un package, quindi pytest inserirebbe in
@@ -665,8 +662,11 @@ def build_artifacts(destination: Path) -> dict[str, object]:
         f"{ARTIFACT_MOUNT}/; "
         f"cp /workspace/target-docker/release/examples/postgres-surfaces {ARTIFACT_MOUNT}/; "
         "apt-get update -qq >/dev/null 2>&1; "
-        "apt-get install -y -qq python3 python3-venv >/dev/null 2>&1; "
-        "python3 -m venv /tmp/v; "
+        "apt-get install -y -qq gcc make curl xz-utils libssl-dev zlib1g-dev libbz2-dev libffi-dev libsqlite3-dev liblzma-dev libreadline-dev uuid-dev >/dev/null 2>&1; "
+        "sh /workspace/scripts/install_python.sh /opt/plenora-python; "
+        "export PATH=/opt/plenora-python/bin:$PATH; "
+        "export LD_LIBRARY_PATH=/opt/plenora-python/lib; "
+        "python3.14 -m venv /tmp/v; "
         f"/tmp/v/bin/pip install -q -r /workspace/{BUILD_REQUIREMENTS.name}; "
         "cd /workspace/crates/plenora-database-py; "
         f"/tmp/v/bin/maturin build --release --locked --out {ARTIFACT_MOUNT}; "
@@ -1049,6 +1049,9 @@ def installed_versions(output: str) -> dict[str, str]:
     packages.pop(ARTIFACT_PACKAGE, None)
     validate_installed_pins(packages)
     packages["python"] = marker_line(output, PYTHON_MARKER)
+    expected_python = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    if not packages["python"].startswith(expected_python + "."):
+        raise RuntimeError("interprete della campagna diverso dal minimo dichiarato")
     return packages
 
 

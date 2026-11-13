@@ -1450,7 +1450,7 @@ def compose_declarations(pattern: str) -> list[str]:
 SDK_VERSION = sdk.toml_version(
     sdk.PYPROJECT.read_text(encoding="utf-8"), "project"
 )
-SDK_WHEEL_NAME = f"plenora_database-{SDK_VERSION}-cp310-abi3-linux_x86_64.whl"
+SDK_WHEEL_NAME = f"plenora_database-{SDK_VERSION}-cp314-abi3-linux_x86_64.whl"
 SDK_ARTIFACT = {
     "wheel": SDK_WHEEL_NAME,
     "wheel_sha256": "a" * 64,
@@ -1464,9 +1464,9 @@ SDK_ARTIFACT = {
             "--no-default-features --features postgres"
         ),
     },
-    "package_path": "/usr/local/lib/python3.13/site-packages/plenora_database",
+    "package_path": "/usr/local/lib/python3.14/site-packages/plenora_database",
     "native_path": (
-        "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
+        "/usr/local/lib/python3.14/site-packages/plenora_database/_native.abi3.so"
     ),
     "maturin": "1.16.0",
     "rustc": "1.98.1",
@@ -1476,7 +1476,7 @@ SDK_VERSIONS = {
     "pyarrow": "25.0.1",
     "pytest": "9.1.1",
     "pytest-asyncio": "1.4.0",
-    "python": "3.13.9",
+    "python": "3.14.6",
 }
 SDK_COUNTS = {"passed": 231, "skipped": 4, "deselected": 0}
 SDK_IMAGES = {
@@ -1948,7 +1948,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         controllo sul comando poteva solo escludere le strade note.
         """
 
-        site = Path("/usr/local/lib/python3.13/site-packages")
+        site = Path("/usr/local/lib/python3.14/site-packages")
         probe.assert_installed(
             "plenora_database", site / "plenora_database" / "__init__.py", [site]
         )
@@ -1986,8 +1986,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
         """
 
         installed = (
-            "/usr/local/lib/python3.13/site-packages/plenora_database "
-            "/usr/local/lib/python3.13/site-packages/plenora_database/"
+            "/usr/local/lib/python3.14/site-packages/plenora_database "
+            "/usr/local/lib/python3.14/site-packages/plenora_database/"
             "_native.abi3.so "
             f"{'b' * 64}"
         )
@@ -2023,7 +2023,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             (ROOT / "requirements-sdk-tests.txt").read_text(encoding="utf-8")
         )
         declared = " ".join(f"{name}=={version}" for name, version in pins.items())
-        python = f"{sdk.PYTHON_MARKER}3.13.9"
+        python = f"{sdk.PYTHON_MARKER}3.14.6"
 
         for artifact in (
             f"plenora-database=={SDK_VERSION}",
@@ -2033,7 +2033,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             output = f"{sdk.PACKAGES_MARKER}{declared} {artifact}\n{python}\n"
             versions = sdk.installed_versions(output)
             self.assertEqual(versions["pyarrow"], pins["pyarrow"])
-            self.assertEqual(versions["python"], "3.13.9")
+            self.assertEqual(versions["python"], "3.14.6")
             self.assertNotIn("plenora-database", versions)
 
         without = f"{sdk.PACKAGES_MARKER}{declared}\n{python}\n"

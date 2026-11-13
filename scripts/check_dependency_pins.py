@@ -24,10 +24,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10
-    import tomli as tomllib
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 EXACT = re.compile(r"^=\d+\.\d+\.\d+$")
