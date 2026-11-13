@@ -13,6 +13,12 @@ pub enum ReadStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadLossEntry {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::metadata_subject::present"
+    )]
+    pub subject: Option<crate::metadata_subject::MetadataSubject>,
     pub position: u32,
     pub field_id: Option<String>,
     pub property: String,
@@ -29,9 +35,13 @@ pub struct ReadLossReport {
 
 impl ReadLossReport {
     #[must_use]
-    pub const fn new(entries: Vec<ReadLossEntry>) -> Self {
+    pub fn new(entries: Vec<ReadLossEntry>) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: if entries.iter().any(|e| e.subject.is_some()) {
+                2
+            } else {
+                1
+            },
             status: ReadStatus::Open,
             entries,
         }

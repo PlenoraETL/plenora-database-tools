@@ -9,6 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'crates/plenora-database-core/src/loss_registry.rs'
 SCHEMA = ROOT / 'contracts/v2/execution-loss-report-v3.schema.json'
+SCHEMA4 = ROOT / 'contracts/v2/execution-loss-report-v4.schema.json'
+READ2 = ROOT / 'contracts/v2/read-loss-v2.schema.json'
 TABLE = ROOT / 'docs/loss-registry.md'
 
 def rules():
@@ -45,6 +47,42 @@ def render_schema():
     schema['$defs'] = {'count': {'type': 'integer', 'minimum': 0, 'maximum': 18446744073709551615}, 'basis': {'enum': ['exact', 'conservative']}, 'rule': {'enum': [r[1] for r in rules()]}, 'risk': risk, 'evaluation_entry': evaluation, 'effective': effective}
     return json.dumps(schema, ensure_ascii=False, indent=2) + '\n'
 
+def metadata_subject():
+    subject = object_schema({
+        'index': {'type': 'integer', 'minimum': 0, 'maximum': 4294967295},
+        'scope': {'enum': ['schema', 'field']},
+        'field_identity': {'type': ['string', 'null'], 'pattern': '^(0|[1-9][0-9]*)$'},
+        'property': {'type': 'string', 'pattern': '^[a-z_]{1,32}$'},
+        'key_sha256': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+        'hop': {'const': 'column_comment'},
+        'reason': {'enum': ['column_limit', 'operation_limit']},
+    })
+    subject['if'] = {'properties': {'scope': {'const': 'schema'}}}
+    subject['then'] = {'properties': {'field_identity': {'type': 'null'}}}
+    subject['else'] = {'properties': {'field_identity': {'type': 'string'}}}
+    return subject
+
+
+def render_schema4():
+    schema = json.loads(render_schema())
+    schema['$id'] = schema['$id'].replace('-v3.', '-v4.')
+    schema['properties']['schema_version']['const'] = 4
+    schema['$defs']['metadata_subject'] = metadata_subject()
+    schema['$defs']['risk']['properties']['subject'] = {'$ref': '#/$defs/metadata_subject'}
+    for name in ('evaluation_entry', 'effective'):
+        schema['$defs'][name]['properties']['subject'] = {'type': 'integer', 'minimum': 0, 'maximum': 4294967295}
+    schema['properties']['risk']['contains'] = {'required': ['subject']}
+    return json.dumps(schema, ensure_ascii=False, indent=2) + '\n'
+
+def render_read2():
+    schema = json.loads((ROOT / 'contracts/v2/read-loss-v1.schema.json').read_text(encoding='utf-8'))
+    schema['$id'] = schema['$id'].replace('-v1.', '-v2.')
+    schema['title'] = 'Plenora read loss snapshot v2'
+    schema['properties']['schema_version']['const'] = 2
+    schema['properties']['entries']['items']['properties']['subject'] = metadata_subject()
+    schema['properties']['entries']['contains'] = {'required': ['subject']}
+    return json.dumps(schema, ensure_ascii=False, indent=2) + '\n'
+
 def render_table():
     lines = ['# Registro delle perdite', '', 'Generato da `loss_registry.rs` con `scripts/render_loss_registry.py`.', '', '| ID | Applicabilità | Categoria | Severità | Predicato | Modalità | Alias PostgreSQL |', '| --- | --- | --- | --- | --- | --- | --- |']
     for row in rules():
@@ -53,7 +91,7 @@ def render_table():
     return '\n'.join(lines) + '\n'
 
 def check():
-    for path, render in ((SCHEMA, render_schema), (TABLE, render_table)):
+    for path, render in ((SCHEMA, render_schema), (SCHEMA4, render_schema4), (READ2, render_read2), (TABLE, render_table)):
         if path.read_text(encoding='utf-8') != render():
             raise ValueError(f'rigenerare {path.name} con scripts/render_loss_registry.py')
 
@@ -64,7 +102,7 @@ def main():
     if args.check:
         check()
     else:
-        for path, render in ((SCHEMA, render_schema), (TABLE, render_table)):
+        for path, render in ((SCHEMA, render_schema), (SCHEMA4, render_schema4), (READ2, render_read2), (TABLE, render_table)):
             path.write_text(render(), encoding='utf-8', newline='\n')
 
 if __name__ == '__main__':

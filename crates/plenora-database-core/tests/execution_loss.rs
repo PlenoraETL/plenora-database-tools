@@ -19,6 +19,43 @@ fn plan() -> ExecutionLossReport {
     )
     .unwrap()
 }
+
+#[test]
+fn metadata_wire_requires_a_localized_non_null_unique_subject() {
+    let document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/execution-loss-v4-metadata.json"
+    ))
+    .unwrap();
+    serde_json::from_value::<ExecutionLossReport>(document.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    for mutation in ["null", "identity", "scope", "duplicate", "counter"] {
+        let mut value = document.clone();
+        match mutation {
+            "null" => value["risk"][0]["subject"] = serde_json::Value::Null,
+            "identity" => {
+                value["risk"][0]["subject"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("field_identity");
+            }
+            "scope" => value["risk"][0]["subject"]["scope"] = serde_json::json!("schema"),
+            "duplicate" => {
+                let mut risk = value["risk"][0].clone();
+                risk["subject"]["index"] = serde_json::json!(1);
+                value["risk"].as_array_mut().unwrap().push(risk);
+            }
+            "counter" => value["evaluation"]["entries"][0]["checked"] = serde_json::json!(2),
+            _ => unreachable!(),
+        }
+        assert!(
+            serde_json::from_value::<ExecutionLossReport>(value)
+                .map_or(true, |report| report.validate().is_err()),
+            "{mutation}"
+        );
+    }
+}
 fn ledger() -> LossLedger {
     LossLedger::new(plan(), 16384, 20).unwrap()
 }
@@ -208,6 +245,7 @@ fn alias_compilation_and_outer_cell_count_are_canonical() {
     use plenora_database_core::loss_registry::{compile_instances, RuleInstance, RuleParameters};
     use plenora_database_core::plan::ProviderKind;
     let first = RuleInstance {
+        subject: None,
         field_id: 1,
         rule_id: RuleId::PgPadText,
         parameters: RuleParameters {
@@ -276,6 +314,7 @@ fn serializer_orders_numeric_fields_rule_ids_and_bases() {
     report.risk.reverse();
     for basis in [Basis::Conservative, Basis::Exact] {
         report.evaluation.entries.push(EvaluationEntry {
+            subject: None,
             field_id: 2,
             rule_id: RuleId::PgNumeric,
             basis,

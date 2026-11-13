@@ -31,6 +31,7 @@ pub enum PredicateId {
     PadBinary,
     PadText,
     PgGeometry,
+    MetadataKey,
     PgJson,
     PgNumeric,
     PgTemporal,
@@ -55,6 +56,7 @@ impl PredicateId {
         Self::PadBinary,
         Self::PadText,
         Self::PgGeometry,
+        Self::MetadataKey,
         Self::PgJson,
         Self::PgNumeric,
         Self::PgTemporal,
@@ -119,6 +121,7 @@ rules! {
     (PgCrs, "pg.crs", Postgres, Crs, DataLoss, Conservative, Conservative, None, "identificatore CRS sorgente e target differente"),
     (PgGeometryRepresentation, "pg.geometry.representation", Postgres, Encoding, Warning, PgGeometry, Mixed, None, "normalizzazione del layout geometrico PostgreSQL: encoding, byte order o SRID incorporato"),
     (PgJsonb, "pg.jsonb", Postgres, NativeType, Warning, PgJson, Mixed, None, "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza ordine delle chiavi e spazi"),
+    (PgMetadataKeyNotPreserved, "pg.metadata.key_not_preserved", Postgres, NativeType, Warning, MetadataKey, Exact, None, "valore metadata non conservato nel commento di colonna"),
     (PgMissingColumn, "pg.missing_column", Postgres, NativeType, DataLoss, Conservative, Conservative, None, "colonna sorgente assente nel target"),
     (PgNullability, "pg.nullability", Postgres, Nullability, DataLoss, NoChange, NoChange, None, "sorgente nullable verso colonna NOT NULL"),
     (PgNumeric, "pg.numeric", Postgres, Precision, DataLoss, PgNumeric, Mixed, None, "un numero del tipo della colonna (numeric con scala, real, double precision) arrotonderebbe il valore testuale"),
@@ -192,6 +195,7 @@ pub enum ValueShape {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleInstance {
+    pub subject: Option<crate::metadata_subject::MetadataSubject>,
     pub field_id: u32,
     pub rule_id: RuleId,
     pub parameters: RuleParameters,
@@ -201,13 +205,15 @@ pub struct RuleInstance {
 impl RuleInstance {
     #[must_use]
     pub fn risk(&self, policy: crate::loss::MappingPolicy) -> crate::execution_loss::RiskEntry {
-        crate::execution_loss::RiskEntry::new(
+        let mut risk = crate::execution_loss::RiskEntry::new(
             self.field_id,
             self.rule_id,
             policy,
             self.source_type.clone(),
             self.target_type.clone(),
-        )
+        );
+        risk.subject.clone_from(&self.subject);
+        risk
     }
 }
 /// Il piano canonico alimenta sia i controlli sia il rapporto, con gli stessi ID.
@@ -234,9 +240,14 @@ pub fn compile_instances(
             return Err(crate::execution_loss::invalid());
         }
         instance.rule_id = instance.rule_id.canonical(provider);
-        let key = (instance.field_id, instance.rule_id);
+        let key = (
+            instance.field_id,
+            instance.rule_id,
+            instance.subject.as_ref().map(|s| s.index),
+        );
         if let Some(previous) = controls.get_mut(&key) {
-            if previous.parameters != instance.parameters
+            if previous.subject != instance.subject
+                || previous.parameters != instance.parameters
                 || [&previous.source_type, &previous.target_type]
                     .into_iter()
                     .zip([&instance.source_type, &instance.target_type])
@@ -335,4 +346,24 @@ pub fn classify_rewrite(
             classification
         },
     )
+}
+
+/// The metadata predicate compares the complete value; there is no truncation.
+/// # Errors
+/// Rejects dispatch through an unrelated rule.
+pub fn classify_metadata(
+    id: RuleId,
+    original: Option<&str>,
+    retained: Option<&str>,
+) -> crate::Result<crate::loss_ledger::Classification> {
+    use crate::execution_loss::Basis;
+    use crate::loss_ledger::Classification;
+    if id.definition().predicate != PredicateId::MetadataKey {
+        return Err(crate::execution_loss::invalid());
+    }
+    Ok(if original == retained {
+        Classification::Exact(Basis::Exact)
+    } else {
+        Classification::WouldChange(Basis::Exact)
+    })
 }

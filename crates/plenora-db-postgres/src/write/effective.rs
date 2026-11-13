@@ -10,7 +10,7 @@ use plenora_database_core::loss_registry::{RuleId, RuleInstance};
 use plenora_database_core::plan::{ProviderKind, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 
-pub(super) struct Evaluation {
+pub struct Evaluation {
     context: ExecutionLossContext,
     rules: Vec<RuleInstance>,
 
@@ -53,8 +53,50 @@ impl Evaluation {
         })
     }
 
+    pub fn metadata(
+        &mut self,
+        plan: &crate::geometry_properties::SchemaPlan,
+        schema: &arrow_schema::Schema,
+        operation: &WriteOperation,
+    ) -> Result<()> {
+        if operation.mode == WriteMode::DeleteByKeys {
+            return Ok(());
+        }
+        self.context.begin_metadata_batch(plan.columns.len())?;
+        for rule in self.rules.iter().filter(|r| r.subject.is_some()) {
+            let subject = rule.subject.as_ref().ok_or_else(invalid)?;
+            let position = rule.field_id as usize;
+            let column = plan.columns.get(position).ok_or_else(invalid)?;
+            let (original, retained) = match subject.scope {
+                plenora_database_core::metadata_subject::MetadataScope::Schema => {
+                    (schema.metadata(), &column.schema)
+                }
+                plenora_database_core::metadata_subject::MetadataScope::Field => {
+                    (schema.field(position).metadata(), &column.field)
+                }
+            };
+            let key = original
+                .keys()
+                .find(|key| crate::column_metadata::digest(key.as_bytes()) == subject.key_sha256)
+                .ok_or_else(invalid)?;
+            let classification = plenora_database_core::loss_registry::classify_metadata(
+                rule.rule_id,
+                original.get(key).map(String::as_str),
+                retained.get(key).map(String::as_str),
+            )?;
+            self.context.track(position, position as u64, position)?;
+            self.context.observe_metadata(
+                position as u64,
+                rule.field_id,
+                subject.index,
+                classification,
+            )?;
+        }
+        Ok(())
+    }
+
     // Le istanze usano i typmod del target fissato dal lock, come i codec.
-    pub fn bind(&mut self, plans: &[WriteColumnPlan]) -> Result<()> {
+    pub(super) fn bind(&mut self, plans: &[WriteColumnPlan]) -> Result<()> {
         use plenora_database_core::loss_registry::ValueShape;
         for rule in &mut self.rules {
             let plan = plans.get(rule.field_id as usize).ok_or_else(invalid)?;
@@ -108,7 +150,7 @@ impl Evaluation {
         Ok(())
     }
 
-    pub fn batch(
+    pub(super) fn batch(
         &mut self,
         batch: &RecordBatch,
         plans: &[WriteColumnPlan],
@@ -132,7 +174,11 @@ impl Evaluation {
                 let array = batch.column(index).as_ref();
                 canonical::check(plan, array, row)?;
                 drop(super::prepared_codec::arrow_value(array, plan, row)?);
-                for rule in self.rules.iter().filter(|r| r.field_id as usize == index) {
+                for rule in self
+                    .rules
+                    .iter()
+                    .filter(|r| r.field_id as usize == index && r.subject.is_none())
+                {
                     let classification = classify(rule.rule_id, plan, array, row)?;
                     if classification == Classification::HardReject {
                         return Err(invalid());
@@ -266,21 +312,7 @@ pub(super) fn classify(
                 .as_any()
                 .downcast_ref::<arrow_array::BinaryArray>()
                 .ok_or_else(invalid)?;
-            let exact = plenora_database_core::ewkb::has_ndr_layout(
-                array.value(row),
-                plan.encoding.as_deref() != Some("wkb"),
-                plan.target_srid,
-                32,
-                plan.semantics == super::plan::ColumnSemantics::Geography,
-            )?;
-            Ok(verdict(
-                !exact,
-                if exact {
-                    Basis::Exact
-                } else {
-                    Basis::Conservative
-                },
-            ))
+            plan.classify_representation(array.value(row))
         }
         RuleId::PgNullability | RuleId::PgAddNullable => Ok(verdict(false, Basis::Exact)),
         RuleId::PgArrowMismatch | RuleId::PgMissingColumn | RuleId::PgSrid | RuleId::PgCrs => {

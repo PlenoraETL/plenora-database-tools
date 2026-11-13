@@ -119,6 +119,7 @@ async fn dry_run_reuses_writer_classification_for_every_policy_path_and_consent(
                     });
                     if policy != MappingPolicy::Strict {
                         state.loss_instances = vec![RuleInstance {
+                            subject: None,
                             field_id: 0,
                             rule_id: RuleId::PgPadText,
                             parameters: RuleParameters::default(),
@@ -220,6 +221,7 @@ async fn r5_leaf_refusals_keep_execution_risk_without_effects() {
                         key: false,
                     });
                     state.loss_instances = vec![RuleInstance {
+                        subject: None,
                         field_id: 0,
                         rule_id,
                         parameters: RuleParameters::default(),

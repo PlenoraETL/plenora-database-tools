@@ -568,42 +568,7 @@ fn published_srid_conforms(
     inspection: &plenora_database_core::ewkb::EwkbInspection,
     column: usize,
 ) -> Result<()> {
-    if columns
-        .get(column)
-        .and_then(|spec| spec.arrow_metadata.as_ref())
-        .and_then(|saved| {
-            saved
-                .field
-                .get(plenora_database_core::protocol::GEOMETRY_ENCODING)
-        })
-        .is_some_and(|v| v == "wkb")
-    {
-        return if inspection.root.srid.is_none() {
-            Ok(())
-        } else {
-            Err(read_mapping_error(
-                "SRID incorporato nella proiezione WKB PostgreSQL",
-            ))
-        };
-    }
-    let declared = columns.get(column).and_then(|spec| spec.spatial_srid);
-    match (declared, inspection.root.srid) {
-        (None, None | Some(0)) => Ok(()),
-        (Some(declared), Some(value)) if declared == value => Ok(()),
-        (None, Some(_)) => Err(public_error(
-            ErrorCategory::Crs,
-            ErrorPhase::Read,
-            false,
-            "colonna geometrica PostgreSQL senza SRID nel catalogo con valori dotati di SRID: \
-             dichiararlo con un typmod o con un cast nella query",
-        )),
-        (Some(_), _) => Err(public_error(
-            ErrorCategory::Crs,
-            ErrorPhase::Read,
-            false,
-            "valore geometrico PostgreSQL senza lo SRID dichiarato per la colonna",
-        )),
-    }
+    crate::geometry_properties::published_srid_conforms(columns, inspection, column)
 }
 
 pub fn batch_memory_bytes(batch: &RecordBatch) -> u64 {

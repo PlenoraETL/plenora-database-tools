@@ -1,6 +1,7 @@
 //! Codec locale dei commenti Arrow. Il digest rileva corruzione, non autentica.
+#[cfg(test)]
 use arrow_schema::{Field, Schema};
-use plenora_database_core::protocol::{canonical_field_id, FIELD_ID};
+use plenora_database_core::protocol::canonical_field_id;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,94 +16,16 @@ pub const OPERATION_LIMIT: usize = 16 * COLUMN_LIMIT;
 #[serde(deny_unknown_fields)]
 pub struct ColumnMetadata {
     pub physical: Option<PhysicalGeometry>,
-    version: u8,
+    pub version: u8,
     pub id: String,
     pub data_type: String,
     pub field: BTreeMap<String, String>,
     pub schema: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted: Vec<plenora_database_core::metadata_subject::MetadataSubject>,
 }
 
-/// Physical guarantees required by the registered Arrow spatial declaration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PhysicalGeometry {
-    geography: bool,
-    dimensions: Option<String>,
-    srid: Option<u32>,
-    geometry_type: String,
-}
-
-impl PhysicalGeometry {
-    fn plan(field: &Field) -> Result<Option<Self>> {
-        let contract = crate::field_contract::FieldContract::parse(field)?;
-        if !contract.canonical.spatial {
-            return Ok(None);
-        }
-        let dimensions = match contract.dimensions {
-            Some("unknown") => None,
-            Some("xy" | "xyz" | "xym" | "xyzm") => contract.dimensions.map(str::to_owned),
-            None => Some("xy".to_owned()),
-            _ => return Err(invalid()),
-        };
-        let geometry_type = if dimensions.is_none() {
-            "Geometry"
-        } else {
-            contract
-                .geometry_type
-                .filter(|types| !types.contains(','))
-                .unwrap_or("Geometry")
-        }
-        .to_owned();
-        if !geometry_type.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(invalid());
-        }
-        Ok(Some(Self {
-            geography: contract.is_geography(),
-            dimensions,
-            srid: contract.target_srid.filter(|v| *v != 0),
-            geometry_type,
-        }))
-    }
-
-    pub fn declaration(field: &Field) -> Result<String> {
-        let physical = Self::plan(field)?.ok_or_else(invalid)?;
-        let base = if physical.geography {
-            "geography"
-        } else {
-            "geometry"
-        };
-        let Some(dimensions) = &physical.dimensions else {
-            return Ok(base.to_owned());
-        };
-        let suffix = match dimensions.as_str() {
-            "xy" => "",
-            "xyz" => "Z",
-            "xym" => "M",
-            "xyzm" => "ZM",
-            _ => return Err(invalid()),
-        };
-        Ok(format!(
-            "{base}({}{suffix},{})",
-            physical.geometry_type,
-            physical.srid.unwrap_or(0)
-        ))
-    }
-
-    pub fn matches(&self, column: &crate::types::ColumnSpec) -> bool {
-        use crate::types::ColumnKind;
-        matches!(column.kind, ColumnKind::Geometry | ColumnKind::Geography)
-            && self.geography == matches!(column.kind, ColumnKind::Geography)
-            && self.dimensions
-                == column
-                    .spatial_dimensions
-                    .as_deref()
-                    .map(str::to_ascii_lowercase)
-            && self.srid == column.spatial_srid.filter(|v| *v != 0)
-            && self
-                .geometry_type
-                .eq_ignore_ascii_case(column.spatial_type.as_deref().unwrap_or("geometry"))
-    }
-}
+use crate::geometry_properties::PhysicalGeometry;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,7 +43,7 @@ pub fn invalid() -> DatabaseError {
     )
 }
 
-fn limit() -> DatabaseError {
+pub fn limit() -> DatabaseError {
     crate::error::public_error(
         ErrorCategory::ResourceLimit,
         ErrorPhase::Validate,
@@ -130,35 +53,14 @@ fn limit() -> DatabaseError {
 }
 
 impl ColumnMetadata {
+    #[cfg(test)]
     pub fn plan(field: &Field, schema: &Schema) -> Result<Self> {
-        crate::geometry_properties::validate_dimensions(
-            &crate::field_contract::FieldContract::parse(field)?,
-        )?;
-        // Contabilizzare prima delle copie e del serializzatore; JSON puo solo
-        // aumentare questa dimensione, che viene verificata ancora in encode.
-        let mut bytes = 0_usize;
-        for (key, value) in field.metadata().iter().chain(schema.metadata()) {
-            if key.contains('\0') || value.contains('\0') {
-                return Err(invalid());
-            }
-            bytes = bytes
-                .checked_add(key.len())
-                .and_then(|n| n.checked_add(value.len()))
-                .ok_or_else(limit)?;
-            if bytes > COLUMN_LIMIT {
-                return Err(limit());
-            }
-        }
-        Ok(Self {
-            version: 1,
-            physical: PhysicalGeometry::plan(field)?,
-            id: field.metadata().get(FIELD_ID).cloned().unwrap_or_else(|| {
-                plenora_database_core::protocol::name_field_id(field.name()).to_string()
-            }),
-            data_type: field.data_type().to_string(),
-            field: field.metadata().clone().into_iter().collect(),
-            schema: schema.metadata().clone().into_iter().collect(),
-        })
+        let isolated = Schema::new_with_metadata(vec![field.clone()], schema.metadata().clone());
+        crate::geometry_properties::SchemaPlan::compile(&isolated)?
+            .columns
+            .into_iter()
+            .next()
+            .ok_or_else(invalid)
     }
 
     pub fn encode(&self) -> Result<String> {
@@ -195,6 +97,7 @@ pub fn decode(comment: Option<&str>) -> Result<Option<ColumnMetadata>> {
     {
         return Err(invalid());
     }
+    bounded_json(json)?;
     let envelope: Envelope =
         plenora_database_core::strict_json::from_slice(json.as_bytes()).map_err(|_| invalid())?;
     let bytes = serde_json::to_vec(&envelope.metadata).map_err(|_| invalid())?;
@@ -214,7 +117,69 @@ pub fn decode(comment: Option<&str>) -> Result<Option<ColumnMetadata>> {
     {
         return Err(invalid());
     }
+    let mut subjects = std::collections::BTreeSet::new();
+    let mut keys = std::collections::BTreeSet::new();
+    for subject in &envelope.metadata.omitted {
+        subject.validate()?;
+        let map = match subject.scope {
+            plenora_database_core::metadata_subject::MetadataScope::Schema => {
+                &envelope.metadata.schema
+            }
+            plenora_database_core::metadata_subject::MetadataScope::Field => {
+                &envelope.metadata.field
+            }
+        };
+        let expected_identity = match subject.scope {
+            plenora_database_core::metadata_subject::MetadataScope::Schema => None,
+            plenora_database_core::metadata_subject::MetadataScope::Field => {
+                Some(&envelope.metadata.id)
+            }
+        };
+        if subject.field_identity.as_ref() != expected_identity
+            || !subjects.insert(subject.index)
+            || !keys.insert((subject.scope as u8, &subject.key_sha256))
+            || map
+                .keys()
+                .any(|k| digest(k.as_bytes()) == subject.key_sha256)
+            || !crate::geometry_properties::PROPERTY_REGISTRY
+                .iter()
+                .any(|p| p.name == subject.property)
+        {
+            return Err(invalid());
+        }
+    }
     Ok(Some(envelope.metadata))
+}
+
+fn bounded_json(json: &str) -> Result<()> {
+    let (mut depth, mut quoted, mut escaped) = (0_usize, false, false);
+    for byte in json.bytes() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else {
+            match byte {
+                b'"' => quoted = true,
+                b'{' | b'[' => {
+                    depth += 1;
+                    if depth > 16 {
+                        return Err(invalid());
+                    }
+                }
+                b'}' | b']' => depth = depth.checked_sub(1).ok_or_else(invalid)?,
+                _ => (),
+            }
+        }
+    }
+    if depth != 0 || quoted {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 pub fn split_identity(comment: Option<&str>) -> Result<(Option<String>, &str)> {
@@ -241,17 +206,65 @@ pub fn plan_registration(
     if old_id.is_some() && old_id != new_id {
         return Err(conflict());
     }
-    if let Some(existing) = decode(comment)? {
-        if existing != *incoming {
+    if let Some(mut existing) = decode(comment)? {
+        let mut contract = existing.clone();
+        contract.omitted.clone_from(&incoming.omitted);
+        if contract != *incoming {
             return Err(conflict());
         }
-        return Ok(None);
+        let previous = existing.omitted.len();
+        merge_omissions(&mut existing, &incoming.omitted)?;
+        if existing.omitted.len() == previous {
+            return Ok(None);
+        }
+        let (_, human) = human.split_once('\n').ok_or_else(invalid)?;
+        let id = new_id.ok_or_else(invalid)?;
+        return Ok(Some(format!(
+            "{ID_PREFIX}{id}\n{ARROW_PREFIX}{}\n{human}",
+            existing.encode()?
+        )));
     }
     let id = new_id.ok_or_else(invalid)?;
     Ok(Some(format!(
         "{ID_PREFIX}{id}\n{ARROW_PREFIX}{}\n{human}",
         incoming.encode()?
     )))
+}
+
+/// Size of the new JSON block, excluding identity and untouched human text.
+pub fn registration_bytes(comment: &str) -> Result<usize> {
+    let (_, body) = split_identity(Some(comment))?;
+    let json = body
+        .strip_prefix(ARROW_PREFIX)
+        .ok_or_else(invalid)?
+        .split_once('\n')
+        .ok_or_else(invalid)?
+        .0;
+    Ok(json.len())
+}
+
+pub fn merge_omissions(
+    target: &mut ColumnMetadata,
+    incoming: &[plenora_database_core::metadata_subject::MetadataSubject],
+) -> Result<()> {
+    for subject in incoming {
+        if !target
+            .omitted
+            .iter()
+            .any(|old| old.scope == subject.scope && old.key_sha256 == subject.key_sha256)
+        {
+            let mut added = subject.clone();
+            added.index = target
+                .omitted
+                .iter()
+                .map(|s| s.index)
+                .max()
+                .map_or(Some(0), |i| i.checked_add(1))
+                .ok_or_else(invalid)?;
+            target.omitted.push(added);
+        }
+    }
+    Ok(())
 }
 
 fn conflict() -> DatabaseError {
@@ -263,19 +276,7 @@ fn conflict() -> DatabaseError {
     )
 }
 
-pub fn plan_schema(schema: &Schema) -> Result<()> {
-    let mut total = 0_usize;
-    for field in schema.fields() {
-        let encoded = ColumnMetadata::plan(field, schema)?.encode()?;
-        total = total.checked_add(encoded.len()).ok_or_else(limit)?;
-        if total > OPERATION_LIMIT {
-            return Err(limit());
-        }
-    }
-    Ok(())
-}
-
-fn digest(bytes: &[u8]) -> String {
+pub fn digest(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     Sha256::digest(bytes)
         .iter()

@@ -129,6 +129,7 @@ impl RewriteCodec {
         let rule_id = resolve_rewrite(provider, &arrow, native, rewrite)?;
         Ok(Self {
             instance: RuleInstance {
+                subject: None,
                 field_id,
                 rule_id,
                 parameters: RuleParameters {

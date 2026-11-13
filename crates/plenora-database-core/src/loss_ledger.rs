@@ -5,9 +5,9 @@ use crate::loss_registry::RuleId;
 use crate::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeMap;
 
-type Key = (u32, RuleId, Basis);
+type Key = (u32, RuleId, Basis, Option<u32>);
 type Row = (u64, u64, Option<(u32, RuleId)>);
-type Cell = (Row, u32, RuleId);
+type Cell = (Row, u32, RuleId, Option<u32>);
 
 /// Identità sorgente, indipendente dai batch di trasporto e dai retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -143,6 +143,7 @@ impl LossLedger {
             (self.batch.ok_or_else(invalid)?, row, None),
             field,
             rule,
+            None,
             classification,
         )
     }
@@ -179,20 +180,43 @@ impl LossLedger {
             field,
             rule,
         };
-        self.observe_cell(token.row(), field, rule, classification)?;
+        self.observe_cell(token.row(), field, rule, None, classification)?;
         Ok(token)
+    }
+    /// A metadata value is counted once, independently of table row count.
+    /// # Errors
+    /// Requires an explicit subject in the planned risk and an active batch.
+    pub fn observe_metadata(
+        &mut self,
+        row: u64,
+        field: u32,
+        rule: RuleId,
+        subject: u32,
+        classification: Classification,
+    ) -> Result<()> {
+        if self.persistent {
+            return Err(invalid());
+        }
+        self.observe_cell(
+            (self.batch.ok_or_else(invalid)?, row, None),
+            field,
+            rule,
+            Some(subject),
+            classification,
+        )
     }
     fn observe_cell(
         &mut self,
         row: Row,
         field: u32,
         rule: RuleId,
+        subject: Option<u32>,
         classification: Classification,
     ) -> Result<()> {
         if self.batch.is_none() || self.retired || self.report.evaluation.complete {
             return Err(invalid());
         }
-        let cell = (row, field, rule);
+        let cell = (row, field, rule, subject);
         if let Some(old) = self.cells.get(&cell) {
             return if *old == classification {
                 Ok(())
@@ -210,12 +234,9 @@ impl LossLedger {
         if self.cells.len() >= self.max_cells {
             return Err(limit());
         }
-        if !self
-            .report
-            .risk
-            .iter()
-            .any(|r| (r.field_id, r.rule_id) == (field, rule))
-        {
+        if !self.report.risk.iter().any(|r| {
+            (r.field_id, r.rule_id, r.subject.as_ref().map(|s| s.index)) == (field, rule, subject)
+        }) {
             return Err(invalid());
         }
         let (basis, changes) = match classification {
@@ -226,19 +247,21 @@ impl LossLedger {
         if !rule.bases().contains(&basis) {
             return Err(invalid());
         }
-        if let Some(entry) = self
-            .report
-            .evaluation
-            .entries
-            .iter_mut()
-            .find(|r| (r.field_id, r.rule_id, r.basis) == (field, rule, basis))
+        if let Some(entry) =
+            self.report.evaluation.entries.iter_mut().find(|r| {
+                (r.field_id, r.rule_id, r.basis, r.subject) == (field, rule, basis, subject)
+            })
         {
+            if subject.is_some() {
+                return Err(invalid());
+            }
             let checked = entry.checked.checked_add(1).ok_or_else(limit)?;
             let total_changes = entry.would_change.checked_add(changes).ok_or_else(limit)?;
             entry.checked = checked;
             entry.would_change = total_changes;
         } else {
             self.report.evaluation.entries.push(EvaluationEntry {
+                subject,
                 field_id: field,
                 rule_id: rule,
                 basis,
@@ -253,10 +276,10 @@ impl LossLedger {
     fn events(&self, row: Row) -> BTreeMap<Key, u64> {
         self.cells
             .iter()
-            .filter_map(|(&(r, field, rule), c)| {
+            .filter_map(|(&(r, field, rule, subject), c)| {
                 if r == row {
                     if let Classification::WouldChange(basis) = c {
-                        return Some(((field, rule, *basis), 1));
+                        return Some(((field, rule, *basis, subject), 1));
                     }
                 }
                 None
@@ -404,14 +427,13 @@ impl LossLedger {
     }
     fn publish(&mut self, uncertain: bool) -> Result<()> {
         let mut entries = self.report.effective.clone();
-        for (&(field_id, rule_id, basis), &count) in &self.pending {
+        for (&(field_id, rule_id, basis, subject), &count) in &self.pending {
             if count == 0 {
                 continue;
             }
-            if let Some(entry) = entries
-                .iter_mut()
-                .find(|e| (e.field_id, e.rule_id, e.basis) == (field_id, rule_id, basis))
-            {
+            if let Some(entry) = entries.iter_mut().find(|e| {
+                (e.field_id, e.rule_id, e.basis, e.subject) == (field_id, rule_id, basis, subject)
+            }) {
                 let target = if uncertain {
                     &mut entry.uncertain
                 } else {
@@ -420,6 +442,7 @@ impl LossLedger {
                 *target = target.checked_add(count).ok_or_else(limit)?;
             } else {
                 entries.push(EffectiveEntry {
+                    subject,
                     field_id,
                     rule_id,
                     category: rule_id.definition().category,

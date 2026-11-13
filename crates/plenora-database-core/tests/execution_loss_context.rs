@@ -10,6 +10,7 @@ use plenora_database_core::ErrorCategory;
 
 fn rule(field_id: u32) -> RuleInstance {
     RuleInstance {
+        subject: None,
         field_id,
         rule_id: RuleId::MysqlNegativeZero,
         parameters: RuleParameters::default(),
@@ -38,6 +39,95 @@ fn context(consent: LossConsent, budget: &ResourceBudget) -> ExecutionLossContex
 }
 const fn changed() -> Classification {
     Classification::WouldChange(Basis::Exact)
+}
+
+#[test]
+fn metadata_subjects_use_actual_consent_and_transaction_accounting() {
+    use plenora_database_core::metadata_subject::{
+        MetadataHop, MetadataReason, MetadataScope, MetadataSubject,
+    };
+    let rules: Vec<_> = (0..2)
+        .map(|index| RuleInstance {
+            subject: Some(MetadataSubject {
+                index,
+                scope: MetadataScope::Field,
+                field_identity: Some("42".to_owned()),
+                property: "native_metadata".to_owned(),
+                key_sha256: format!("{index:064x}"),
+                hop: MetadataHop::ColumnComment,
+                reason: MetadataReason::ColumnLimit,
+            }),
+            field_id: 0,
+            rule_id: RuleId::PgMetadataKeyNotPreserved,
+            parameters: RuleParameters::default(),
+            source_type: None,
+            target_type: None,
+        })
+        .collect();
+    for (policy, consent, allowed) in [
+        (MappingPolicy::Strict, LossConsent::Accept, false),
+        (MappingPolicy::Compatible, LossConsent::Deny, false),
+        (MappingPolicy::Compatible, LossConsent::Accept, true),
+    ] {
+        let resource_budget = budget(1_000_000);
+        let mut c = ExecutionLossContext::new(
+            ProviderKind::Postgres,
+            policy,
+            consent,
+            rules.clone(),
+            &resource_budget,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(c.ledger.report().schema_version, 4);
+        assert!(c.ledger.report().evaluation.entries.is_empty());
+        let before = resource_budget.remaining(ResourceKind::MemoryBytes);
+        c.begin_metadata_batch(1000).unwrap();
+        let remaining = resource_budget.remaining(ResourceKind::MemoryBytes);
+        assert!(
+            remaining < before,
+            "PostgreSQL metadata reserves its compiled subjects"
+        );
+        assert!(
+            remaining > before - 10_000,
+            "sparse metadata is not a Cartesian product"
+        );
+        c.track(0, 0, 0).unwrap();
+        // Risk alone never requests consent. An unchanged key is exact.
+        c.observe_metadata(0, 0, 0, Classification::Exact(Basis::Exact))
+            .unwrap();
+        assert_eq!(c.observe_metadata(0, 0, 1, changed()).is_ok(), allowed);
+        let evaluated = c.ledger.report();
+        assert_eq!(evaluated.evaluation.entries.len(), 2);
+        assert!(evaluated.effective.is_empty());
+        if allowed {
+            c.sent(0).unwrap();
+            c.attributed(0, |_| true).unwrap();
+            c.prepare_commit(true).unwrap();
+            assert_eq!(c.confirmed.effective.len(), 1);
+            assert_eq!(c.confirmed.effective[0].subject, Some(1));
+            assert_eq!(c.confirmed.effective[0].committed, 1);
+            c.confirmed.validate().unwrap();
+            let mut empty_outcome: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../contracts/v2/examples/outcome-v3-loss.json"
+            ))
+            .unwrap();
+            empty_outcome["provider"] = serde_json::json!("postgres");
+            for value in empty_outcome["rows"].as_object_mut().unwrap().values_mut() {
+                *value = serde_json::json!(0);
+            }
+            empty_outcome["loss_report"] = serde_json::to_value(&c.confirmed).unwrap();
+            let outcome: plenora_database_core::outcome::WriteOutcome =
+                serde_json::from_value(empty_outcome).unwrap();
+            outcome.validate().unwrap();
+            let mut uncertain = c.ledger.clone();
+            uncertain.uncertain().unwrap();
+            assert_eq!(uncertain.report().effective[0].uncertain, 1);
+        }
+        c.ledger.rollback();
+        assert!(c.ledger.report().effective.is_empty());
+        c.ledger.report().validate().unwrap();
+    }
 }
 
 #[test]

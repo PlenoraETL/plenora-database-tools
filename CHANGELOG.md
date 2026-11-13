@@ -24,12 +24,22 @@ riassumono le note di quelle release.
   viene conservato anche negli errori. Gli stream Python espongono
   `stream_state` e gli adattatori `ArrowStreamReader`/`AsyncArrowStreamReader`
   mantengono gli errori strutturati senza interpretare il testo di ArrowInvalid.
-- Limiti del nuovo codec: 1 MiB per blocco serializzato e 16 MiB per operazione.
-  **Implementazione ancora in qualifica:** il superamento attualmente rifiuta
-  anche con consenso; manca la selezione puntuale delle chiavi sacrificabili.
-  L'adozione di colonne geometriche legacy popolate rifiuta finche il contratto
-  dei dati esistenti non e attestabile. Questi limiti non costituiscono una
-  chiusura della qualifica cross-component.
+- DB-a / B-07: il piano delle 15 proprieta governa conservazione, verifiche,
+  proiezioni e regole. I metadati opzionali oltre 1 MiB per colonna o 16 MiB
+  per operazione vengono omessi come chiavi intere, con localizzazione redatta
+  (scope, campo, proprieta, digest della chiave, motivo e hop). Strict rifiuta
+  prima degli effetti; il consenso 10.0.0 viene verificato sul valore realmente
+  perso, senza autorizzare sulla sola previsione. ID e vincoli GEO-009 restano
+  non sacrificabili; NUL, contratto incoerente e impossibilita di rappresentare
+  anche il rapporto rifiutano. Profondita massima JSON del protocollo: 16.
+- Il rapporto esecutivo con soggetti metadata usa la versione 4; i rapporti
+  dei soli valori mantengono la versione 3. Le omissioni persistite usano
+  `read_loss` v2, anche su tabelle vuote; le letture senza omissioni puntuali
+  mantengono v1. Il dry run PostgreSQL espone `execution_loss` con valutazione
+  e senza perdite effettive. Queste aggiunte e i nuovi campi/varianti Rust
+  appartengono alla major 11.0.0. Regola A e comportamento strict dei valori
+  restano invariati. La matrice completa delle superfici e B-13 sono un passo
+  separato della qualifica, non attestato dalle prove offline del codec.
 
 - Apertura del percorso MySQL non-strict con consenso per valore comune a
   Rust (`LossConsent`), CLI (`--accept-loss`), Python sync/async

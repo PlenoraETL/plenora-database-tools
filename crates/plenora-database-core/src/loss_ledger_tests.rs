@@ -51,6 +51,7 @@ fn checked_overflow_is_atomic_and_rolls_back_without_erasing_evaluation() {
     let mut ledger = LossLedger::new(report, 16384, 10).unwrap();
     ledger.begin_batch(0).unwrap();
     ledger.report.evaluation.entries.push(EvaluationEntry {
+        subject: None,
         field_id: 0,
         rule_id: RuleId::StoreEvery,
         basis: Basis::Conservative,

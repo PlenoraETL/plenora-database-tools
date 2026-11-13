@@ -29,6 +29,7 @@ pub mod limits;
 pub mod loss;
 pub mod loss_ledger;
 pub mod loss_registry;
+pub mod metadata_subject;
 pub mod metrics_recorder;
 pub mod native_query_policy;
 pub mod operand_admission;

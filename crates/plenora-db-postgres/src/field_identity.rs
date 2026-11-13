@@ -8,10 +8,11 @@ use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use tokio_postgres::{Client, Transaction};
 
-const COLUMN_COMMENT: &str = "SELECT pg_catalog.col_description(a.attrelid, a.attnum) \
+const COLUMN_COMMENTS: &str =
+    "SELECT a.attname::pg_catalog.text, pg_catalog.col_description(a.attrelid, a.attnum) \
      FROM pg_catalog.pg_attribute a \
-     WHERE a.attrelid = $1::pg_catalog.text::pg_catalog.regclass AND a.attname = $2 \
-     AND a.attnum > 0 AND NOT a.attisdropped";
+     WHERE a.attrelid = $1::pg_catalog.text::pg_catalog.regclass \
+     AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum";
 
 /// La prima riga e riservata; il resto del commento resta byte per byte.
 /// Un'intestazione riservata corrotta non diventa un nuovo id di provenienza.
@@ -67,47 +68,70 @@ fn registration(comment: Option<&str>, incoming: &str) -> Result<Option<String>>
     )))
 }
 
+/// Plans every final comment before DDL. The executor already holds the table lock;
+/// dry run uses the same routine without claiming a locked snapshot.
+pub async fn prepare<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    plan: &crate::geometry_properties::SchemaPlan,
+) -> Result<Vec<crate::geometry_properties::Registration>> {
+    if operation.mode == WriteMode::DeleteByKeys {
+        return Ok(Vec::new());
+    }
+    let target = quoted_target(&renderer(), operation)?;
+    let comments: Vec<(String, Option<String>)> = if operation.mode == WriteMode::Create {
+        Vec::new()
+    } else {
+        client
+            .query(COLUMN_COMMENTS, &[&target])
+            .await
+            .map_err(|error| classify_error(ErrorPhase::Write, &error))?
+            .iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect()
+    };
+    for field in schema.fields() {
+        if let Some((_, comment)) = comments.iter().find(|(name, _)| name == field.name()) {
+            check_legacy_adoption(client, operation, field, &target, comment.as_deref()).await?;
+        }
+    }
+    plan.registrations(schema, &comments)
+}
+
 pub async fn register(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
-    schema: &SchemaRef,
+    registrations: &[crate::geometry_properties::Registration],
+    evaluation: &mut crate::write::effective::Evaluation,
 ) -> Result<()> {
-    if operation.mode == WriteMode::DeleteByKeys {
-        return Ok(());
-    }
     let renderer = renderer();
     let target = quoted_target(&renderer, operation)?;
-    // Serializza registrazione e confronto anche fra append concorrenti.
-    transaction
-        .batch_execute(&format!("LOCK TABLE {target} IN SHARE ROW EXCLUSIVE MODE"))
-        .await
-        .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-    for field in schema.fields() {
-        let row = transaction
-            .query_one(COLUMN_COMMENT, &[&target, field.name()])
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-        let comment: Option<String> = row.get(0);
-        check_legacy_adoption(transaction, operation, field, &target, comment.as_deref()).await?;
-        if let Some(updated) = crate::column_metadata::plan_registration(
-            comment.as_deref(),
-            &crate::column_metadata::ColumnMetadata::plan(field, schema)?,
-        )? {
-            // COMMENT non accetta bind: il server quota il valore con le proprie
-            // regole, incluse le impostazioni sulle stringhe e i backslash.
+    for registration in registrations {
+        if let Some(updated) = &registration.comment {
+            // COMMENT cannot bind: quote the value on the server, identifiers in the renderer.
             let literal: String = transaction
                 .query_one(
                     "SELECT pg_catalog.quote_literal($1::pg_catalog.text)",
-                    &[&updated],
+                    &[updated],
                 )
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?
                 .get(0);
-            let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?)?;
+            let column =
+                renderer.quote_identifier(&Identifier::new(registration.column.clone())?)?;
+            if let Some(position) = registration.input_position {
+                evaluation.sent(position)?;
+            }
             transaction
                 .batch_execute(&format!("COMMENT ON COLUMN {target}.{column} IS {literal}"))
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+        } else if let Some(position) = registration.input_position {
+            evaluation.sent(position)?;
+        }
+        if let Some(position) = registration.input_position {
+            evaluation.applied(position, 1)?;
         }
     }
     Ok(())
@@ -130,6 +154,7 @@ pub async fn check(
     schema: &SchemaRef,
     may_lock: bool,
     owner: bool,
+    plan: &crate::geometry_properties::SchemaPlan,
 ) -> Result<()> {
     if operation.mode == WriteMode::DeleteByKeys {
         return Ok(());
@@ -145,30 +170,11 @@ pub async fn check(
     if !may_lock {
         return Err(denied());
     }
-    let target = quoted_target(&renderer(), operation)?;
-    for field in schema.fields() {
-        // Create fabbrica la tabella: nessuna colonna ha ancora un commento.
-        // Una colonna che l'evoluzione dello schema aggiungerebbe, neppure.
-        let comment: Option<String> = if operation.mode == WriteMode::Create {
-            None
-        } else {
-            client
-                .query_opt(COLUMN_COMMENT, &[&target, field.name()])
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error))?
-                .and_then(|row| row.get(0))
-        };
-        check_legacy_adoption(client, operation, field, &target, comment.as_deref()).await?;
-        if crate::column_metadata::plan_registration(
-            comment.as_deref(),
-            &crate::column_metadata::ColumnMetadata::plan(field, schema)?,
-        )?
-        .is_some()
-            && !owner
-        {
-            return Err(denied());
-        }
+    let registrations = prepare(client, operation, schema, plan).await?;
+    if !owner && registrations.iter().any(|r| r.comment.is_some()) {
+        return Err(denied());
     }
+
     Ok(())
 }
 

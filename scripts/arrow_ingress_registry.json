@@ -1142,14 +1142,8 @@
     "crates/plenora-db-postgres/src/field_identity.rs::check#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "2b0cc2dde03e5966dfc7c799e2537796550a15cfbd7690a996925f85595f0b9c",
-      "signature": "pub async fn check( client: &Client, operation: &WriteOperation, schema: &SchemaRef, may_lock: bool, owner: bool, ) -> Result<()>"
-    },
-    "crates/plenora-db-postgres/src/field_identity.rs::register#1": {
-      "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "d34c1329b21aa59795aac3f56fcf447e6e805132e11c5536bd0f049ce58496dd",
-      "signature": "pub async fn register( transaction: &Transaction<'_>, operation: &WriteOperation, schema: &SchemaRef, ) -> Result<()>"
+      "review_sha256": "898795de5559c6f4fceebc9c752615334dfda4cdc21f3d9775f7017fcbeae67b",
+      "signature": "pub async fn check( client: &Client, operation: &WriteOperation, schema: &SchemaRef, may_lock: bool, owner: bool, plan: &crate::geometry_properties::SchemaPlan, ) -> Result<()>"
     },
     "crates/plenora-db-postgres/src/lib.rs::compile_write_plan#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1171,8 +1165,8 @@
     "crates/plenora-db-postgres/src/preflight.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Preflight PostgreSQL riceve solo SchemaRef; produce regole/rapporto/catalog token, senza celle Arrow.",
-      "review_sha256": "6fdb4e7ba5a37c908bc9a06cfd9715ac4070e0241971820bd5ecb5f94fac5067",
-      "signature": "pub async fn write( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, input_schema: &SchemaRef, ) -> Result<( LossReport, Vec<ColumnRewrites>, Vec<RuleInstance>, Option<crate::catalog::CatalogSchemaToken>, )>"
+      "review_sha256": "4937cb66a00d4840e9b26c816a217a6585cb36174d553e7c58bd5bf45515c30c",
+      "signature": "pub async fn write( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, input_schema: &SchemaRef, metadata_plan: &crate::geometry_properties::SchemaPlan, ) -> Result<( LossReport, Vec<ColumnRewrites>, Vec<RuleInstance>, Option<crate::catalog::CatalogSchemaToken>, )>"
     },
     "crates/plenora-db-postgres/src/query_execution.rs::query_stream#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1213,7 +1207,7 @@
     "crates/plenora-db-postgres/src/write.rs::assign_dry_run_session_rules#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Legge schema e catalogo; offline select_leaf_rules registra solo tipi dichiarati senza attribuire fatti al catalogo. Non riceve buffer di celle.",
-      "review_sha256": "ec3f8ac358f31181da17c37cc2eada26d8860352676285c1eeb05aa10ee28b99",
+      "review_sha256": "6c68dfe8603da8d432ebda6b73867a9f3e66b1a826385a4b9704df8255cec087",
       "signature": "pub async fn assign_dry_run_session_rules( client: Option<&tokio_postgres::Client>, state: &mut PreparedPostgresWrite, operation: &WriteOperation, schema: &SchemaRef, ) -> Result<()>"
     },
     "crates/plenora-db-postgres/src/write.rs::execute#1": {
@@ -1235,7 +1229,7 @@
     "crates/plenora-db-postgres/src/write.rs::prepare_state#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "prepare_state compila SchemaRef e operazione in piani, loss_instances e snapshot; nessun buffer di celle.",
-      "review_sha256": "fcaa1a5cb279ed513c3577d0ead9e10fa9c3afbdc791a18e954b37df42eecb79",
+      "review_sha256": "6e47a9618be5e5ea5a928b01d91167e526f66195df257b04d3340050c3daf65a",
       "signature": "pub fn prepare_state( schema: &SchemaRef, operation: &WriteOperation, ) -> Result<PreparedPostgresWrite>"
     },
     "crates/plenora-db-postgres/src/write/admission.rs::apply#1": {
@@ -1253,7 +1247,7 @@
     "crates/plenora-db-postgres/src/write/admission.rs::preflight#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "e93c36a0a389be17d875bfee7af2cf6cc1047d0a7af94296ad0c34fc9868d0af",
+      "review_sha256": "ee16764aea0d9f264cb16671cd4c057bc3aa2b6d4aff7451fe4b30b79c081049",
       "signature": "pub async fn preflight( client: &tokio_postgres::Client, operation: &WriteOperation, schema: &SchemaRef, ) -> Result<Vec<ColumnRewrites>>"
     },
     "crates/plenora-db-postgres/src/write/admission.rs::target_keys#1": {
@@ -7958,7 +7952,7 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Opera su schema, tipi, configurazione o risultati di probe; non riceve buffer Arrow esterni. I metodi di ValidatedWriteArray usano il valore gia validato dal costruttore classificato.",
       "signature": "pub(super) fn compile(field: &Field) -> Result<Self>",
-      "review_sha256": "a1ef42af80b93989423a7d00857d4e5d8e21f77f61efbd27f12e35def8ceb332"
+      "review_sha256": "57856618d71533eab06e1b5c7ce0d29032cc9603fb26c7539863afb2388c86f8"
     },
     "crates/plenora-db-sqlserver/src/types.rs::from_create_field#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8792,7 +8786,7 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Prepara schema, ammissione e rapporto PostgreSQL; nessun buffer di celle, nuovo execution_loss composto da metadati.",
       "signature": "fn prepare_write<'a>( &'a self, secret: &'a SecretString, operation: &'a WriteOperation, input_schema: SchemaRef, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, PreparedWrite>",
-      "review_sha256": "9468893631a1938d388320bf2f4f08a18234a8a6bec291ba8e28b401869e4cae"
+      "review_sha256": "23a0975bcaa73bb0b997c76447c186dae85d9554a886119a01a92ff7f6dba4d3"
     },
     "crates/plenora-db-postgres/src/lib.rs::write#1": {
       "classification": "ingresso guardato",
@@ -9523,7 +9517,7 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Test cfg(test, windows) dei filtri warning e outcome JSON: verifica commit esatto/conservativo, rischio senza commit, esito incerto e commit parziale; nessun ingresso Arrow operativo.",
       "signature": "fn warning_filters_preserve_the_committed_outcome()",
-      "review_sha256": "5f81c5745aa04d5f0c35ccc02dfbef6dfdde522c8ee3271b3e05eb5d149eaade"
+      "review_sha256": "948fc0c4254cc09b3376531c5faed8b1b5ff86e4ecc84a02b3009bec1ba615af"
     },
     "crates/plenora-db-postgres/src/effective_loss_live_tests.rs::next_batch#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9540,14 +9534,14 @@
     "crates/plenora-db-postgres/src/write/effective.rs::batch#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Evaluation e confinato nel modulo write privato PostgreSQL. batch riceve gli originali dopo validated_batch e controllo schema in execute_inner o PostgresRowWriter::locate; nessun ingresso pubblico indipendente.",
-      "signature": "pub fn batch( &mut self, batch: &RecordBatch, plans: &[WriteColumnPlan], operation: &WriteOperation, ) -> Result<bool>",
-      "review_sha256": "55268772105d70427dee1d792d2b15f90d57760884d67997f1933dc596a62c3b"
+      "signature": "pub(super) fn batch( &mut self, batch: &RecordBatch, plans: &[WriteColumnPlan], operation: &WriteOperation, ) -> Result<bool>",
+      "review_sha256": "f9eb2b90c433bdcdd79e5edcb749823139eefc3ca83da9dd5ff2da83f5d05879"
     },
     "crates/plenora-db-postgres/src/write/effective.rs::classify#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Classificatore pub(super) nel modulo effective privato PostgreSQL: chiamato da Evaluation::batch e canonical::check dopo la validazione del consumer; i richiami nei test usano array costruiti localmente.",
       "signature": "pub(super) fn classify( rule: RuleId, plan: &WriteColumnPlan, array: &dyn Array, row: usize, ) -> Result<Classification>",
-      "review_sha256": "fa549c1231aed15cc9263fbab272a80902813037ce7db97c8f9aaef568f082f9"
+      "review_sha256": "aa91c95105a42a1251cc15ad07db765c790fbfe672039c420e502fe103f8d14e"
     },
     "crates/plenora-db-sqlserver/src/effective_loss_live_tests.rs::next_batch#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9582,7 +9576,7 @@
       ],
       "proof": "static: catena verify/bulk/row_scoped revisionata e fissata in support_sources; test dry_run_reuses_writer_classification_for_every_policy_path_and_consent verifica il rapporto. Prove live distinte dai test offline.",
       "signature": "pub async fn verify_input_with_consent( state: &PreparedPostgresWrite, operation: &WriteOperation, input: &mut dyn BatchStream, budget: &ResourceBudget, cancellation: &CancellationToken, limits: InputLimits, gate: StatementGate, consent: plenora_database_core::loss::LossConsent, ) -> Result<VerifiedInput>",
-      "review_sha256": "b2e5be37b5cbc2bd8317372a4f0c06fcc3cf0519cee4649a8ed82aa61460ed52"
+      "review_sha256": "09cfbc86e30979253a70692521ef587cac32496ce8ffdb32a571ff81bf1b8ce1"
     },
     "crates/plenora-db-postgres/src/lib.rs::dry_run_write_with_consent#1": {
       "classification": "ingresso guardato",
@@ -9593,7 +9587,7 @@
       ],
       "proof": "static: catena verify/bulk/row_scoped revisionata e fissata in support_sources; test dry_run_reuses_writer_classification_for_every_policy_path_and_consent verifica il rapporto. Prove live distinte dai test offline.",
       "signature": "pub async fn dry_run_write_with_consent( &self, secret: Option<&SecretString>, operation: &WriteOperation, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> Result<PostgresWriteDryRun>",
-      "review_sha256": "f33ff65abc6ae3b9643d6718fa9431d8eee0429cae6d9328329ed693c27c830b"
+      "review_sha256": "9f887cd7f27dd77441e955f45de446f7b742883a9c49dfbd6948a092e6f84a15"
     },
     "crates/plenora-db-postgres/src/write/dry_run_tests.rs::next_batch#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9685,7 +9679,7 @@
     "crates/plenora-db-mysql/src/loss_codec.rs::new#2": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Costruttore/risolutore legge solo DataType, schema e metadati del piano; nessuna cella Arrow.",
-      "review_sha256": "9f50efd412f823115faa5af82b263d35628ef8c82a3b1431acc4e14faebee09c",
+      "review_sha256": "63ade693236b1331804a31691a6824314fa973b7d6357a9454de90eddaf7f957",
       "signature": "pub(crate) fn new( provider: ProviderKind, field_id: u32, arrow: DataType, native: &str, rewrite: StoreRewrite, ) -> Result<Self>"
     },
     "crates/plenora-db-mysql/src/loss_execution.rs::new#1": {
@@ -9733,7 +9727,7 @@
     "crates/plenora-database-py/src/write_loss_tests.rs::mysql_surface_vectors_warning_and_error_parity#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Test P6: fixture interna di rapporti o batch costruiti dal test, senza buffer Arrow esterni. Rilettura indipendente delle catene produttive separata.",
-      "review_sha256": "af7dda9c6a2959e9364935b2fe3296dbc4e3beb7e6b757af2071309ccffab9c8",
+      "review_sha256": "ffa3ad33db386c6cece533553aee6bacd5546ce045fd459924a5048b68c723d6",
       "signature": "fn mysql_surface_vectors_warning_and_error_parity()"
     },
     "crates/plenora-db-mysql/src/live_tests.rs::open_write_input#1": {
@@ -9925,14 +9919,8 @@
     "crates/plenora-db-postgres/src/column_metadata.rs::plan#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "7f547b22933c356730d96ede43f9e86bcc92662d5e7835f2cef96b00051992eb",
+      "review_sha256": "4c3d431a108c27c2b6e2e7c8b25d6ca11e3e7e31202f2528539b374835864e8d",
       "signature": "pub fn plan(field: &Field, schema: &Schema) -> Result<Self>"
-    },
-    "crates/plenora-db-postgres/src/column_metadata.rs::plan_schema#1": {
-      "classification": "non riceve dati Arrow esterni",
-      "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "0dd401ed4b86712a1f0b1c350597193265db42ed9d98af566dc8eae054021a5e",
-      "signature": "pub fn plan_schema(schema: &Schema) -> Result<()>"
     },
     "crates/plenora-db-postgres/src/column_metadata_tests.rs::fixture_field#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9943,13 +9931,13 @@
     "crates/plenora-db-postgres/src/geometry_properties.rs::read_schema#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "0cec75b9c293a621e8a3b8134ac04821a2d901788f59a177e90fd9e78e8d432e",
+      "review_sha256": "8d18264c83d46af268b9bbd0774b3de1bcdbda75453f9191caae03ef887f3f4b",
       "signature": "pub fn read_schema(columns: &[crate::types::ColumnSpec]) -> Result<arrow_schema::SchemaRef>"
     },
     "crates/plenora-db-postgres/src/geometry_properties.rs::representation_rules#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Controllo di stato, schema o metadati; non acquisisce buffer di celle esterni.",
-      "review_sha256": "7df0f5a80df916d110aa4ede3e4ebb00d606934a09094b598df171a2d3b2ab28",
+      "review_sha256": "74a9c6c52b1e845321437dbc072776bd6f2ab737bc61c2ada28a94bfd365ae59",
       "signature": "pub fn representation_rules( schema: &arrow_schema::Schema, ) -> Result<Vec<plenora_database_core::loss_registry::RuleInstance>>"
     },
     "crates/plenora-db-postgres/src/geometry_qualification_live_tests.rs::schema#1": {
@@ -9979,7 +9967,7 @@
     "crates/plenora-db-postgres/src/write/prevalidate.rs::input#1": {
       "classification": "ingresso guardato",
       "reason": "Lo stream viene validato prima del buffer; schema, valori geometrici e riserve sono controllati prima degli effetti.",
-      "review_sha256": "41897e1eaa31a18101f5ad96964e03a215a1ae401051c4e51c536aa8d422eff4",
+      "review_sha256": "b5abbe61bad9935ce38f04ac49b2c73f6c44d2edd774f1e1ce0e9a46d8420ad4",
       "signature": "pub(super) async fn input( mut source: Box<dyn BatchStream>, plans: &[WriteColumnPlan], budget: &ResourceBudget, cancellation: &CancellationToken, max_batch_bytes: u64, max_cell_bytes: u64, ) -> Result<Box<dyn BatchStream>>",
       "required": [
         "validated_batch",
@@ -10001,11 +9989,65 @@
       "review_sha256": "b4f32c2a122f4cb24aaa4884fe28be3fe950589109440e552491e0e65502fe05",
       "signature": "fn close_before_eof_is_interruption_and_eof_remains_complete()"
     },
-    "crates/plenora-db-postgres/src/column_metadata.rs::declaration#1": {
+    "crates/plenora-db-postgres/src/geometry_metadata_plan.rs::compile#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Test dello stato posseduto, oppure pianificazione della sola dichiarazione di schema; nessun buffer esterno consumato.",
+      "reason": "DB-a: pianificazione/compatibilita dei soli metadati di schema e campo; nessun buffer array viene dereferenziato. Le decisioni di conservazione e perdita appartengono al registro geometrico.",
+      "required": [],
+      "review_sha256": "c09bbcb27c04cbc0539f00ffc3002690f05f52d979a6bde7c348cdf5dd0c0efc",
+      "signature": "pub fn compile(schema: &Schema) -> Result<Self>"
+    },
+    "crates/plenora-db-postgres/src/geometry_properties.rs::validate_resolved_crs_against_postgis#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-a: pianificazione/compatibilita dei soli metadati di schema e campo; nessun buffer array viene dereferenziato. Le decisioni di conservazione e perdita appartengono al registro geometrico.",
+      "required": [],
+      "review_sha256": "f0906522308d706af41bf0442390b37da7475c834ab0aee8cd2871a1d25da10f",
+      "signature": "pub async fn validate_resolved_crs_against_postgis( client: &PooledClient, input_schema: &SchemaRef, ) -> Result<()>"
+    },
+    "crates/plenora-db-postgres/src/geometry_properties.rs::declaration#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-a: pianificazione/compatibilita dei soli metadati di schema e campo; nessun buffer array viene dereferenziato. Le decisioni di conservazione e perdita appartengono al registro geometrico.",
+      "required": [],
       "review_sha256": "04a744afe54dc249a8f0c60ccfae0c9d387390dce96f5a928ec17c70ab43904b",
       "signature": "pub fn declaration(field: &Field) -> Result<String>"
+    },
+    "crates/plenora-db-postgres/src/geometry_properties.rs::plan#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-a: pianificazione/compatibilita dei soli metadati di schema e campo; nessun buffer array viene dereferenziato. Le decisioni di conservazione e perdita appartengono al registro geometrico.",
+      "required": [],
+      "review_sha256": "a297413a1df0bdc1939159152f16a5475ac0b21a984aab3e34b4577de60c0c0a",
+      "signature": "pub fn plan(field: &Field) -> Result<Option<Self>>"
+    },
+    "crates/plenora-db-postgres/src/geometry_properties.rs::target_rules#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-a: pianificazione/compatibilita dei soli metadati di schema e campo; nessun buffer array viene dereferenziato. Le decisioni di conservazione e perdita appartengono al registro geometrico.",
+      "required": [],
+      "review_sha256": "51bdc920e9e850bf607eb783fccb3645bacbbfdd3b38ae58bd0a42904bdddb2f",
+      "signature": "pub fn target_rules( source: &Field, target_field: &Field, field_id: u32, policy: MappingPolicy, ) -> Result<Vec<plenora_database_core::loss_registry::RuleInstance>>"
+    },
+    "crates/plenora-db-postgres/src/write/effective.rs::metadata#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "DB-a: pianificazione/compatibilita dei soli metadati di schema e campo; nessun buffer array viene dereferenziato. Le decisioni di conservazione e perdita appartengono al registro geometrico.",
+      "required": [],
+      "review_sha256": "3b2dd070c64bc16b8aab580975538ebcde1b3ebbdc5481b586869b712d6122cc",
+      "signature": "pub fn metadata( &mut self, plan: &crate::geometry_properties::SchemaPlan, schema: &arrow_schema::Schema, operation: &WriteOperation, ) -> Result<()>"
+    },
+    "crates/plenora-db-postgres/src/field_identity.rs::prepare#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Schema e piano gia validati; legge commenti e delega le registrazioni finali al piano, senza buffer Arrow.",
+      "signature": "pub async fn prepare<C: tokio_postgres::GenericClient + Sync>( client: &C, operation: &WriteOperation, schema: &SchemaRef, plan: &crate::geometry_properties::SchemaPlan, ) -> Result<Vec<crate::geometry_properties::Registration>>",
+      "review_sha256": "106eea49b021a5d6bd652ae035a70d00fc99185d8cdad2813cd17d7b1a5426d7"
+    },
+    "crates/plenora-db-postgres/src/geometry_metadata_plan.rs::registrations#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Unisce lo schema al catalogo validato dal codec, verifica identita e limiti finali prima del DDL; nessun buffer Arrow.",
+      "signature": "pub fn registrations( &self, schema: &Schema, comments: &[(String, Option<String>)], ) -> Result<Vec<Registration>>",
+      "review_sha256": "147499557073425c02cf13cd40735348995ed870a0e3c2fb7b1e897f58a8dbe6"
+    },
+    "crates/plenora-db-postgres/src/types.rs::arrow_data_type#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Costruisce un tipo Arrow dal descrittore di catalogo, senza ricevere array o buffer.",
+      "signature": "pub fn arrow_data_type(&self) -> DataType",
+      "review_sha256": "f7891a7127c5a57564216b9b10f59ddac103a72ca704d53f8d118bcaa5c9e64b"
     }
   },
   "support_sources": {
@@ -10034,12 +10076,12 @@
       "reason": "write applica validated_input allo stream del resolver prima di prepare/write_with_consent; gli output passano da validated_batch."
     },
     "crates/plenora-db-postgres/src/write.rs": {
-      "review_sha256": "2cb2f112716bdeccb8c2e0a3ee3968113cc1bcbddd0caa2c8edd9ac3e282d85d",
+      "review_sha256": "d3bee9cde55569af0b7d783d9401841bb3de9b913049f91ae6cb88dd3383dd07",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-postgres/src/write/dry_run.rs": {
       "reason": "verify e row_scoped usano validated_batch prima del controllo schema, risorse, Evaluation::batch e codec. I rifiuti conservano ledger.report con effective vuoto e remote_effect None; consenso non aggira validazione o limiti.",
-      "review_sha256": "1820b25f84aa23556118aaf3b32b276ef0206b43ba67a7355a3b912f27fb813f"
+      "review_sha256": "98e6d6dbcddafb98f8eb46af10dfc0f02e5833b8b0091f6e72d569cc4eee4010"
     },
     "crates/plenora-db-postgres/src/write/row_diagnostics.rs": {
       "review_sha256": "66271cdba811de9a955e5289f13e4f0bf551f14511991e141a7c78367eb384ee",
@@ -10143,7 +10185,7 @@
     },
     "crates/plenora-db-postgres/src/lib.rs": {
       "reason": "Dry run Deny delega alla variante con consenso: preparazione, guardia chiavi e verify_input_with_consent; nessun fetch non validato. Il fallback dopo prepare conserva il rischio senza sovrascrivere la valutazione del consumer.",
-      "review_sha256": "0c8c7a6fbd9403df46e9bd294b12860a38257567c453bd5b6d6461d797aeb4f6"
+      "review_sha256": "c7adcc5b6e35d38204160cce6f129d5db6d381c6814cc61cc058f8daf801193c"
     },
     "crates/plenora-database-py/src/async_session_ops.rs": {
       "review_sha256": "0761d53ca477a5cd35f53896c0f3d17830c92864b3e254f420db6637d31b2896",
@@ -10270,7 +10312,7 @@
       "reason": "Pins the standard-library Union re-export together with the reviewed spatial constructors."
     },
     "crates/plenora-db-postgres/src/write/effective.rs": {
-      "review_sha256": "52ebed2a21f7def32c79408633385962d21521175e7ca184244bb990bddfa5e7",
+      "review_sha256": "9fa5adaf8757887ac20fde7cb59e5caba553e3e8c97f895ddcf9a7a88b264f37",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-sqlserver/src/write/effective.rs": {
@@ -10286,7 +10328,7 @@
       "review_sha256": "cc135f872bf6ad3eef456a7ce2f20cfa9a1874674665ea456b85405b47fe99e4"
     },
     "crates/plenora-db-mysql/src/loss_codec.rs": {
-      "review_sha256": "7e7009add42b0a8ece284d6da7f1a643b9385df304979ac6e6da132acb932180",
+      "review_sha256": "c6bf18bef89f866145d3b0352f168b1e123213a378ecee70d746f03ffeadc41d",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/loss_execution.rs": {
@@ -10728,6 +10770,10 @@
     "crates/plenora-db-postgres/src/write.rs::reexport::pub(crate) use dry_run::{verify_input_with_consent, InputLimits, StatementGate};#1": {
       "reason": "Alias interno al crate per l orchestratore PostgresProvider: verify_input_with_consent applica la guardia dei fetch; InputLimits e StatementGate contengono configurazione, profile controlla solo piano e consenso. Nessuna API esterna o nuova ammissione Arrow.",
       "review_sha256": "af38195f190e52132fa27c6c7a52ff2c23133a07d51fd757e60661f740cf4153"
+    },
+    "crates/plenora-db-postgres/src/geometry_properties.rs::reexport::pub use metadata_plan::{Registration, SchemaPlan};#1": {
+      "review_sha256": "e8b15ee1aaa78f5c43291bc381e85312d622ce6b68b0da8d594ccb1785fb14aa",
+      "reason": "Piano immutabile e registrazioni finali del modulo privato, senza indirection di ingressi buffer."
     }
   },
   "limits": {

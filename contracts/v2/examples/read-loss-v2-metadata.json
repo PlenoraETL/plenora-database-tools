@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "status": "complete",
+  "entries": [
+    {
+      "position": 0,
+      "field_id": "42",
+      "property": "native_metadata",
+      "rule": "pg.metadata.key_not_preserved",
+      "subject": {
+        "index": 0,
+        "scope": "field",
+        "field_identity": "42",
+        "property": "native_metadata",
+        "key_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "hop": "column_comment",
+        "reason": "column_limit"
+      }
+    }
+  ]
+}

@@ -35,12 +35,14 @@ La major attiva e `contracts/v2/`, e contiene:
 - `capabilities.schema.json`
 - `common.schema.json`
 - `execution-loss-report-v3.schema.json`
+- `execution-loss-report-v4.schema.json`
 - `golden-manifest.schema.json`
 - `loss-report.schema.json`
 - `plan.schema.json`
 - `public-operation-contracts.schema.json`
 - `read-checkpoint.schema.json`
 - `read-loss-v1.schema.json`
+- `read-loss-v2.schema.json`
 - `write-outcome-v3.schema.json`
 - `write-outcome.schema.json`
 
@@ -187,7 +189,7 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 
 | provider | test Rust |
 | --- | --- |
-| PostgreSQL | 495 |
+| PostgreSQL | 505 |
 | MySQL + MariaDB | 459 |
 | SQL Server | 266 |
 | Oracle Database Free | 203 |

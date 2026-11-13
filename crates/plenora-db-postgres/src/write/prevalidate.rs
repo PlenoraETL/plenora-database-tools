@@ -47,10 +47,7 @@ pub(super) async fn input(
     max_batch_bytes: u64,
     max_cell_bytes: u64,
 ) -> Result<Box<dyn BatchStream>> {
-    if !plans
-        .iter()
-        .any(|p| p.is_spatial() && p.dimensions.as_deref() == Some("unknown"))
-    {
+    if !plans.iter().any(|p| p.needs_complete_prevalidation()) {
         return Ok(source);
     }
     let schema = source.schema();

@@ -1,0 +1,46 @@
+{
+  "schema_version": 4,
+  "policy": "compatible",
+  "risk": [
+    {
+      "field_id": 0,
+      "rule_id": "pg.metadata.key_not_preserved",
+      "category": "native_type",
+      "severity": "warning",
+      "reason": "valore metadata non conservato nel commento di colonna",
+      "subject": {
+        "index": 0,
+        "scope": "field",
+        "field_identity": "42",
+        "property": "native_metadata",
+        "key_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "hop": "column_comment",
+        "reason": "column_limit"
+      }
+    }
+  ],
+  "evaluation": {
+    "complete": true,
+    "entries": [
+      {
+        "field_id": 0,
+        "rule_id": "pg.metadata.key_not_preserved",
+        "basis": "exact",
+        "checked": 1,
+        "would_change": 1,
+        "subject": 0
+      }
+    ]
+  },
+  "effective": [
+    {
+      "field_id": 0,
+      "rule_id": "pg.metadata.key_not_preserved",
+      "category": "native_type",
+      "basis": "exact",
+      "committed": 1,
+      "uncertain": 0,
+      "subject": 0
+    }
+  ]
+}

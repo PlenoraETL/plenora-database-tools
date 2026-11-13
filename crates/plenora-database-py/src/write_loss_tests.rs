@@ -1,8 +1,13 @@
 use super::*;
 use plenora_database_core::execution_loss::{Basis, ExecutionLossReport};
 
+// Python 3.11 warning filters are process-global. Serialize the two tests
+// before acquiring the GIL so catch_warnings cannot restore another test's filter.
+static WARNING_FILTERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn mysql_surface_vectors_warning_and_error_parity() {
+    let _filters = WARNING_FILTERS.lock().expect("warning filter isolation");
     Python::initialize();
     Python::attach(|py| {
         let vectors: serde_json::Value = serde_json::from_str(include_str!(
@@ -55,6 +60,7 @@ fn mysql_surface_vectors_warning_and_error_parity() {
 
 #[test]
 fn warning_filters_preserve_the_committed_outcome() {
+    let _filters = WARNING_FILTERS.lock().expect("warning filter isolation");
     Python::initialize();
     Python::attach(|py| {
         let warnings = py.import("warnings").unwrap();

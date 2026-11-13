@@ -125,15 +125,29 @@ impl ExecutionLossContext {
         if rules != self.rule_count {
             return Err(crate::execution_loss::invalid());
         }
+        self.begin_tracked_batch(rows, rows.checked_mul(rules).ok_or_else(limit)?)
+    }
+    /// Metadata values are sparse: one cell per declared subject, not fields times rules.
+    /// # Errors
+    /// Refuses a budget overflow before observing or sending any metadata.
+    pub fn begin_metadata_batch(&mut self, fields: usize) -> Result<()> {
+        let cells = self
+            .confirmed
+            .risk
+            .iter()
+            .filter(|r| r.subject.is_some())
+            .count();
+        self.begin_tracked_batch(fields, cells)
+    }
+    fn begin_tracked_batch(&mut self, rows: usize, cells: usize) -> Result<()> {
         let cell_bytes = if self.legacy_accounting {
             192
         } else {
             CELL_BYTES
         };
         let row_bytes = if self.legacy_accounting { 0 } else { 64 };
-        let bytes = (rows as u64)
-            .checked_mul(rules as u64)
-            .and_then(|n| n.checked_mul(cell_bytes))
+        let bytes = (cells as u64)
+            .checked_mul(cell_bytes)
             .and_then(|n| n.checked_add((rows as u64).checked_mul(row_bytes)?))
             .ok_or_else(limit)?;
         let sequence = self.sequence.checked_add(1).ok_or_else(limit)?;
@@ -272,6 +286,27 @@ impl ExecutionLossContext {
             self.ledger.observe(row, field, rule, classification)?;
         }
         classification.authorize(self.policy, self.consent, key)
+    }
+    /// Checks one metadata value using the same authorization and ledger as rows.
+    /// # Errors
+    /// Refuses an unplanned key, strict loss, or missing actual-loss consent.
+    pub fn observe_metadata(
+        &mut self,
+        row: u64,
+        field: u32,
+        subject: u32,
+        classification: Classification,
+    ) -> Result<()> {
+        if classification != Classification::HardReject {
+            self.ledger.observe_metadata(
+                row,
+                field,
+                RuleId::PgMetadataKeyNotPreserved,
+                subject,
+                classification,
+            )?;
+        }
+        classification.authorize(self.policy, self.consent, false)
     }
     /// # Errors
     /// Finalizza usando la preview posseduta dal contesto.

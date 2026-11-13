@@ -1,0 +1,1386 @@
+{
+  "source": "vm-qualifica-3/qualifica-linux-20261113T123028Z/proprieta.json",
+  "sha256": "4db1549fea5a05822c1f60a5e354cbe5c69dca761e5a51fd42d4f5d45da6d2d0",
+  "cases": [
+    {
+      "index": 8,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 12,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 14,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 24,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 26,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "axes": {
+        "fixture": "multipolygon_xyzm_srid",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 32,
+      "axes": {
+        "fixture": "point_z",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 36,
+      "axes": {
+        "fixture": "point_zm",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 40,
+      "axes": {
+        "fixture": "polygon_xy_projected",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "axis_order"
+        },
+        {
+          "index": 8,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 44,
+      "axes": {
+        "fixture": "types_mixed",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "types_declaration"
+        },
+        {
+          "index": 7,
+          "property": "geometry_types"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 52,
+      "axes": {
+        "fixture": "unknown_key",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "CLI",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_definition"
+        },
+        {
+          "index": 7,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 64,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 66,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 68,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 70,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 80,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 82,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 84,
+      "axes": {
+        "fixture": "multipolygon_xyzm_srid",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 88,
+      "axes": {
+        "fixture": "point_z",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 92,
+      "axes": {
+        "fixture": "point_zm",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 96,
+      "axes": {
+        "fixture": "polygon_xy_projected",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "axis_order"
+        },
+        {
+          "index": 8,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 100,
+      "axes": {
+        "fixture": "types_mixed",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "types_declaration"
+        },
+        {
+          "index": 7,
+          "property": "geometry_types"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 108,
+      "axes": {
+        "fixture": "unknown_key",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.11",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_definition"
+        },
+        {
+          "index": 7,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 120,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 122,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 124,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 126,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 136,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 138,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 140,
+      "axes": {
+        "fixture": "multipolygon_xyzm_srid",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 144,
+      "axes": {
+        "fixture": "point_z",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 148,
+      "axes": {
+        "fixture": "point_zm",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 152,
+      "axes": {
+        "fixture": "polygon_xy_projected",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "axis_order"
+        },
+        {
+          "index": 8,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 156,
+      "axes": {
+        "fixture": "types_mixed",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "types_declaration"
+        },
+        {
+          "index": 7,
+          "property": "geometry_types"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 164,
+      "axes": {
+        "fixture": "unknown_key",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.12",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_definition"
+        },
+        {
+          "index": 7,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 176,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 178,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 180,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 182,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 192,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 194,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 196,
+      "axes": {
+        "fixture": "multipolygon_xyzm_srid",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 200,
+      "axes": {
+        "fixture": "point_z",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 204,
+      "axes": {
+        "fixture": "point_zm",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 208,
+      "axes": {
+        "fixture": "polygon_xy_projected",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "axis_order"
+        },
+        {
+          "index": 8,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 212,
+      "axes": {
+        "fixture": "types_mixed",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "types_declaration"
+        },
+        {
+          "index": 7,
+          "property": "geometry_types"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 220,
+      "axes": {
+        "fixture": "unknown_key",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Python 3.13",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_definition"
+        },
+        {
+          "index": 7,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 232,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 234,
+      "axes": {
+        "fixture": "crs_missing",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 236,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 238,
+      "axes": {
+        "fixture": "crs_unresolved",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_id"
+        },
+        {
+          "index": 7,
+          "property": "crs_resolution"
+        },
+        {
+          "index": 8,
+          "property": "crs_definition"
+        },
+        {
+          "index": 9,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 10,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 248,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 250,
+      "axes": {
+        "fixture": "int64_beyond_2_53",
+        "variante": "geoarrow_extension",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 252,
+      "axes": {
+        "fixture": "multipolygon_xyzm_srid",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 256,
+      "axes": {
+        "fixture": "point_z",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 260,
+      "axes": {
+        "fixture": "point_zm",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "axis_order"
+        },
+        {
+          "index": 7,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 264,
+      "axes": {
+        "fixture": "polygon_xy_projected",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "encoding"
+        },
+        {
+          "index": 7,
+          "property": "axis_order"
+        },
+        {
+          "index": 8,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 268,
+      "axes": {
+        "fixture": "types_mixed",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "types_declaration"
+        },
+        {
+          "index": 7,
+          "property": "geometry_types"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    },
+    {
+      "index": 276,
+      "axes": {
+        "fixture": "unknown_key",
+        "variante": "canonical_only",
+        "direzione": "io_to_data_to_database",
+        "strada": "Rust",
+        "piattaforma": "Linux"
+      },
+      "extra": [
+        {
+          "index": 6,
+          "property": "crs_definition"
+        },
+        {
+          "index": 7,
+          "property": "crs_definition_format"
+        },
+        {
+          "index": 8,
+          "property": "axis_order"
+        },
+        {
+          "index": 9,
+          "property": "native_metadata"
+        }
+      ]
+    }
+  ]
+}

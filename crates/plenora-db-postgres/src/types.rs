@@ -260,7 +260,7 @@ impl ColumnSpec {
         Field::new(&self.name, self.arrow_data_type(), self.nullable).with_metadata(metadata)
     }
 
-    fn arrow_data_type(&self) -> DataType {
+    pub fn arrow_data_type(&self) -> DataType {
         match self.kind {
             ColumnKind::Bool => DataType::Boolean,
             ColumnKind::I32 => DataType::Int32,
@@ -356,16 +356,7 @@ impl ColumnSpec {
                 format!("{quoted}::pg_catalog.text")
             }
             ColumnKind::Geometry | ColumnKind::Geography => {
-                let function = if self
-                    .arrow_metadata
-                    .as_ref()
-                    .and_then(|saved| saved.field.get(protocol::GEOMETRY_ENCODING))
-                    .is_some_and(|v| v == "wkb")
-                {
-                    "ST_AsBinary"
-                } else {
-                    "ST_AsEWKB"
-                };
+                let function = crate::geometry_properties::projection_function(self);
                 let cast = if matches!(self.kind, ColumnKind::Geography) {
                     "::geometry"
                 } else {

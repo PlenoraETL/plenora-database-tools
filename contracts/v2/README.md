@@ -90,6 +90,24 @@ senza rapporto e LossReport v2 legacy: sono descrizioni senza misura esecutiva,
 mai promosse a `effective` vuoto. Assente, null e rapporto vuoto non equivalgono.
 Il ramo legacy nello schema v3 resta intenzionalmente leggibile.
 
+La 11.0.0 aggiunge [ExecutionLossReport v4](execution-loss-report-v4.schema.json)
+quando il piano PostgreSQL contiene perdite di metadati. Ogni `subject` identifica
+ambito schema/campo, identita logica, proprieta, digest della chiave, passaggio e
+motivo; non contiene chiave opaca o valore. Evaluation ed effective riferiscono
+il suo indice. La regola `pg.metadata.key_not_preserved` confronta il valore
+originale con quello conservato: il solo rischio non richiede consenso, la
+perdita effettiva si. Strict rifiuta anche con consenso. Ogni soggetto conta al
+massimo una perdita, indipendentemente dalle righe: anche Create vuoto puo
+confermare una perdita metadata. Rollback e incertezza seguono lo stesso ledger
+delle celle. I rapporti senza soggetti restano v3.
+
+Il [read_loss v2](read-loss-v2.schema.json) ripubblica le omissioni persistite
+nel commento; le omissioni di schema replicate nelle colonne si contano una
+volta. Senza soggetti resta v1. I limiti non tagliano stringhe: il piano elimina
+solo chiavi sacrificabili, con perdita localizzata, preservando le dipendenze
+del contratto. Un contratto obbligatorio o lo storico non rappresentabile
+resta un rifiuto preventivo. Il consenso non rende rappresentabile quel caso.
+
 Gli esempi nell'[indice](examples/index.json) comprendono rischio con valori
 esatti, commit con perdita, rollback dopo rifiuto e conteggi incerti.
 Lo schema struttura i campi; il validatore semantico condiviso impone chiavi

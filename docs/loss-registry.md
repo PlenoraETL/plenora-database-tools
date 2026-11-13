@@ -14,6 +14,7 @@ Generato da `loss_registry.rs` con `scripts/render_loss_registry.py`.
 | pg.crs | Postgres | Crs | DataLoss | Conservative | Conservative | None |
 | pg.geometry.representation | Postgres | Encoding | Warning | PgGeometry | Mixed | None |
 | pg.jsonb | Postgres | NativeType | Warning | PgJson | Mixed | None |
+| pg.metadata.key_not_preserved | Postgres | NativeType | Warning | MetadataKey | Exact | None |
 | pg.missing_column | Postgres | NativeType | DataLoss | Conservative | Conservative | None |
 | pg.nullability | Postgres | Nullability | DataLoss | NoChange | NoChange | None |
 | pg.numeric | Postgres | Precision | DataLoss | PgNumeric | Mixed | None |

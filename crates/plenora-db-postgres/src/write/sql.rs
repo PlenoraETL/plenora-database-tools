@@ -240,7 +240,7 @@ pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
 fn pg_type_unqualified(contract: &FieldContract<'_>) -> Result<String> {
     crate::geometry_properties::validate_dimensions(contract)?;
     if contract.is_geometry() || contract.is_geography() {
-        return crate::column_metadata::PhysicalGeometry::declaration(contract.field);
+        return crate::geometry_properties::PhysicalGeometry::declaration(contract.field);
     }
     Ok(match contract.field.data_type() {
         DataType::Boolean => "boolean".to_owned(),

@@ -180,6 +180,7 @@
          "properties": {"status": {"const": "dry_run"}, "remote_effect": {"const": "none"},
            "evaluation": {"const": "not_performed"}, "loss_report": {"oneOf": [
              {"$ref": "https://plenora.local/database-tools/v2/execution-loss-report-v3.schema.json"},
+              {"$ref": "https://plenora.local/database-tools/v2/execution-loss-report-v4.schema.json"},
              {"$ref": "https://plenora.local/database-tools/v2/loss-report.schema.json"}]}},
          "additionalProperties": false}
       ]

@@ -170,6 +170,7 @@ fn exact_predicates_and_unknown_contexts_are_fail_closed() {
     )
     .is_err());
     let shared = RuleInstance {
+        subject: None,
         field_id: 0,
         rule_id: RuleId::StoreEvery,
         parameters: RuleParameters::default(),
@@ -180,6 +181,7 @@ fn exact_predicates_and_unknown_contexts_are_fail_closed() {
         compile_instances(ProviderKind::Mysql, MappingPolicy::Compatible, vec![shared]).is_err()
     );
     let mysql = RuleInstance {
+        subject: None,
         field_id: 0,
         rule_id: RuleId::MysqlNegativeZero,
         parameters: RuleParameters::default(),
