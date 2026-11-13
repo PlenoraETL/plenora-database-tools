@@ -15195,3 +15195,848 @@ async fn live_p3_loss_codec_hard_boundaries() {
         }
     }
 }
+
+fn p4_batch(ids: Vec<i64>, values: Vec<Option<i64>>) -> RecordBatch {
+    let schema = contract_schema(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+    ])
+    .unwrap();
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(TimestampMicrosecondArray::from(values)),
+        ],
+    )
+    .unwrap()
+}
+
+async fn p4_execute(
+    provider: &MysqlProvider,
+    table: &str,
+    mode: WriteMode,
+    policy: MappingPolicy,
+    accept: bool,
+    input: Box<dyn BatchStream>,
+    cancellation: &CancellationToken,
+) -> Result<WriteOutcome, DatabaseError> {
+    p4_execute_selected(
+        provider,
+        table,
+        mode,
+        policy,
+        accept,
+        input,
+        cancellation,
+        &[],
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn p4_execute_selected(
+    provider: &MysqlProvider,
+    table: &str,
+    mode: WriteMode,
+    policy: MappingPolicy,
+    accept: bool,
+    input: Box<dyn BatchStream>,
+    cancellation: &CancellationToken,
+    updates: &[&str],
+) -> Result<WriteOutcome, DatabaseError> {
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let mut operation = write_op_scalar(live_config().database(), table, mode);
+    if matches!(
+        mode,
+        WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+    ) {
+        operation.keys = vec!["id".into()];
+    }
+    operation.update_columns = updates.iter().map(|s| (*s).to_owned()).collect();
+    let mut prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            input.schema(),
+            &budget,
+            cancellation,
+        )
+        .await?;
+    let plan = prepared
+        .take_driver_state::<crate::write::MysqlWritePlan>()
+        .unwrap();
+    operation.mapping_policy = policy;
+    prepared.operation = operation.clone();
+    prepared.loss_report.policy = policy;
+    prepared.loss_report.losses.extend(
+        plenora_database_core::store_rewrite::RewriteGuard::new(
+            ProviderKind::Mysql,
+            &input.schema(),
+            &operation,
+            plan.rewrites().to_vec(),
+        )?
+        .losses(),
+    );
+    prepared = prepared.with_driver_state(plan);
+    crate::provider::execute_mysql_write(
+        provider,
+        &live_secret(),
+        prepared,
+        input,
+        &budget,
+        cancellation,
+        plenora_database_core::loss::LossConsent::from_accept_loss(accept),
+        true,
+    )
+    .await
+}
+
+fn p4_report(
+    result: &Result<WriteOutcome, DatabaseError>,
+) -> plenora_database_core::execution_loss::ExecutionLossReport {
+    let report = match result {
+        Ok(o) => o.loss_report.as_ref().unwrap(),
+        Err(e) => e.loss_report.as_deref().unwrap(),
+    };
+    match report {
+        plenora_database_core::execution_loss::VersionedLossReport::Execution(r) => r.clone(),
+        plenora_database_core::execution_loss::VersionedLossReport::Legacy(_) => {
+            panic!("rapporto esecutivo assente")
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+#[allow(clippy::too_many_lines)]
+async fn live_p4_executor_paths_second_batch() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    for mode in [
+        WriteMode::Append,
+        WriteMode::Replace,
+        WriteMode::Update,
+        WriteMode::Upsert,
+    ] {
+        for policy in [
+            MappingPolicy::Strict,
+            MappingPolicy::Compatible,
+            MappingPolicy::Lossy,
+            MappingPolicy::Native,
+        ] {
+            for accept in [false, true] {
+                for lossy in [false, true] {
+                    for diagnostic in [false, true] {
+                        if diagnostic && mode != WriteMode::Append {
+                            continue;
+                        }
+                        let conn = audit.connection_mut().unwrap();
+                        conn.query_drop("DROP TABLE IF EXISTS _p4_paths")
+                            .await
+                            .unwrap();
+                        conn.query_drop("CREATE TABLE _p4_paths (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB").await.unwrap();
+                        conn.query_drop("INSERT INTO _p4_paths VALUES (1,'2000-01-01')")
+                            .await
+                            .unwrap();
+                        let first_id = if matches!(mode, WriteMode::Update | WriteMode::Upsert) {
+                            1
+                        } else {
+                            3
+                        };
+                        let first = p4_batch(vec![first_id], vec![Some(946_684_800_000_000)]);
+                        let second = p4_batch(
+                            vec![4],
+                            vec![Some(946_684_800_000_000 + if lossy { 501 } else { 0 })],
+                        );
+                        let input: Box<dyn BatchStream> = if diagnostic {
+                            Box::new(BatchesStream {
+                                schema: first.schema(),
+                                batches: VecDeque::from([first, second]),
+                                declared: 2,
+                            })
+                        } else {
+                            Box::new(VecBatchStream {
+                                schema: first.schema(),
+                                batches: VecDeque::from([first, second]),
+                            })
+                        };
+                        let result = p4_execute(
+                            &provider,
+                            "_p4_paths",
+                            mode,
+                            policy,
+                            accept,
+                            input,
+                            &cancellation,
+                        )
+                        .await;
+                        let permissive = policy != MappingPolicy::Strict;
+                        let should_pass =
+                            !lossy || (permissive && (accept || mode == WriteMode::Update));
+                        assert_eq!(
+                            result.is_ok(),
+                            should_pass,
+                            "{mode:?} {policy:?} {accept} {lossy} {diagnostic}: {result:?}"
+                        );
+                        if permissive {
+                            let report = p4_report(&result);
+                            report.validate().unwrap();
+                            let changes: u64 = report
+                                .evaluation
+                                .entries
+                                .iter()
+                                .map(|e| e.would_change)
+                                .sum();
+                            assert_eq!(changes, u64::from(lossy && mode != WriteMode::Update));
+                            let committed: u64 = report.effective.iter().map(|e| e.committed).sum();
+                            assert_eq!(
+                                committed,
+                                u64::from(lossy && should_pass && mode != WriteMode::Update)
+                            );
+                        }
+                        let rows: Vec<(i64, Option<String>)> = audit.connection_mut().unwrap().query("SELECT id, DATE_FORMAT(v,'%Y-%m-%d %H:%i:%s.%f') FROM _p4_paths ORDER BY id").await.unwrap();
+                        if !should_pass {
+                            assert_eq!(rows, vec![(1, Some("2000-01-01 00:00:00.000000".into()))]);
+                        } else if mode == WriteMode::Update {
+                            assert_eq!(rows.len(), 1);
+                        } else {
+                            assert_eq!(
+                                rows.last().unwrap().1.as_deref(),
+                                Some(if lossy {
+                                    "2000-01-01 00:00:00.001000"
+                                } else {
+                                    "2000-01-01 00:00:00.000000"
+                                })
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_paths")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p4_executor_faults() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_fault")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_fault (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    let stream = FailingBatchesStream {
+        schema: batch.schema(),
+        first: Some(batch.clone()),
+    };
+    let result = p4_execute(
+        &provider,
+        "_p4_fault",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(stream),
+        &cancellation,
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(p4_report(&result).effective.is_empty());
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_fault")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 0);
+    let _delay = crate::session::DelayedCommitResponse::engage();
+    let cancel = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        cancel.cancel();
+    });
+    let stream = VecBatchStream {
+        schema: batch.schema(),
+        batches: VecDeque::from([batch]),
+    };
+    let result = p4_execute(
+        &provider,
+        "_p4_fault",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(stream),
+        &cancellation,
+    )
+    .await;
+    let report = p4_report(&result);
+    assert_eq!(report.effective[0].committed, 0);
+    assert_eq!(report.effective[0].uncertain, 1);
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_fault")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "il fault deve intercettare la risposta dopo COMMIT"
+    );
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_fault")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "benchmark seriale sulle tre major MySQL"]
+async fn live_p4_serial_benchmark() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_bench")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_bench (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let rows = 128;
+    for mode in [WriteMode::Upsert, WriteMode::Update] {
+        for policy in [MappingPolicy::Strict, MappingPolicy::Compatible] {
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DELETE FROM _p4_bench")
+                .await
+                .unwrap();
+            if mode == WriteMode::Update {
+                for id in 0..rows {
+                    audit
+                        .connection_mut()
+                        .unwrap()
+                        .exec_drop("INSERT INTO _p4_bench VALUES (?, '2000-01-01')", (id,))
+                        .await
+                        .unwrap();
+                }
+            }
+            let batch = p4_batch(
+                (0..rows).collect(),
+                vec![Some(946_684_800_000_000); usize::try_from(rows).unwrap()],
+            );
+            let input = VecBatchStream {
+                schema: batch.schema(),
+                batches: VecDeque::from([batch]),
+            };
+            let start = std::time::Instant::now();
+            p4_execute(
+                &provider,
+                "_p4_bench",
+                mode,
+                policy,
+                false,
+                Box::new(input),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+            println!("p4_benchmark mode={mode:?} policy={policy:?} rows={rows} elapsed_us={} serial_limit={}", start.elapsed().as_micros(), crate::loss_execution::SERIAL_ROW_LIMIT);
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_bench")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "fault delle frontiere stage, target e pre-commit"]
+async fn live_p4_executor_fault_boundaries() {
+    for code in [1, 2, 3, 11, 12, 13, 21, 22, 23] {
+        let cancellation = CancellationToken::new();
+        let provider = MysqlProvider::new(live_config(), 2).unwrap();
+        let mut audit = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .unwrap();
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _p4_boundary")
+            .await
+            .unwrap();
+        audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_boundary (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB").await.unwrap();
+        let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+        let input = VecBatchStream {
+            schema: batch.schema(),
+            batches: VecDeque::from([batch]),
+        };
+        let fault = crate::loss_execution::faults::Guard::engage(code);
+        let result = p4_execute(
+            &provider,
+            "_p4_boundary",
+            WriteMode::Append,
+            MappingPolicy::Compatible,
+            true,
+            Box::new(input),
+            &cancellation,
+        )
+        .await;
+        drop(fault);
+        assert!(result.is_err(), "fault {code}");
+        let report = p4_report(&result);
+        report.validate().unwrap();
+        assert_eq!(report.evaluation.entries[0].would_change, 1);
+        assert_eq!(report.effective.iter().map(|e| e.committed).sum::<u64>(), 0);
+        assert_eq!(
+            report.effective.iter().map(|e| e.uncertain).sum::<u64>(),
+            u64::from(code >= 10 && code % 10 != 1)
+        );
+        let count: u64 = audit
+            .connection_mut()
+            .unwrap()
+            .query_first("SELECT COUNT(*) FROM _p4_boundary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE _p4_boundary")
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "rami selezionati e diagnostica MySQL"]
+async fn live_p4_executor_matched_assignment_and_diagnostics() {
+    for mode in [WriteMode::Update, WriteMode::Upsert, WriteMode::Append] {
+        for accept in [false, true] {
+            let cancellation = CancellationToken::new();
+            let provider = MysqlProvider::new(live_config(), 2).unwrap();
+            let mut audit = MysqlSession::open(&live_config(), &cancellation)
+                .await
+                .unwrap();
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TABLE IF EXISTS _p4_matched")
+                .await
+                .unwrap();
+            audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_matched (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB").await.unwrap();
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("INSERT INTO _p4_matched VALUES (1,'2000-01-01 00:00:00.001')")
+                .await
+                .unwrap();
+            let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+            let input: Box<dyn BatchStream> = if mode == WriteMode::Append {
+                Box::new(BatchesStream {
+                    schema: batch.schema(),
+                    batches: VecDeque::from([batch]),
+                    declared: 1,
+                })
+            } else {
+                Box::new(VecBatchStream {
+                    schema: batch.schema(),
+                    batches: VecDeque::from([batch]),
+                })
+            };
+            let result = p4_execute(
+                &provider,
+                "_p4_matched",
+                mode,
+                MappingPolicy::Compatible,
+                accept,
+                input,
+                &cancellation,
+            )
+            .await;
+            assert_eq!(result.is_ok(), accept && mode != WriteMode::Append);
+            let report = p4_report(&result);
+            report.validate().unwrap();
+            assert_eq!(report.evaluation.entries[0].would_change, 1);
+            assert_eq!(
+                report.effective.iter().map(|e| e.committed).sum::<u64>(),
+                u64::from(accept && mode != WriteMode::Append)
+            );
+            let value: String = audit
+                .connection_mut()
+                .unwrap()
+                .query_first("SELECT DATE_FORMAT(v,'%f') FROM _p4_matched")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(value, "001000");
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TABLE _p4_matched")
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "colonne escluse e operazioni di sole chiavi"]
+async fn live_p4_executor_selection_and_keys() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_selection")
+        .await
+        .unwrap();
+    audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_selection (id BIGINT PRIMARY KEY, v DATETIME(3) NULL, w BIGINT NULL) ENGINE=InnoDB").await.unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("INSERT INTO _p4_selection VALUES (1,'2000-01-01',0)")
+        .await
+        .unwrap();
+    let schema = contract_schema(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("w", DataType::Int64, true),
+    ])
+    .unwrap();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(TimestampMicrosecondArray::from(vec![946_684_800_000_501])),
+            Arc::new(Int64Array::from(vec![2])),
+        ],
+    )
+    .unwrap();
+    let result = p4_execute_selected(
+        &provider,
+        "_p4_selection",
+        WriteMode::Update,
+        MappingPolicy::Compatible,
+        false,
+        Box::new(VecBatchStream {
+            schema,
+            batches: VecDeque::from([batch]),
+        }),
+        &cancellation,
+        &["w"],
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(p4_report(&result).evaluation.entries.is_empty());
+    let row: (String, i64) = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT DATE_FORMAT(v,'%f'), w FROM _p4_selection")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row, ("000000".into(), 2));
+    for mode in [WriteMode::Upsert, WriteMode::DeleteByKeys] {
+        let schema = contract_schema(vec![Field::new("id", DataType::Int64, false)]).unwrap();
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1, 2]))])
+                .unwrap();
+        let result = p4_execute(
+            &provider,
+            "_p4_selection",
+            mode,
+            MappingPolicy::Compatible,
+            false,
+            Box::new(VecBatchStream {
+                schema,
+                batches: VecDeque::from([batch]),
+            }),
+            &cancellation,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(p4_report(&result).effective.is_empty());
+    }
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_selection")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 0);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_selection")
+        .await
+        .unwrap();
+}
+
+struct P4DriftStream {
+    batch: Option<RecordBatch>,
+    schema: SchemaRef,
+}
+impl BatchStream for P4DriftStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        Box::pin(async move {
+            if self.batch.is_some() {
+                let mut other = MysqlSession::open(&live_config(), cancellation).await?;
+                other
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop("SET SESSION lock_wait_timeout=1")
+                    .await
+                    .unwrap();
+                let attempt = other
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop("ALTER TABLE _p4_drift MODIFY v DATETIME(0)")
+                    .await;
+                assert!(
+                    matches!(attempt, Err(mysql_async::Error::Server(ref e)) if e.code == 1205),
+                    "il lock deve impedire ALTER prima dei bind"
+                );
+            }
+            Ok(self.batch.take())
+        })
+    }
+}
+#[tokio::test]
+#[ignore = "congelamento catalogo contro ALTER concorrente"]
+async fn live_p4_executor_catalog_lock() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_drift")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_drift (id BIGINT PRIMARY KEY,v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    let result = p4_execute(
+        &provider,
+        "_p4_drift",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(P4DriftStream {
+            schema: batch.schema(),
+            batch: Some(batch),
+        }),
+        &cancellation,
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(p4_report(&result).effective[0].committed, 1);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_drift")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "chunk reali al limite dei placeholder MySQL"]
+async fn live_p4_executor_multiple_chunks() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_chunks")
+        .await
+        .unwrap();
+    audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_chunks (id BIGINT PRIMARY KEY,v DATETIME(3) NULL,w BIGINT NULL) ENGINE=InnoDB").await.unwrap();
+    let rows = crate::MAX_BIND_PARAMETERS / 3 + 1;
+    let schema = contract_schema(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("w", DataType::Int64, true),
+    ])
+    .unwrap();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(
+                (0..i64::try_from(rows).unwrap()).collect::<Vec<_>>(),
+            )),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                946_684_800_000_501;
+                rows
+            ])),
+            Arc::new(Int64Array::from(vec![0; rows])),
+        ],
+    )
+    .unwrap();
+    let result = p4_execute(
+        &provider,
+        "_p4_chunks",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(VecBatchStream {
+            schema,
+            batches: VecDeque::from([batch]),
+        }),
+        &cancellation,
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(p4_report(&result).effective[0].committed, rows as u64);
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_chunks WHERE MICROSECOND(v)=1000")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, rows as u64);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_chunks")
+        .await
+        .unwrap();
+}
+
+struct P4AbandonedStream {
+    batch: Option<RecordBatch>,
+    schema: SchemaRef,
+    waiting: Arc<tokio::sync::Notify>,
+}
+impl BatchStream for P4AbandonedStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        _: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        Box::pin(async move {
+            if let Some(batch) = self.batch.take() {
+                return Ok(Some(batch));
+            }
+            self.waiting.notify_one();
+            std::future::pending().await
+        })
+    }
+}
+#[tokio::test]
+#[ignore = "future abbandonata dopo una assegnazione target"]
+async fn live_p4_executor_abandoned_future() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_drop")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_drop (id BIGINT PRIMARY KEY,v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let mut future = Box::pin(p4_execute(
+        &provider,
+        "_p4_drop",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(P4AbandonedStream {
+            schema: batch.schema(),
+            batch: Some(batch),
+            waiting: waiting.clone(),
+        }),
+        &cancellation,
+    ));
+    tokio::select! { () = waiting.notified() => {}, result = &mut future => panic!("esito prematuro: {result:?}") }
+    drop(future);
+    assert_eq!(provider.abandoned_writes().total, 1);
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_drop")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 0);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_drop")
+        .await
+        .unwrap();
+}

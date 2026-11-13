@@ -48,6 +48,15 @@ impl RuleCodec {
         })
     }
 
+    /// Il catalogo ammesso deve conservare tutte le rewrite, parametri compresi.
+    pub(crate) fn matches_rewrites(&self, rewrites: &[StoreRewrite]) -> bool {
+        rewrites.len() == self.rules.len()
+            && self
+                .rules
+                .iter()
+                .all(|rule| rewrites.iter().filter(|r| **r == rule.rewrite).count() == 1)
+    }
+
     /// Riservare token e buffer con `begin_source_batch`; conservare il risultato
     /// per stage/target/retry. Le guardie hard precedono ogni osservazione.
     pub(crate) fn evaluate(

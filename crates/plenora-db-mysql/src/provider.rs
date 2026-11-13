@@ -34,6 +34,7 @@ pub struct MysqlProvider {
     profile: &'static dyn ProductProfile,
     /// Le scritture `create` abbandonate dopo l'invio del DDL.
     residues: std::sync::Arc<plenora_database_core::ddl_residue::ResidueLedger>,
+    abandoned_writes: std::sync::Arc<plenora_database_core::ddl_residue::ResidueLedger>,
 }
 
 // Il profilo non compare nel `Debug`: quell'output e superficie
@@ -127,6 +128,7 @@ impl MysqlProvider {
             cached_pool: Mutex::new(None),
             profile,
             residues: std::sync::Arc::default(),
+            abandoned_writes: std::sync::Arc::default(),
         })
     }
 
@@ -137,6 +139,13 @@ impl MysqlProvider {
     #[must_use]
     pub fn ddl_residues(&self) -> plenora_database_core::ddl_residue::ResidueSnapshot {
         self.residues.snapshot()
+    }
+
+    /// Target delle scritture permissive abbandonate senza esito DML.
+    /// Registro in memoria: non attesta un commit e non sopravvive al processo.
+    #[must_use]
+    pub fn abandoned_writes(&self) -> plenora_database_core::ddl_residue::ResidueSnapshot {
+        self.abandoned_writes.snapshot()
     }
 
     pub(crate) fn pool_for(&self, secret: &SecretString) -> Result<Arc<MysqlPool>> {
@@ -557,14 +566,22 @@ impl Provider for MysqlProvider {
             plenora_database_core::prepared_execution::execute_with_consent(
                 prepared,
                 consent,
-                move |prepared, _consent| async move {
+                move |prepared, consent| async move {
                     // Bordo: l'esito della scrittura porta l'attribuzione del
                     // profilo, sia quando riesce sia quando fallisce. Un outcome
                     // committato che dichiarasse il prodotto sbagliato sarebbe una
                     // riga di contabilita falsa, non un dettaglio diagnostico.
-                    let outcome =
-                        execute_mysql_write(self, secret, prepared, input, budget, cancellation)
-                            .await;
+                    let outcome = execute_mysql_write(
+                        self,
+                        secret,
+                        prepared,
+                        input,
+                        budget,
+                        cancellation,
+                        consent,
+                        false,
+                    )
+                    .await;
                     crate::profile::attributed(self.profile, outcome).map(|mut outcome| {
                         outcome.provider = self.profile.kind();
                         outcome
@@ -649,15 +666,27 @@ impl Provider for MysqlProvider {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-async fn execute_mysql_write(
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub async fn execute_mysql_write(
     provider: &MysqlProvider,
     secret: &SecretString,
     mut prepared: PreparedWrite,
     input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
+    consent: plenora_database_core::loss::LossConsent,
+    internal_test: bool,
 ) -> Result<WriteOutcome> {
+    if prepared.operation.mapping_policy != plenora_database_core::loss::MappingPolicy::Strict
+        && !(cfg!(test)
+            && internal_test
+            && provider.profile.kind() == crate::profile::MYSQL_PROFILE.kind()
+            && prepared.operation.mode != plenora_database_core::plan::WriteMode::Create)
+    {
+        return Err(unsupported(
+            "percorso permissivo MySQL non ancora qualificato",
+        ));
+    }
     validate_prepared_budget(&prepared.budget, budget)?;
     budget.ensure_active()?;
     let schema = input.schema();
@@ -778,6 +807,7 @@ async fn execute_mysql_write(
             &schema,
             &plan,
             prepared.loss_report.clone(),
+            consent,
             target_schema,
             budget,
             token,
@@ -963,9 +993,72 @@ async fn execute_mysql_write_after_ddl(
     schema: &SchemaRef,
     plan: &crate::write::MysqlWritePlan,
     prepared_loss: plenora_database_core::loss::LossReport,
+    consent: plenora_database_core::loss::LossConsent,
     target_schema: &str,
     budget: &ResourceBudget,
     token: &CancellationToken,
+) -> Result<WriteOutcome> {
+    let early = if operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict {
+        None
+    } else {
+        crate::write::verify_write_session(session, token).await?;
+        Some(start_write_transaction(session, token).await?)
+    };
+    let abandonment = early
+        .as_ref()
+        .map(|_| provider.abandoned_writes.arm(operation.target.clone()));
+    let result = async {
+        if early.is_some() {
+            // MDL transazionale prima del catalogo: un ALTER non puo invalidare il codec.
+            session
+                .query_rows(&plan.render_metadata_lock(), ErrorPhase::Prepare, token)
+                .await?;
+        }
+        execute_mysql_write_locked(
+            provider,
+            session,
+            input,
+            operation,
+            schema,
+            plan,
+            prepared_loss,
+            consent,
+            target_schema,
+            budget,
+            token,
+            early.as_deref(),
+        )
+        .await
+    }
+    .await;
+    let result = match (early.as_deref(), result) {
+        (Some(id), Err(error))
+            if error.remote_effect == plenora_database_core::RemoteEffect::None =>
+        {
+            Err(rollback_after_failure(session, error, id).await)
+        }
+        (_, result) => result,
+    };
+    if let Some(guard) = abandonment {
+        guard.settle();
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn execute_mysql_write_locked(
+    provider: &MysqlProvider,
+    session: &mut crate::MysqlSession,
+    input: Box<dyn BatchStream>,
+    operation: &plenora_database_core::plan::WriteOperation,
+    schema: &SchemaRef,
+    plan: &crate::write::MysqlWritePlan,
+    prepared_loss: plenora_database_core::loss::LossReport,
+    consent: plenora_database_core::loss::LossConsent,
+    target_schema: &str,
+    budget: &ResourceBudget,
+    token: &CancellationToken,
+    early: Option<&str>,
 ) -> Result<WriteOutcome> {
     let product = session.profile().product();
     // La regola W2 sulla sessione che scrive: le impostazioni del bootstrap
@@ -1019,7 +1112,20 @@ async fn execute_mysql_write_after_ddl(
         rewrites,
     )?;
     let rewrite_losses = rewrite_guard.losses();
-    let mut input = plenora_database_core::store_rewrite::guard_input(input, rewrite_guard);
+    let mut evaluation =
+        if operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict {
+            None
+        } else {
+            Some(crate::loss_execution::Evaluation::new(
+                schema, plan, operation, consent, budget,
+            )?)
+        };
+    let guard = if evaluation.is_some() {
+        plenora_database_core::store_rewrite::RewriteGuard::validation_only(provider.profile.kind())
+    } else {
+        rewrite_guard
+    };
+    let mut input = plenora_database_core::store_rewrite::guard_input(input, guard);
     // La regola K di nuovo sulla sessione della scrittura, prima della
     // transazione.
     crate::write::validate_unique_keys(
@@ -1056,6 +1162,7 @@ async fn execute_mysql_write_after_ddl(
             | plenora_database_core::plan::WriteMode::Update
     ) && {
         let mut report = plan.preflight(&target, provider.profile)?;
+        report.policy = operation.mapping_policy;
         report.losses.extend(rewrite_losses);
         report != prepared_loss
     } {
@@ -1106,12 +1213,56 @@ async fn execute_mysql_write_after_ddl(
         quoted
     };
 
+    let serial_stage = if evaluation.is_some()
+        && matches!(
+            operation.mode,
+            plenora_database_core::plan::WriteMode::Update
+                | plenora_database_core::plan::WriteMode::Upsert
+        ) {
+        let key_schema = std::sync::Arc::new(plenora_database_core::arrow::schema::Schema::new(
+            operation
+                .keys
+                .iter()
+                .map(|key| {
+                    schema
+                        .field_with_name(key)
+                        .cloned()
+                        .map_err(|_| crate::write::mapping_error("chiave assente"))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        ));
+        let name = plan.staging_temp_name(&format!(
+            "k{}",
+            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let ddl = crate::write::build_temp_staging_sql(
+            &key_schema,
+            &name,
+            provider.config.database(),
+            provider.profile,
+            &target,
+        )?;
+        session
+            .exec_control(&ddl, ErrorPhase::Prepare, token)
+            .await?;
+        Some(crate::write::quote_staging_name(
+            &name,
+            provider.config.database(),
+        )?)
+    } else {
+        None
+    };
+
     // La regola K sotto la collation della colonna, per Upsert e
     // `DeleteByKeys` (`crate::write::KeyCollationGuard`): la tabella delle
     // chiavi si crea qui, prima della transazione; ogni blocco di chiavi vi
     // entra prima del proprio statement sul target.
+    let mut guard_operation = operation.clone();
+    if evaluation.is_some() && operation.mode == plenora_database_core::plan::WriteMode::Update {
+        guard_operation.mode = plenora_database_core::plan::WriteMode::Upsert;
+    }
     let key_guard = match plan.key_collation_guard(
-        operation,
+        &guard_operation,
         &target,
         provider.config.database(),
         &format!(
@@ -1159,149 +1310,175 @@ async fn execute_mysql_write_after_ddl(
     } else {
         None
     };
-    let execution_id = start_write_transaction(session, token).await?;
-    // Replace: svuota il target dentro la stessa transazione del bulk insert.
-    // Nessun DDL, quindi identita dell'oggetto, indici, FK, trigger, check,
-    // default, grant e AUTO_INCREMENT restano quelli del target — e un
-    // fallimento successivo riporta indietro anche le righe cancellate.
-    if let Some(delete_sql) = replace_delete_sql.as_deref() {
-        if let Err(error) = session
-            .exec_write(
-                delete_sql,
-                mysql_async::Params::Empty,
-                ErrorPhase::Write,
-                token,
-            )
-            .await
-        {
-            return Err(rollback_after_failure(session, error, &execution_id).await);
-        }
-    }
-    if let Some((declared_rows, policy)) = diagnostic_input {
-        let result = diagnostic_mysql_write(
-            session,
-            input.as_mut(),
-            schema,
-            plan,
-            budget,
-            token,
-            policy,
-            declared_rows,
-            &execution_id,
-            &staging_quoted,
-        )
-        .await;
-        return result;
-    }
-    let effective_staging = Some(staging_quoted.as_str());
-    let progress = match write_input_batches(
-        session,
-        input.as_mut(),
-        schema,
-        plan,
-        operation.mode,
-        effective_staging,
-        key_guard.as_ref(),
-        budget,
-        token,
-    )
-    .await
-    {
-        Ok(progress) => progress,
-        Err(error) => {
-            return Err(rollback_after_failure(session, error, &execution_id).await);
-        }
-    };
-
-    // Dopo il caricamento dello staging, Update esegue UPDATE JOIN.
-    // Il numero di righe aggiornate rimpiazza `progress.inserted` per il
-    // RowCounts finale (il committed_outcome_for_mode Update usa
-    // affected = updated_target_rows).
-    let mut final_affected = progress.inserted;
-    if operation.mode == plenora_database_core::plan::WriteMode::Update {
-        {
-            let staging = staging_quoted.as_str();
-            // Le coppie prima dello `UPDATE`, nella stessa transazione: il
-            // confronto con le righe trovate scopre le chiavi uguali per la
-            // collation del target che il core non vede ripetute.
-            let pairs = match session
-                .query_rows(
-                    &plan.render_staging_pairs(staging),
-                    ErrorPhase::Write,
-                    token,
-                )
-                .await
-            {
-                Ok(rows) => rows
-                    .first()
-                    .and_then(|row| row.get_opt::<u64, _>(0))
-                    .and_then(std::result::Result::ok),
-                Err(error) => {
-                    return Err(rollback_after_failure(session, error, &execution_id).await);
-                }
-            };
-            let update_sql = plan.render_update_from_staging(staging);
-            match session
+    let result = async {
+        let execution_id = match early {
+            Some(id) => id.to_owned(),
+            None => start_write_transaction(session, token).await?,
+        };
+        // Replace: svuota il target dentro la stessa transazione del bulk insert.
+        // Nessun DDL, quindi identita dell'oggetto, indici, FK, trigger, check,
+        // default, grant e AUTO_INCREMENT restano quelli del target — e un
+        // fallimento successivo riporta indietro anche le righe cancellate.
+        if let Some(delete_sql) = replace_delete_sql.as_deref() {
+            if let Err(error) = session
                 .exec_write(
-                    &update_sql,
+                    delete_sql,
                     mysql_async::Params::Empty,
                     ErrorPhase::Write,
                     token,
                 )
                 .await
             {
-                Ok(updated) if Some(updated) == pairs => {
-                    final_affected = updated;
-                }
-                Ok(_) => {
-                    let refused = DatabaseError::new(
-                        ErrorCategory::DataMapping,
-                        ErrorPhase::Write,
-                        Some(session.kind()),
-                        format!(
-                            "scrittura rifiutata: {}",
-                            plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS
-                        ),
-                    );
-                    return Err(rollback_after_failure(session, refused, &execution_id).await);
-                }
-                Err(error) => {
-                    return Err(rollback_after_failure(session, error, &execution_id).await);
-                }
+                return Err(rollback_after_failure(session, error, &execution_id).await);
             }
         }
-    }
-
-    if let Err(error) = session
-        .verify_session_profile(ErrorPhase::Commit, token)
-        .await
-    {
-        return crate::write::commit_failure(
-            error.after_unproven_send(),
-            execution_id,
-            progress.received,
-        );
-    }
-    let result = match session
-        .exec_transaction(
-            crate::session::MysqlTransactionCommand::Commit,
-            ErrorPhase::Commit,
+        if let Some((declared_rows, policy)) = diagnostic_input {
+            let result = diagnostic_mysql_write(
+                session,
+                input.as_mut(),
+                schema,
+                plan,
+                budget,
+                token,
+                policy,
+                declared_rows,
+                &execution_id,
+                &staging_quoted,
+                evaluation.as_mut(),
+            )
+            .await;
+            return result;
+        }
+        let effective_staging = Some(staging_quoted.as_str());
+        let progress = match write_input_batches(
+            session,
+            input.as_mut(),
+            schema,
+            plan,
+            operation.mode,
+            effective_staging,
+            serial_stage.as_deref(),
+            key_guard.as_ref(),
+            evaluation.as_mut(),
+            budget,
             token,
         )
         .await
-    {
-        Ok(()) => crate::write::committed_outcome_for_mode(
-            execution_id,
-            progress.received,
-            final_affected,
-            operation.mode,
-        ),
-        Err(error) => {
-            session.discard().await;
-            crate::write::commit_failure(error, execution_id, progress.received)
+        {
+            Ok(progress) => progress,
+            Err(error) => {
+                return Err(rollback_after_failure(session, error, &execution_id).await);
+            }
+        };
+
+        // Dopo il caricamento dello staging, Update esegue UPDATE JOIN.
+        // Il numero di righe aggiornate rimpiazza `progress.inserted` per il
+        // RowCounts finale (il committed_outcome_for_mode Update usa
+        // affected = updated_target_rows).
+        let mut final_affected = progress.inserted;
+        if evaluation.is_none() && operation.mode == plenora_database_core::plan::WriteMode::Update
+        {
+            {
+                let staging = staging_quoted.as_str();
+                // Le coppie prima dello `UPDATE`, nella stessa transazione: il
+                // confronto con le righe trovate scopre le chiavi uguali per la
+                // collation del target che il core non vede ripetute.
+                let pairs = match session
+                    .query_rows(
+                        &plan.render_staging_pairs(staging),
+                        ErrorPhase::Write,
+                        token,
+                    )
+                    .await
+                {
+                    Ok(rows) => rows
+                        .first()
+                        .and_then(|row| row.get_opt::<u64, _>(0))
+                        .and_then(std::result::Result::ok),
+                    Err(error) => {
+                        return Err(rollback_after_failure(session, error, &execution_id).await);
+                    }
+                };
+                let update_sql = plan.render_update_from_staging(staging);
+                match session
+                    .exec_write(
+                        &update_sql,
+                        mysql_async::Params::Empty,
+                        ErrorPhase::Write,
+                        token,
+                    )
+                    .await
+                {
+                    Ok(updated) if Some(updated) == pairs => {
+                        final_affected = updated;
+                    }
+                    Ok(_) => {
+                        let refused = DatabaseError::new(
+                            ErrorCategory::DataMapping,
+                            ErrorPhase::Write,
+                            Some(session.kind()),
+                            format!(
+                                "scrittura rifiutata: {}",
+                                plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS
+                            ),
+                        );
+                        return Err(rollback_after_failure(session, refused, &execution_id).await);
+                    }
+                    Err(error) => {
+                        return Err(rollback_after_failure(session, error, &execution_id).await);
+                    }
+                }
+            }
         }
-    };
-    result
+
+        #[cfg(test)]
+        if let Err(error) = crate::loss_execution::faults::inject(session, 3, token).await {
+            return Err(rollback_after_failure(session, error, &execution_id).await);
+        }
+        if let Some(evaluation) = evaluation.as_mut() {
+            if let Err(error) = evaluation.context.prepare_commit(true) {
+                return Err(rollback_after_failure(session, error, &execution_id).await);
+            }
+        }
+        if let Err(error) = session
+            .verify_session_profile(ErrorPhase::Commit, token)
+            .await
+        {
+            if evaluation.is_some() {
+                return Err(rollback_after_failure(session, error, &execution_id).await);
+            }
+            return crate::write::commit_failure(
+                error.after_unproven_send(),
+                execution_id,
+                progress.received,
+            );
+        }
+        let result = match session
+            .exec_transaction(
+                crate::session::MysqlTransactionCommand::Commit,
+                ErrorPhase::Commit,
+                token,
+            )
+            .await
+        {
+            Ok(()) => crate::write::committed_outcome_for_mode(
+                execution_id,
+                progress.received,
+                final_affected,
+                operation.mode,
+            ),
+            Err(error) => {
+                session.discard().await;
+                crate::write::commit_failure(error, execution_id, progress.received)
+            }
+        };
+        result
+    }
+    .await;
+    match evaluation.as_mut() {
+        Some(evaluation) => evaluation.finish(result),
+        None => result,
+    }
 }
 
 fn validate_diagnostic_input(
@@ -1370,6 +1547,7 @@ async fn diagnostic_mysql_write(
     declared_rows: u64,
     execution_id: &str,
     staging: &str,
+    mut evaluation: Option<&mut crate::loss_execution::Evaluation>,
 ) -> Result<WriteOutcome> {
     // Il codice MySQL prova la classe; la colonna arriva esclusivamente dal
     // contratto dichiarato della sorgente, già verificato contro lo schema
@@ -1390,6 +1568,7 @@ async fn diagnostic_mysql_write(
             cancellation,
             constraint_column,
             staging,
+            evaluation.as_deref_mut(),
         );
         let diagnosed = plenora_database_core::row_diagnostics::diagnose_row_scoped_write(
             &mut writer,
@@ -1406,29 +1585,43 @@ async fn diagnostic_mysql_write(
             Some(crate::profile::PROVISIONAL_KIND),
             Some(execution_id.to_owned()),
         )?),
-        Ok(None) => match async {
-            session
+        Ok(None) => {
+            if let Some(evaluation) = evaluation.as_mut() {
+                if let Err(error) = evaluation.context.prepare_commit(true) {
+                    return Err(rollback_after_failure(session, error, execution_id).await);
+                }
+            }
+            if let Err(error) = session
                 .verify_session_profile(ErrorPhase::Commit, cancellation)
                 .await
-                .map_err(DatabaseError::after_unproven_send)?;
-            session
+            {
+                if evaluation.is_some() {
+                    return Err(rollback_after_failure(session, error, execution_id).await);
+                }
+                session.discard().await;
+                return crate::write::commit_failure(
+                    error.after_unproven_send(),
+                    execution_id.to_owned(),
+                    declared_rows,
+                );
+            }
+            match session
                 .exec_transaction(
                     crate::session::MysqlTransactionCommand::Commit,
                     ErrorPhase::Commit,
                     cancellation,
                 )
                 .await
+            {
+                Ok(()) => {
+                    crate::write::committed_outcome(execution_id.to_owned(), declared_rows, applied)
+                }
+                Err(error) => {
+                    session.discard().await;
+                    crate::write::commit_failure(error, execution_id.to_owned(), declared_rows)
+                }
+            }
         }
-        .await
-        {
-            Ok(()) => {
-                crate::write::committed_outcome(execution_id.to_owned(), declared_rows, applied)
-            }
-            Err(error) => {
-                session.discard().await;
-                crate::write::commit_failure(error, execution_id.to_owned(), declared_rows)
-            }
-        },
         Err(error) => Err(rollback_after_failure(session, error, execution_id).await),
     }
 }
@@ -1447,7 +1640,9 @@ async fn write_input_batches(
     plan: &crate::write::MysqlWritePlan,
     mode: plenora_database_core::plan::WriteMode,
     staging_override: Option<&str>,
+    serial_stage: Option<&str>,
     key_guard: Option<&crate::write::KeyCollationGuard>,
+    mut evaluation: Option<&mut crate::loss_execution::Evaluation>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteProgress> {
@@ -1488,13 +1683,18 @@ async fn write_input_batches(
                 format!("overflow conteggio righe {product}"),
             )
         })?;
+        if let Some(evaluation) = evaluation.as_mut() {
+            evaluation.begin(&batch)?;
+        }
         let affected = write_batch_chunks_for_mode(
             session,
             &batch,
             plan,
             mode,
             staging_override,
+            serial_stage,
             key_guard,
+            evaluation.as_deref_mut(),
             cancellation,
         )
         .await?;
@@ -1516,20 +1716,33 @@ async fn write_input_batches(
 /// `staging_override`: se Some, il SQL punta a staging invece del target
 /// reale (usato per Update — accumulazione dati in staging table prima
 /// del successivo UPDATE JOIN).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn write_batch_chunks_for_mode(
     session: &mut crate::MysqlSession,
     batch: &plenora_database_core::arrow::RecordBatch,
     plan: &crate::write::MysqlWritePlan,
     mode: plenora_database_core::plan::WriteMode,
     staging_override: Option<&str>,
+    serial_stage: Option<&str>,
     key_guard: Option<&crate::write::KeyCollationGuard>,
+    mut evaluation: Option<&mut crate::loss_execution::Evaluation>,
     cancellation: &CancellationToken,
 ) -> Result<u64> {
     let product = session.profile().product();
     let mut affected_total = 0_u64;
     let mut start = 0_usize;
     while start < batch.num_rows() {
-        let rows = plan.rows_per_statement().min(batch.num_rows() - start);
+        let serial = evaluation.is_some()
+            && matches!(
+                mode,
+                plenora_database_core::plan::WriteMode::Update
+                    | plenora_database_core::plan::WriteMode::Upsert
+            );
+        let rows = if serial {
+            1
+        } else {
+            plan.rows_per_statement().min(batch.num_rows() - start)
+        };
         // La regola K sotto collation: le chiavi del blocco entrano nella
         // tabella delle chiavi prima dello statement sul target, e una
         // ripetizione rifiuta (la transazione si annulla).
@@ -1553,8 +1766,54 @@ async fn write_batch_chunks_for_mode(
                 return Err(crate::write::repeated_key_error(session.kind()));
             }
         }
+        let matched = if serial {
+            let key_stage = serial_stage.ok_or_else(|| unsupported("staging chiavi assente"))?;
+            let evaluation = evaluation
+                .as_mut()
+                .ok_or_else(|| unsupported("contesto assente"))?;
+            let parameters = evaluation.bind_keys(plan, batch, start)?;
+            session
+                .exec_write(
+                    &format!("DELETE FROM {key_stage}"),
+                    mysql_async::Params::Empty,
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await?;
+            let loaded = session
+                .exec_write(
+                    &plan.render_serial_key_insert(key_stage),
+                    parameters,
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await?;
+            if loaded != 1 {
+                return Err(crate::write::mapping_error(
+                    "conteggio staging chiavi incoerente",
+                ));
+            }
+            let matches = session
+                .query_rows(
+                    &plan.render_serial_match(key_stage),
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await?;
+            if matches.len() > 1 {
+                return Err(crate::write::mapping_error("match target non univoco"));
+            }
+            if matches.is_empty() && mode == plenora_database_core::plan::WriteMode::Update {
+                evaluation.applied(start, 1, false)?;
+                start += 1;
+                continue;
+            }
+            !matches.is_empty()
+        } else {
+            false
+        };
         let staging = staging_override.ok_or_else(|| unsupported("staging tipizzato assente"))?;
-        if mode != plenora_database_core::plan::WriteMode::Update {
+        if serial || mode != plenora_database_core::plan::WriteMode::Update {
             session
                 .exec_write(
                     &format!("DELETE FROM {staging}"),
@@ -1564,7 +1823,10 @@ async fn write_batch_chunks_for_mode(
                 )
                 .await?;
         }
-        let parameters = plan.bind_chunk(batch, start, rows)?;
+        let parameters = match evaluation.as_mut() {
+            Some(evaluation) => evaluation.bind(plan, batch, start, rows)?,
+            None => plan.bind_chunk(batch, start, rows)?,
+        };
         let loaded = session
             .exec_write(
                 &plan.render_insert_into_staging(staging, rows)?,
@@ -1573,18 +1835,52 @@ async fn write_batch_chunks_for_mode(
                 cancellation,
             )
             .await?;
-        let affected = if mode == plenora_database_core::plan::WriteMode::Update {
+        #[cfg(test)]
+        crate::loss_execution::faults::inject(session, 1, cancellation).await?;
+        if evaluation.is_some() && loaded != rows as u64 {
+            return Err(crate::write::mapping_error("conteggio staging incoerente"));
+        }
+        let affected = if mode == plenora_database_core::plan::WriteMode::Update && !serial {
             loaded
         } else {
-            session
-                .exec_write(
-                    &plan.render_apply_staging(staging),
+            if let Some(evaluation) = evaluation.as_mut() {
+                evaluation.sent(start, rows)?;
+            }
+            let sql = if serial {
+                plan.render_serial_apply(staging, matched)
+            } else {
+                plan.render_apply_staging(staging)
+            };
+            let marker = plenora_database_core::caller_sql::SendMarker::before_send();
+            let result = session
+                .exec_write_tracked(
+                    &sql,
                     mysql_async::Params::Empty,
                     ErrorPhase::Write,
                     cancellation,
+                    &marker,
                 )
-                .await?
+                .await;
+            if !marker.was_sent() {
+                if let Some(evaluation) = evaluation.as_mut() {
+                    evaluation.applied(start, rows, false)?;
+                }
+            }
+            result?
         };
+        #[cfg(test)]
+        crate::loss_execution::faults::inject(session, 2, cancellation).await?;
+        if let Some(evaluation) = evaluation.as_mut() {
+            let assigned = mode != plenora_database_core::plan::WriteMode::DeleteByKeys;
+            if mode != plenora_database_core::plan::WriteMode::DeleteByKeys
+                && affected != rows as u64
+            {
+                return Err(crate::write::mapping_error(
+                    "attribuzione Update non univoca",
+                ));
+            }
+            evaluation.applied(start, rows, assigned)?;
+        }
         affected_total = affected_total.checked_add(affected).ok_or_else(|| {
             provider_error(
                 ErrorCategory::ResourceLimit,

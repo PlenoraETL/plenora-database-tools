@@ -58,6 +58,10 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "loss_execution::tests::p4_cache_second_batch_and_commit_attribution",
+    "loss_execution::tests::p4_no_match_consent_and_stage_only_uncertain",
+    "loss_execution::tests::p4_rollback_and_lost_commit_preserve_evaluation",
+    "loss_execution::tests::p4_retry_reuses_authorized_values_and_limit_precedes_effects",
     "loss_codec::tests::double_rules_compose_in_both_fixture_orders",
     "loss_codec::tests::temporal_boundaries_are_euclidean_and_checked",
     "loss_codec::tests::codec_uses_common_consent_and_replay_does_not_recount",
@@ -412,6 +416,15 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_p4_executor_abandoned_future",
+    "live_tests::live_p4_executor_multiple_chunks",
+    "live_tests::live_p4_executor_selection_and_keys",
+    "live_tests::live_p4_executor_catalog_lock",
+    "live_tests::live_p4_executor_fault_boundaries",
+    "live_tests::live_p4_executor_matched_assignment_and_diagnostics",
+    "live_tests::live_p4_executor_paths_second_batch",
+    "live_tests::live_p4_executor_faults",
+    "live_tests::live_p4_serial_benchmark",
     "live_tests::live_p3_loss_codec_boundaries",
     "live_tests::live_p3_loss_codec_hard_boundaries",
     "live_tests::live_audit900_l2_typed_json",

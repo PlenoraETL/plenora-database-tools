@@ -27,6 +27,7 @@ use plenora_database_core::{
 
 /// Esecutore row-scoped sopra una transazione `MySQL` già aperta.
 pub struct MysqlRowWriter<'a> {
+    evaluation: Option<&'a mut crate::loss_execution::Evaluation>,
     session: &'a mut MysqlSession,
     plan: &'a MysqlWritePlan,
     staging: &'a str,
@@ -53,8 +54,10 @@ impl<'a> MysqlRowWriter<'a> {
         cancellation: &'a CancellationToken,
         constraint_column: Option<String>,
         staging: &'a str,
+        evaluation: Option<&'a mut crate::loss_execution::Evaluation>,
     ) -> Self {
         Self {
+            evaluation,
             session,
             plan,
             staging,
@@ -119,6 +122,9 @@ impl<'a> MysqlRowWriter<'a> {
             // una finestra in cui restituire la quota abbia un significato.
             let lease = self.budget.try_lease(ResourceKind::Rows, rows)?;
             lease.commit(rows)?;
+            if let Some(evaluation) = self.evaluation.as_mut() {
+                evaluation.begin(&batch)?;
+            }
             self.batch = Some(batch);
         }
     }
@@ -135,7 +141,10 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                     .ok_or_else(|| row_error("batch assente dopo il posizionamento"))?;
                 (
                     self.plan.render_insert_into_staging(self.staging, 1)?,
-                    self.plan.bind_chunk(batch, offset, 1)?,
+                    match self.evaluation.as_mut() {
+                        Some(evaluation) => evaluation.bind(self.plan, batch, offset, 1)?,
+                        None => self.plan.bind_chunk(batch, offset, 1)?,
+                    },
                 )
             };
             self.session
@@ -151,14 +160,28 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                 .exec_row_write(&sql, parameters, self.cancellation)
                 .await?;
             if cause.is_none() {
-                cause = self
+                if let Some(evaluation) = self.evaluation.as_mut() {
+                    evaluation.sent(offset, 1)?;
+                }
+                let marker = plenora_database_core::caller_sql::SendMarker::before_send();
+                let result = self
                     .session
-                    .exec_row_write(
+                    .exec_row_write_tracked(
                         &self.plan.render_apply_staging(self.staging),
                         mysql_async::Params::Empty,
                         self.cancellation,
+                        &marker,
                     )
-                    .await?;
+                    .await;
+                if !marker.was_sent() {
+                    if let Some(evaluation) = self.evaluation.as_mut() {
+                        evaluation.applied(offset, 1, false)?;
+                    }
+                }
+                cause = result?;
+            }
+            if let Some(evaluation) = self.evaluation.as_mut() {
+                evaluation.applied(offset, 1, cause.is_none())?;
             }
             if let Some(cause) = cause {
                 Ok(RowApplication::Rejected(RowRejection {

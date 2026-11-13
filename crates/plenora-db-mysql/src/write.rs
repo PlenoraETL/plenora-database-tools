@@ -604,6 +604,67 @@ impl MysqlWritePlan {
         )
     }
 
+    pub(crate) fn render_metadata_lock(&self) -> String {
+        format!("SELECT 1 FROM {} LIMIT 0", self.quoted_target)
+    }
+
+    /// La selezione seriale usa esclusivamente chiavi gia tipizzate.
+    pub(crate) fn serial_keys(&self) -> &[String] {
+        if self.mode == WriteMode::Update {
+            &self.update_key_columns
+        } else {
+            &self.upsert_keys_quoted
+        }
+    }
+    pub(crate) fn render_serial_match(&self, staging: &str) -> String {
+        let predicate = self
+            .serial_keys()
+            .iter()
+            .map(|k| format!("t.{k}=s.{k}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        format!(
+            "SELECT 1 FROM {} AS t JOIN {staging} AS s ON {predicate} FOR UPDATE",
+            self.quoted_target
+        )
+    }
+    pub(crate) fn render_serial_key_insert(&self, staging: &str) -> String {
+        format!(
+            "INSERT INTO {staging} ({}) VALUES ({})",
+            self.serial_keys().join(","),
+            vec!["?"; self.serial_keys().len()].join(",")
+        )
+    }
+    pub(crate) fn render_serial_apply(&self, staging: &str, matched: bool) -> String {
+        if !matched {
+            let mut insert = self.clone();
+            insert.mode = WriteMode::Append;
+            return insert.render_apply_staging(staging);
+        }
+        if self.mode == WriteMode::Update {
+            return self.render_update_from_staging(staging);
+        }
+        let predicate = self
+            .serial_keys()
+            .iter()
+            .map(|k| format!("t.{k}=s.{k}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let updates = if self.upsert_update_columns.is_empty() {
+            vec![format!("t.{0}=t.{0}", self.upsert_keys_quoted[0])]
+        } else {
+            self.upsert_update_columns
+                .iter()
+                .map(|c| format!("t.{c}=s.{c}"))
+                .collect()
+        };
+        format!(
+            "UPDATE {} AS t JOIN {staging} AS s ON {predicate} SET {}",
+            self.quoted_target,
+            updates.join(",")
+        )
+    }
+
     /// Renderizza INSERT verso una staging table (target diverso dal target
     /// reale, senza clausola ON DUPLICATE KEY). Usato per Update via staging.
     ///

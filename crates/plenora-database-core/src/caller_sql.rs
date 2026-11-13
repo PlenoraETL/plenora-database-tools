@@ -57,6 +57,12 @@ impl SendMarker {
         self.0.store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// Indica se il futuro del driver e stato interrogato.
+    #[must_use]
+    pub fn was_sent(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Marca soltanto quando il futuro del driver viene interrogato.
     pub async fn sending<F: std::future::Future>(&self, call: F) -> F::Output {
         self.mark_sent();
