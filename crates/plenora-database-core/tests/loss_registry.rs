@@ -122,6 +122,10 @@ fn every_store_variant_has_one_registered_rule_and_alias_is_explicit() {
 fn measured_fixture_rewrites_resolve_without_promoting_unmeasured_pairs() {
     for (provider, bytes) in [
         (
+            ProviderKind::Mysql,
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/mysql.json").as_slice(),
+        ),
+        (
             ProviderKind::Postgres,
             include_bytes!("../../../tests/fixtures/ammissione_scrittura/postgres.json").as_slice(),
         ),

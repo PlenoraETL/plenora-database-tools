@@ -1,0 +1,11 @@
+{
+  "base": "71b1271f6c4dfe020ac92316eb7aca2feff69266",
+  "scope": "offline outcomes of unchanged 10.0.0 production code; no live qualification",
+  "snapshots": {
+    "core_baseline.json": "2d7016d3083ca8cb4ecaf8c2138086ae37ed79ce95a1da00d87deab2fa02b205",
+    "mysql_strict_baseline.json": "62609d1cb090253f525479c3be9d9ed4ac5a2f2d1398ffc57ef8e87ab47bf35c",
+    "operation_baseline.json": "f7b1234125865bcf8c659144d0c4fa046a00d01fea6c13b35e95879c023a7b67",
+    "postgres_baseline.json": "6cf9acbe18efe492db74547bd5863e6743da97f604930acb67abf30f13eaadbb",
+    "sqlserver_baseline.json": "cdbc9f8dc3505733c72df41958e0349dd5bbe73d2d63fcb6dea205f4f7cfd9b1"
+  }
+}

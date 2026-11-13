@@ -1,0 +1,519 @@
+[
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "rollback",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "commit",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "uncertain",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "no_match",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "rollback",
+    "preview": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "precision",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "commit",
+    "preview": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "precision",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "precision",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "uncertain",
+    "preview": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "precision",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "precision",
+          "committed": 0,
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "uncertain": 1
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "no_match",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "precision",
+          "field_id": 0,
+          "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
+          "rule_id": "ss.text_limit",
+          "severity": "data_loss",
+          "source_type": "Utf8",
+          "target_type": "nvarchar(4)"
+        }
+      ],
+      "schema_version": 3
+    }
+  }
+]

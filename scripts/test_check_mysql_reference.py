@@ -891,9 +891,11 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             self.assertEqual(gate.run_static_checks(), 0)
 
         executed = [command[-1] for command in calls]
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
         self.assertTrue(executed[0].endswith("test_check_mysql_reference.py"))
-        self.assertEqual(executed[1], "tests.test_mysql_matrix")
+        self.assertTrue(executed[1].endswith("mysql_permissive_inventory.py"))
+        self.assertEqual(executed[2], "tests.test_mysql_permissive_inventory")
+        self.assertEqual(executed[3], "tests.test_mysql_matrix")
 
     def test_an_unknown_flag_never_degrades_into_another_entry_point(self) -> None:
         self.assertIs(gate.selected_entry_point([]), gate.main)

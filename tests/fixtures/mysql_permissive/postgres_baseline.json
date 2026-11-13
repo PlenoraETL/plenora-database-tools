@@ -1,0 +1,487 @@
+[
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "rollback",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "commit",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "uncertain",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Deny",
+    "error": {
+      "category": "data_mapping",
+      "message": "trasformazione del valore non autorizzata",
+      "phase": "write"
+    },
+    "outcome": "no_match",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "rollback",
+    "preview": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "native_type",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "pg.pad_text",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "commit",
+    "preview": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "native_type",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "pg.pad_text",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "native_type",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "pg.pad_text",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "uncertain",
+    "preview": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "native_type",
+          "committed": 1,
+          "field_id": 0,
+          "rule_id": "pg.pad_text",
+          "uncertain": 0
+        }
+      ],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [
+        {
+          "basis": "exact",
+          "category": "native_type",
+          "committed": 0,
+          "field_id": 0,
+          "rule_id": "pg.pad_text",
+          "uncertain": 1
+        }
+      ],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  },
+  {
+    "consent": "Accept",
+    "error": null,
+    "outcome": "no_match",
+    "preview": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    },
+    "report": {
+      "effective": [],
+      "evaluation": {
+        "complete": false,
+        "entries": [
+          {
+            "basis": "exact",
+            "checked": 1,
+            "field_id": 0,
+            "rule_id": "pg.pad_text",
+            "would_change": 1
+          }
+        ]
+      },
+      "policy": "compatible",
+      "risk": [
+        {
+          "category": "native_type",
+          "field_id": 0,
+          "reason": "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto",
+          "rule_id": "pg.pad_text",
+          "severity": "data_loss"
+        }
+      ],
+      "schema_version": 3
+    }
+  }
+]
