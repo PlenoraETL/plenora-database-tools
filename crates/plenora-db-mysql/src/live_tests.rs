@@ -14848,3 +14848,350 @@ async fn live_audit900_nul() {
     .await
     .expect("matrice NUL MySQL/MariaDB");
 }
+
+/// P3 confronta sorgente, conversione esplicita, staging e target con bind binari.
+/// Il gate operativo resta chiuso: questa e una prova del codec preparatorio.
+#[tokio::test]
+#[ignore = "richiede MySQL TLS; runner delle tre major"]
+#[allow(clippy::too_many_lines)]
+async fn live_p3_loss_codec_boundaries() {
+    use crate::loss_codec::RuleCodec;
+    use chrono::{Datelike, Timelike};
+    use mysql_async::Value;
+    use plenora_database_core::execution_loss_context::ExecutionLossContext;
+    use plenora_database_core::loss::LossConsent;
+    use plenora_database_core::store_rewrite::StoreRewrite;
+    use plenora_database_core::ErrorPhase;
+
+    fn wire(micros: i64) -> Value {
+        let d = chrono::DateTime::from_timestamp_micros(micros).unwrap();
+        Value::Date(
+            u16::try_from(d.year()).unwrap(),
+            u8::try_from(d.month()).unwrap(),
+            u8::try_from(d.day()).unwrap(),
+            u8::try_from(d.hour()).unwrap(),
+            u8::try_from(d.minute()).unwrap(),
+            u8::try_from(d.second()).unwrap(),
+            d.timestamp_subsec_micros(),
+        )
+    }
+    async fn compare(
+        session: &mut MysqlSession,
+        cancel: &CancellationToken,
+        original: Value,
+        converted: Value,
+    ) {
+        for (table, value) in [("_p3_raw", original), ("_p3_stage", converted.clone())] {
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("DELETE FROM {table}"))
+                .await
+                .unwrap();
+            let sql = format!("INSERT INTO {table} VALUES (?)");
+            session
+                .connection_mut()
+                .unwrap()
+                .exec_drop(&sql, (value,))
+                .await
+                .unwrap();
+            session
+                .check_warnings_for_sql(ErrorPhase::Write, cancel, &sql)
+                .await
+                .unwrap();
+        }
+        session
+            .connection_mut()
+            .unwrap()
+            .query_drop("DELETE FROM _p3_target")
+            .await
+            .unwrap();
+        let sql = "INSERT INTO _p3_target SELECT v FROM _p3_stage";
+        session
+            .connection_mut()
+            .unwrap()
+            .query_drop(sql)
+            .await
+            .unwrap();
+        session
+            .check_warnings_for_sql(ErrorPhase::Write, cancel, sql)
+            .await
+            .unwrap();
+        for table in ["_p3_raw", "_p3_stage", "_p3_target"] {
+            let row: mysql_async::Row = session
+                .connection_mut()
+                .unwrap()
+                .exec_first(format!("SELECT v FROM {table}"), ())
+                .await
+                .unwrap()
+                .unwrap();
+            match (&converted, row.as_ref(0).unwrap()) {
+                (Value::Double(a), Value::Double(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+                (a, b) => assert_eq!(a, b),
+            }
+        }
+    }
+    async fn tables(session: &mut MysqlSession, native: &str) {
+        for name in ["_p3_raw", "_p3_stage", "_p3_target"] {
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("DROP TEMPORARY TABLE IF EXISTS {name}"))
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("CREATE TEMPORARY TABLE {name} (v {native})"))
+                .await
+                .unwrap();
+        }
+    }
+    fn convert(codec: &RuleCodec, array: &dyn plenora_database_core::arrow::array::Array) -> Value {
+        let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+        let (mut ctx, _) = ExecutionLossContext::new(
+            ProviderKind::Mysql,
+            MappingPolicy::Compatible,
+            LossConsent::Accept,
+            codec.instances.clone(),
+            &budget,
+        )
+        .unwrap();
+        ctx.begin_source_batch(1, 1, codec.instances.len(), 256)
+            .unwrap();
+        codec.evaluate(&mut ctx, array, 0, false).unwrap().1
+    }
+    let cancel = CancellationToken::new();
+    let mut session = MysqlSession::open(&live_config(), &cancel).await.unwrap();
+    let version: String = session
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT VERSION()")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(version.starts_with(&expected_version_prefix()));
+    let mode: String = session
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT @@session.sql_mode")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!mode.contains("TIME_TRUNCATE_FRACTIONAL"));
+    for base in ["datetime", "timestamp"] {
+        for p in 0..=6_u8 {
+            let native = format!("{base}({p})");
+            tables(&mut session, &native).await;
+            compare(&mut session, &cancel, Value::NULL, Value::NULL).await;
+            let q = 10_i64.pow(6 - u32::from(p));
+            let mut seconds = vec![
+                1_000_000,
+                86_399_000_000,
+                946_684_799_000_000,
+                2_147_483_646_000_000,
+            ];
+            if base == "datetime" {
+                seconds.extend([
+                    -1_000_000,
+                    -2_208_988_801_000_000,
+                    -62_167_219_200_000_000,
+                    -62_135_596_800_000_000,
+                    253_402_300_798_000_000,
+                ]);
+            }
+            seconds.push(if base == "timestamp" {
+                2_147_483_647_000_000
+            } else {
+                253_402_300_799_000_000
+            });
+            for second in seconds {
+                for fraction in [0, 1, q - 1, q, q + 1, q / 2 - 1, q / 2, q / 2 + 1, 999_999]
+                    .into_iter()
+                    .filter(|n| *n >= 0 && *n < 1_000_000)
+                {
+                    if (second == 2_147_483_647_000_000 || second == 253_402_300_799_000_000)
+                        && p < 6
+                        && fraction >= 1_000_000 - q / 2
+                    {
+                        continue;
+                    }
+                    let input = second + fraction;
+                    let original = wire(input);
+                    let converted = if p == 6 {
+                        original.clone()
+                    } else {
+                        let codec = RuleCodec::new(
+                            ProviderKind::Mysql,
+                            0,
+                            DataType::Timestamp(TimeUnit::Microsecond, None),
+                            &native,
+                            StoreRewrite::FractionalSeconds { digits: p },
+                        )
+                        .unwrap();
+                        convert(&codec, &TimestampMicrosecondArray::from(vec![input]))
+                    };
+                    compare(&mut session, &cancel, original, converted).await;
+                }
+            }
+        }
+    }
+    tables(&mut session, "double(255,30)").await;
+    let codec = RuleCodec::new(
+        ProviderKind::Mysql,
+        0,
+        DataType::Float64,
+        "double(255,30)",
+        StoreRewrite::NegativeZero,
+    )
+    .unwrap();
+    for input in [
+        -0.0,
+        0.0,
+        1e-10,
+        -1e-10,
+        1e-10_f64.next_up(),
+        (-1e-10_f64).next_down(),
+        1e225,
+        -1e225,
+    ] {
+        let converted = convert(&codec, &Float64Array::from(vec![input]));
+        let Value::Double(number) = converted else {
+            panic!("double")
+        };
+        assert_eq!(
+            number.to_bits(),
+            if input == 0.0 {
+                0.0_f64.to_bits()
+            } else {
+                input.to_bits()
+            }
+        );
+        compare(
+            &mut session,
+            &cancel,
+            Value::Double(input),
+            Value::Double(number),
+        )
+        .await;
+    }
+    session
+        .verify_session_profile(ErrorPhase::Write, &cancel)
+        .await
+        .unwrap();
+}
+
+/// Le guardie locali e il server devono rifiutare i bordi senza clamp o residui.
+#[tokio::test]
+#[ignore = "richiede MySQL TLS; runner delle tre major"]
+#[allow(clippy::too_many_lines)]
+async fn live_p3_loss_codec_hard_boundaries() {
+    use crate::loss_codec::RuleCodec;
+    use chrono::{Datelike, Timelike};
+    use mysql_async::Value;
+    use plenora_database_core::execution_loss_context::ExecutionLossContext;
+    use plenora_database_core::loss::LossConsent;
+    use plenora_database_core::store_rewrite::StoreRewrite;
+    let cancel = CancellationToken::new();
+    let mut session = MysqlSession::open(&live_config(), &cancel).await.unwrap();
+    for base in ["datetime", "timestamp"] {
+        for p in 0..6_u8 {
+            let native = format!("{base}({p})");
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TEMPORARY TABLE IF EXISTS _p3_hard")
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("CREATE TEMPORARY TABLE _p3_hard (v {native})"))
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .exec_drop(
+                    "INSERT INTO _p3_hard VALUES (?)",
+                    (Value::Date(2000, 1, 1, 0, 0, 0, 0),),
+                )
+                .await
+                .unwrap();
+            let mut values = if base == "datetime" {
+                vec![
+                    -62_167_219_200_000_001,
+                    253_402_300_799_999_999,
+                    253_402_300_800_000_000,
+                ]
+            } else {
+                vec![0, -1, 2_147_483_648_000_000]
+            };
+            if base == "timestamp" {
+                values.push(2_147_483_647_999_999);
+            }
+            let codec = RuleCodec::new(
+                ProviderKind::Mysql,
+                0,
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                &native,
+                StoreRewrite::FractionalSeconds { digits: p },
+            )
+            .unwrap();
+            for input in values {
+                let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+                let (mut ctx, _) = ExecutionLossContext::new(
+                    ProviderKind::Mysql,
+                    MappingPolicy::Compatible,
+                    LossConsent::Accept,
+                    codec.instances.clone(),
+                    &budget,
+                )
+                .unwrap();
+                ctx.begin_source_batch(1, 1, codec.instances.len(), 256)
+                    .unwrap();
+                assert!(codec
+                    .evaluate(
+                        &mut ctx,
+                        &TimestampMicrosecondArray::from(vec![input]),
+                        0,
+                        false
+                    )
+                    .is_err());
+                assert!(ctx
+                    .ledger
+                    .report()
+                    .evaluation
+                    .entries
+                    .iter()
+                    .all(|e| e.checked == 0));
+                let d = chrono::DateTime::from_timestamp_micros(input).unwrap();
+                if d.year() >= 0 {
+                    let raw = Value::Date(
+                        u16::try_from(d.year()).unwrap(),
+                        u8::try_from(d.month()).unwrap(),
+                        u8::try_from(d.day()).unwrap(),
+                        u8::try_from(d.hour()).unwrap(),
+                        u8::try_from(d.minute()).unwrap(),
+                        u8::try_from(d.second()).unwrap(),
+                        d.timestamp_subsec_micros(),
+                    );
+                    assert!(session
+                        .connection_mut()
+                        .unwrap()
+                        .exec_drop("INSERT INTO _p3_hard VALUES (?)", (raw,))
+                        .await
+                        .is_err());
+                }
+                let rows: Vec<(String,)> = session
+                    .connection_mut()
+                    .unwrap()
+                    .query("SELECT CAST(v AS CHAR) FROM _p3_hard")
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0].0.starts_with("2000-01-01 00:00:00"));
+            }
+        }
+    }
+}

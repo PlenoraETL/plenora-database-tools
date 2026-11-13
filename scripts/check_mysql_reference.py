@@ -58,6 +58,12 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "loss_codec::tests::double_rules_compose_in_both_fixture_orders",
+    "loss_codec::tests::temporal_boundaries_are_euclidean_and_checked",
+    "loss_codec::tests::codec_uses_common_consent_and_replay_does_not_recount",
+    "loss_codec::tests::negative_zero_is_explicit_and_conservative_floats_stay_closed",
+    "loss_codec::tests::range_rejection_precedes_loss_accounting",
+
     "write::tests::p1_fixture_baseline",
     "write::tests::p1_operation_gate_baseline",
     "session::caller_sql_session_tests::raw_probe_bypass_is_local_to_the_measurement_session",
@@ -406,6 +412,8 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_p3_loss_codec_boundaries",
+    "live_tests::live_p3_loss_codec_hard_boundaries",
     "live_tests::live_audit900_l2_typed_json",
     "live_tests::live_audit900_l4_found_rows",
     "live_tests::live_sospetti_warnings_and_byte_domains",

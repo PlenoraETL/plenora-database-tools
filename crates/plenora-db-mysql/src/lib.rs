@@ -25,6 +25,9 @@ mod session;
 mod transaction;
 mod types;
 mod write;
+// P3 prepara il codec; il gate operativo resta chiuso fino all'esecutore P4-P6.
+#[allow(dead_code)]
+mod loss_codec;
 mod write_admission;
 
 #[cfg(test)]

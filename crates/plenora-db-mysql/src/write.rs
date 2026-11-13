@@ -1540,7 +1540,7 @@ pub fn stamp_ddl_residue(
     }
 }
 
-fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<Value> {
+pub(crate) fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<Value> {
     macro_rules! primitive {
         ($array:ty, $value:expr) => {{
             let values = array
@@ -1949,7 +1949,7 @@ pub(crate) fn repeated_key_error(kind: plenora_database_core::plan::ProviderKind
     )
 }
 
-fn mapping_error(message: impl Into<String>) -> DatabaseError {
+pub(crate) fn mapping_error(message: impl Into<String>) -> DatabaseError {
     prepare_error(ErrorCategory::DataMapping, message)
 }
 
