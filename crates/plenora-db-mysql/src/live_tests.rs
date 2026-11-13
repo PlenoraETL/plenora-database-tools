@@ -16040,3 +16040,348 @@ async fn live_p4_executor_abandoned_future() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p5_create_replay_and_prevalidation() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for accept in [false, true] {
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TABLE IF EXISTS _p5_create")
+                .await
+                .unwrap();
+            let result = p4_execute(
+                &provider,
+                "_p5_create",
+                WriteMode::Create,
+                policy,
+                accept,
+                Box::new(FailingBatchesStream {
+                    schema: batch.schema(),
+                    first: Some(batch.clone()),
+                }),
+                &cancellation,
+            )
+            .await;
+            assert_eq!(
+                result.as_ref().unwrap_err().remote_effect,
+                plenora_database_core::RemoteEffect::None
+            );
+            assert!(p4_report(&result).effective.is_empty());
+            let count: u64 = audit.connection_mut().unwrap().query_first("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='_p5_create'").await.unwrap().unwrap();
+            assert_eq!(count, 0);
+            let result = p4_execute(
+                &provider,
+                "_p5_create",
+                WriteMode::Create,
+                policy,
+                accept,
+                Box::new(VecBatchStream {
+                    schema: batch.schema(),
+                    batches: VecDeque::from([batch.clone(), batch.clone()]),
+                }),
+                &cancellation,
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+            let report = p4_report(&result);
+            assert!(report.risk.is_empty());
+            assert!(report.effective.is_empty());
+            let values: Vec<u32> = audit
+                .connection_mut()
+                .unwrap()
+                .query("SELECT MICROSECOND(v) FROM _p5_create")
+                .await
+                .unwrap();
+            assert_eq!(values, vec![501, 501]);
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_create")
+        .await
+        .unwrap();
+}
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p5_create_residue_after_ddl() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    for fault in [4, 14, 24, 1, 2, 3] {
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _p5_residue")
+            .await
+            .unwrap();
+        let token = CancellationToken::new();
+        let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+        let _fault = crate::loss_execution::faults::Guard::engage(fault);
+        let result = p4_execute(
+            &provider,
+            "_p5_residue",
+            WriteMode::Create,
+            MappingPolicy::Compatible,
+            false,
+            Box::new(VecBatchStream {
+                schema: batch.schema(),
+                batches: VecDeque::from([batch]),
+            }),
+            &token,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_ne!(
+            result.as_ref().unwrap_err().remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
+        assert!(p4_report(&result).effective.is_empty());
+        let count: u64 = audit
+            .connection_mut()
+            .unwrap()
+            .query_first("SELECT COUNT(*) FROM _p5_residue")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_residue")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p5_create_budget_keys_and_empty() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    for case in 0..5 {
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _p5_budget")
+            .await
+            .unwrap();
+        let mut limits = ResourceLimits::default();
+        if case == 1 {
+            limits.rows = 1;
+        }
+        let budget = ResourceBudget::new(limits).unwrap();
+        let mut operation =
+            write_op_scalar(live_config().database(), "_p5_budget", WriteMode::Create);
+        if case == 2 {
+            operation.keys = vec!["id".into()];
+        }
+        let mut prepared = provider
+            .prepare_write(
+                &live_secret(),
+                &operation,
+                batch.schema(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        prepared.operation.mapping_policy = MappingPolicy::Compatible;
+        prepared.loss_report.policy = MappingPolicy::Compatible;
+        let occupied = match case {
+            0 => Some(
+                budget
+                    .try_lease(
+                        plenora_database_core::resource::ResourceKind::MemoryBytes,
+                        budget
+                            .remaining(plenora_database_core::resource::ResourceKind::MemoryBytes)
+                            - 150_000,
+                    )
+                    .unwrap(),
+            ),
+            1 => Some(
+                budget
+                    .try_lease(plenora_database_core::resource::ResourceKind::Rows, 1)
+                    .unwrap(),
+            ),
+            _ => None,
+        };
+        let batches = match case {
+            0 => VecDeque::from([p4_batch(
+                vec![1; 1000],
+                vec![Some(946_684_800_000_501); 1000],
+            )]),
+            2 => VecDeque::from([batch.clone(), batch.clone()]),
+            3 => VecDeque::new(),
+            4 => VecDeque::from([p4_batch(vec![1], vec![Some(i64::MAX)])]),
+            _ => VecDeque::from([batch.clone()]),
+        };
+        let result = crate::provider::execute_mysql_write(
+            &provider,
+            &live_secret(),
+            prepared,
+            Box::new(VecBatchStream {
+                schema: batch.schema(),
+                batches,
+            }),
+            &budget,
+            &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+            true,
+        )
+        .await;
+        let count: u64 = audit.connection_mut().unwrap().query_first("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='_p5_budget'").await.unwrap().unwrap();
+        if case == 3 {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(count, 1);
+        } else {
+            let error = result.as_ref().unwrap_err();
+            if case <= 1 {
+                assert_eq!(
+                    error.category,
+                    plenora_database_core::ErrorCategory::ResourceLimit
+                );
+            }
+            assert_eq!(
+                error.remote_effect,
+                plenora_database_core::RemoteEffect::None
+            );
+            assert_eq!(count, 0);
+        }
+        drop(occupied);
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+#[allow(clippy::too_many_lines)]
+async fn live_p5_create_drift_and_lost_commit() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p5_drift")
+        .await
+        .unwrap();
+    {
+        let _fault = crate::loss_execution::faults::Guard::engage(34);
+        let result = p4_execute(
+            &provider,
+            "_p5_drift",
+            WriteMode::Create,
+            MappingPolicy::Compatible,
+            false,
+            Box::new(VecBatchStream {
+                schema: batch.schema(),
+                batches: VecDeque::from([batch.clone()]),
+            }),
+            &cancellation,
+        )
+        .await;
+        let error = result.as_ref().unwrap_err();
+        assert_eq!(
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::Partial
+        );
+        assert!(error.message.contains("tabella creata"));
+        assert!(p4_report(&result).effective.is_empty());
+        let count: u64 = audit
+            .connection_mut()
+            .unwrap()
+            .query_first("SELECT COUNT(*) FROM _p5_drift")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_drift")
+        .await
+        .unwrap();
+    let _delay = crate::session::DelayedCommitResponse::engage();
+    let writer = p4_execute(
+        &provider,
+        "_p5_drift",
+        WriteMode::Create,
+        MappingPolicy::Compatible,
+        false,
+        Box::new(VecBatchStream {
+            schema: batch.schema(),
+            batches: VecDeque::from([batch]),
+        }),
+        &cancellation,
+    );
+    let observe = async {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let count = audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_first::<u64, _>("SELECT COUNT(*) FROM _p5_drift")
+                    .await;
+                if matches!(count, Ok(Some(1))) {
+                    cancellation.cancel();
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+    };
+    let (result, ()) = tokio::join!(writer, observe);
+    let outcome = result.as_ref().unwrap();
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::OutcomeUnknown
+    );
+    assert!(outcome
+        .recovery
+        .as_ref()
+        .unwrap()
+        .verification_action
+        .as_ref()
+        .unwrap()
+        .contains("tabella creata"));
+    assert!(p4_report(&result).effective.is_empty());
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p5_drift")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 1);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_drift")
+        .await
+        .unwrap();
+}

@@ -680,8 +680,7 @@ pub async fn execute_mysql_write(
     if prepared.operation.mapping_policy != plenora_database_core::loss::MappingPolicy::Strict
         && !(cfg!(test)
             && internal_test
-            && provider.profile.kind() == crate::profile::MYSQL_PROFILE.kind()
-            && prepared.operation.mode != plenora_database_core::plan::WriteMode::Create)
+            && provider.profile.kind() == crate::profile::MYSQL_PROFILE.kind())
     {
         return Err(unsupported(
             "percorso permissivo MySQL non ancora qualificato",
@@ -761,6 +760,56 @@ pub async fn execute_mysql_write(
         }
     }
 
+    let mut frozen = if creates
+        && operation.mapping_policy != plenora_database_core::loss::MappingPolicy::Strict
+    {
+        Some(crate::loss_execution::Evaluation::new(
+            &schema, &plan, operation, consent, budget,
+        )?)
+    } else {
+        None
+    };
+    let _catalog_lease = if frozen.is_some() {
+        Some(
+            budget.try_lease(
+                ResourceKind::MemoryBytes,
+                (schema.fields().len() as u64)
+                    .checked_mul(65_536)
+                    .ok_or_else(|| DatabaseError::resource_limit("catalogo Create oltre budget"))?,
+            )?,
+        )
+    } else {
+        None
+    };
+    let (input, frozen_catalog): (Box<dyn BatchStream>, _) =
+        if let Some(evaluation) = frozen.as_mut() {
+            match crate::create_buffer::prepare(
+                &mut session,
+                input,
+                operation,
+                &plan,
+                evaluation,
+                provider.config.database(),
+                budget,
+                token,
+            )
+            .await
+            {
+                Ok(mut buffer) => {
+                    let catalog = std::mem::take(&mut buffer.catalog);
+                    (Box::new(buffer), Some(catalog))
+                }
+                Err(mut error) => {
+                    // Sono stati toccati soltanto oggetti temporanei della sessione.
+                    error.remote_effect = plenora_database_core::RemoteEffect::None;
+                    session.discard().await;
+                    return evaluation.finish(Err(error));
+                }
+            }
+        } else {
+            (input, None)
+        };
+
     // Una scrittura `create` abbandonata (future lasciata cadere, panic del
     // produttore) dopo l'invio del DDL non arriva a nessun esito: la guardia,
     // armata prima del DDL, la registra nel registro del provider. Chiusa
@@ -777,6 +826,11 @@ pub async fn execute_mysql_write(
             // Fase `write`: il DDL modifica il server, e una risposta persa
             // lascia l'esito ignoto come per ogni comando mutante.
             if let Err(error) = session.exec_control(&ddl, ErrorPhase::Write, token).await {
+                let error = if let Some(evaluation) = frozen.as_mut() {
+                    evaluation.finish(Err(error)).expect_err("esito di errore")
+                } else {
+                    error
+                };
                 // Anche un OK con diagnostici rifiutati ha creato la tabella.
                 if error.category == ErrorCategory::DataMapping
                     && error.remote_effect == plenora_database_core::RemoteEffect::Unknown
@@ -799,20 +853,39 @@ pub async fn execute_mysql_write(
         // apertura transazione, scrittura, commit — e ciascuna, dopo la DDL,
         // direbbe il falso da sola. Passano tutte da qui, e il residuo si
         // stampa una volta sul risultato.
-        let result = execute_mysql_write_after_ddl(
-            provider,
-            &mut session,
-            input,
-            operation,
-            &schema,
-            &plan,
-            prepared.loss_report.clone(),
-            consent,
-            target_schema,
-            budget,
-            token,
-        )
+        let result = async {
+            #[cfg(test)]
+            if creates {
+                crate::loss_execution::faults::after_create(
+                    &mut session,
+                    operation,
+                    provider.config.database(),
+                    token,
+                )
+                .await?;
+            }
+            execute_mysql_write_after_ddl(
+                provider,
+                &mut session,
+                input,
+                operation,
+                &schema,
+                &plan,
+                prepared.loss_report.clone(),
+                consent,
+                target_schema,
+                budget,
+                token,
+                &mut frozen,
+                frozen_catalog.as_ref(),
+            )
+            .await
+        }
         .await;
+        let result = match frozen.as_mut() {
+            Some(evaluation) => evaluation.finish(result),
+            None => result,
+        };
         crate::write::stamp_ddl_residue(result, ddl_residue)
     }
     .await;
@@ -997,6 +1070,8 @@ async fn execute_mysql_write_after_ddl(
     target_schema: &str,
     budget: &ResourceBudget,
     token: &CancellationToken,
+    frozen: &mut Option<crate::loss_execution::Evaluation>,
+    frozen_catalog: Option<&crate::create_buffer::Catalog>,
 ) -> Result<WriteOutcome> {
     let early = if operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict {
         None
@@ -1027,6 +1102,8 @@ async fn execute_mysql_write_after_ddl(
             budget,
             token,
             early.as_deref(),
+            frozen,
+            frozen_catalog,
         )
         .await
     }
@@ -1059,7 +1136,22 @@ async fn execute_mysql_write_locked(
     budget: &ResourceBudget,
     token: &CancellationToken,
     early: Option<&str>,
+    frozen: &mut Option<crate::loss_execution::Evaluation>,
+    frozen_catalog: Option<&crate::create_buffer::Catalog>,
 ) -> Result<WriteOutcome> {
+    if let Some(expected) = frozen_catalog {
+        let actual = crate::create_buffer::catalog(
+            session,
+            &crate::create_buffer::quoted(operation, provider.config.database())?,
+            token,
+        )
+        .await?;
+        if &actual != expected {
+            return Err(crate::write::mapping_error(
+                "catalogo Create diverso dai fatti congelati",
+            ));
+        }
+    }
     let product = session.profile().product();
     // La regola W2 sulla sessione che scrive: le impostazioni del bootstrap
     // ci sono, o la scrittura non parte.
@@ -1112,14 +1204,17 @@ async fn execute_mysql_write_locked(
         rewrites,
     )?;
     let rewrite_losses = rewrite_guard.losses();
-    let mut evaluation =
-        if operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict {
-            None
-        } else {
-            Some(crate::loss_execution::Evaluation::new(
-                schema, plan, operation, consent, budget,
-            )?)
-        };
+    let mut local_evaluation = if frozen.is_some()
+        || operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict
+    {
+        None
+    } else {
+        Some(crate::loss_execution::Evaluation::new(
+            schema, plan, operation, consent, budget,
+        )?)
+    };
+    let prevalidated = frozen.is_some();
+    let mut evaluation = frozen.as_mut().or(local_evaluation.as_mut());
     let guard = if evaluation.is_some() {
         plenora_database_core::store_rewrite::RewriteGuard::validation_only(provider.profile.kind())
     } else {
@@ -1344,7 +1439,7 @@ async fn execute_mysql_write_locked(
                 declared_rows,
                 &execution_id,
                 &staging_quoted,
-                evaluation.as_mut(),
+                evaluation.as_deref_mut(),
             )
             .await;
             return result;
@@ -1359,7 +1454,7 @@ async fn execute_mysql_write_locked(
             effective_staging,
             serial_stage.as_deref(),
             key_guard.as_ref(),
-            evaluation.as_mut(),
+            evaluation.as_deref_mut(),
             budget,
             token,
         )
@@ -1476,8 +1571,8 @@ async fn execute_mysql_write_locked(
     }
     .await;
     match evaluation.as_mut() {
-        Some(evaluation) => evaluation.finish(result),
-        None => result,
+        Some(evaluation) if !prevalidated => evaluation.finish(result),
+        _ => result,
     }
 }
 
@@ -1674,8 +1769,15 @@ async fn write_input_batches(
                 format!("righe batch {product} non rappresentabili"),
             )
         })?;
-        plan.validate_spatial_batch(&batch, budget)?;
-        let row_lease = budget.try_lease(ResourceKind::Rows, batch_rows)?;
+        let replay = evaluation.as_ref().is_some_and(|e| e.is_replay());
+        if !replay {
+            plan.validate_spatial_batch(&batch, budget)?;
+        }
+        let row_lease = if replay {
+            None
+        } else {
+            Some(budget.try_lease(ResourceKind::Rows, batch_rows)?)
+        };
         progress.received = progress.received.checked_add(batch_rows).ok_or_else(|| {
             provider_error(
                 ErrorCategory::ResourceLimit,
@@ -1705,7 +1807,11 @@ async fn write_input_batches(
                 format!("overflow righe inserite {product}"),
             )
         })?;
-        row_lease.commit(batch_rows)?;
+        if let Some(row_lease) = row_lease {
+            row_lease.commit(batch_rows)?;
+        } else if let Some(evaluation) = evaluation.as_mut() {
+            evaluation.commit_rows(batch_rows)?;
+        }
     }
     Ok(progress)
 }

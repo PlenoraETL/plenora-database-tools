@@ -32,3 +32,23 @@ pub async fn inject(
         "fault esecutore MySQL richiesto dal test",
     ))
 }
+
+pub async fn after_create(
+    session: &mut crate::MysqlSession,
+    operation: &plenora_database_core::plan::WriteOperation,
+    database: &str,
+    token: &plenora_database_core::CancellationToken,
+) -> plenora_database_core::Result<()> {
+    if FAULT.load(Ordering::SeqCst) == 34 {
+        let table = crate::create_buffer::quoted(operation, database)?;
+        session
+            .exec_control(
+                &format!("ALTER TABLE {table} MODIFY COLUMN v DATETIME(3) NULL"),
+                plenora_database_core::ErrorPhase::Write,
+                token,
+            )
+            .await
+    } else {
+        inject(session, 4, token).await
+    }
+}

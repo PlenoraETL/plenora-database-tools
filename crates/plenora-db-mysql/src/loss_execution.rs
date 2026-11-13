@@ -25,6 +25,10 @@ pub struct Evaluation {
     serial: bool,
     keys: Vec<usize>,
     rows: Vec<Option<BoundRow>>,
+    frozen: std::collections::VecDeque<Vec<Option<BoundRow>>>,
+    replay: bool,
+    row_leases: std::collections::VecDeque<plenora_database_core::resource::ResourceLease>,
+    active_rows: Option<plenora_database_core::resource::ResourceLease>,
 }
 impl Evaluation {
     pub fn new(
@@ -84,9 +88,40 @@ impl Evaluation {
                 .collect::<Result<Vec<_>>>()?,
             serial: matches!(operation.mode, WriteMode::Update | WriteMode::Upsert),
             rows: Vec::new(),
+            frozen: std::collections::VecDeque::new(),
+            replay: false,
+            row_leases: std::collections::VecDeque::new(),
+            active_rows: None,
         })
     }
+    pub const fn is_replay(&self) -> bool {
+        self.replay
+    }
+    pub fn reserve_rows(&mut self, budget: &ResourceBudget, rows: usize) -> Result<()> {
+        self.row_leases.push_back(budget.try_lease(
+            plenora_database_core::resource::ResourceKind::Rows,
+            rows as u64,
+        )?);
+        Ok(())
+    }
+    pub fn commit_rows(&mut self, rows: u64) -> Result<()> {
+        self.active_rows.take().ok_or_else(invalid)?.commit(rows)
+    }
+    pub fn freeze_batch(&mut self) {
+        self.frozen.push_back(std::mem::take(&mut self.rows));
+    }
+    pub const fn replay(&mut self) {
+        self.replay = true;
+    }
     pub fn begin(&mut self, batch: &RecordBatch) -> Result<()> {
+        if self.replay {
+            self.active_rows = Some(self.row_leases.pop_front().ok_or_else(invalid)?);
+            self.rows = self.frozen.pop_front().ok_or_else(invalid)?;
+            if self.rows.len() != batch.num_rows() {
+                return Err(invalid());
+            }
+            return Ok(());
+        }
         let received = self
             .received
             .checked_add(batch.num_rows() as u64)

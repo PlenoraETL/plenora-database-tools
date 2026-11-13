@@ -152,3 +152,47 @@ fn p4_retry_reuses_authorized_values_and_limit_precedes_effects() {
         ErrorCategory::ResourceLimit
     );
 }
+
+#[test]
+fn p5_frozen_replay_preserves_values_tokens_and_counts() {
+    let (plan, mut e, batch) = fixture(WriteMode::Create, LossConsent::Accept);
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let mut values = Vec::new();
+    for _ in 0..2 {
+        e.reserve_rows(&budget, batch.num_rows()).unwrap();
+        e.begin(&batch).unwrap();
+        values.push(e.bind(&plan, &batch, 0, 1).unwrap());
+        e.freeze_batch();
+    }
+    e.context.prepare_commit(true).unwrap();
+    let before = e.context.ledger.report().evaluation;
+    e.replay();
+    for expected in values {
+        e.begin(&batch).unwrap();
+        assert_eq!(expected, e.bind(&plan, &batch, 0, 1).unwrap());
+        assert_eq!(before, e.context.ledger.report().evaluation);
+        e.sent(0, 1).unwrap();
+        e.applied(0, 1, true).unwrap();
+        e.commit_rows(1).unwrap();
+    }
+    assert!(e.begin(&batch).is_err());
+}
+#[test]
+fn p5_reserves_remaining_budget_and_rejects_loss_before_replay() {
+    let (plan, mut e, batch) = fixture(WriteMode::Create, LossConsent::from_accept_loss(false));
+    let limits = ResourceLimits {
+        rows: 2,
+        ..ResourceLimits::default()
+    };
+    let budget = ResourceBudget::new(limits).unwrap();
+    let _occupied = budget
+        .try_lease(plenora_database_core::resource::ResourceKind::Rows, 2)
+        .unwrap();
+    assert_eq!(
+        e.reserve_rows(&budget, 1).unwrap_err().category,
+        ErrorCategory::ResourceLimit
+    );
+    e.begin(&batch).unwrap();
+    assert!(e.bind(&plan, &batch, 0, 1).is_err());
+    assert!(e.context.ledger.report().effective.is_empty());
+}

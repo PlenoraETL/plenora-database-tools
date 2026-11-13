@@ -871,6 +871,7 @@ const GUARDED_MODULES: &[(&str, &str)] = &[
     ("write.rs", include_str!("write.rs")),
     ("loss_codec.rs", include_str!("loss_codec.rs")),
     ("loss_execution.rs", include_str!("loss_execution.rs")),
+    ("create_buffer.rs", include_str!("create_buffer.rs")),
     ("write_admission.rs", include_str!("write_admission.rs")),
 ];
 

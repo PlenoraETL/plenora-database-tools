@@ -1026,8 +1026,8 @@
     "crates/plenora-db-mysql/src/row_diagnostics.rs::new#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Costruttore lazy della diagnostica: conserva lo stream; il consumer valida ogni batch prima di accedere alle celle.",
-      "review_sha256": "681a0eae2866e52e811219c273eea2e10c8c8b31c144513a0f17dc4d1ec1682d",
-      "signature": "pub const fn new( session: &'a mut MysqlSession, plan: &'a MysqlWritePlan, input: &'a mut dyn BatchStream, schema: &'a SchemaRef, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, constraint_column: Option<String>, staging: &'a str, ) -> Self"
+      "review_sha256": "268a6963771e7fa6073ed72ad38f496645075cdcaee9f3adbae5afbb1d1d1f7d",
+      "signature": "pub const fn new( session: &'a mut MysqlSession, plan: &'a MysqlWritePlan, input: &'a mut dyn BatchStream, schema: &'a SchemaRef, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, constraint_column: Option<String>, staging: &'a str, evaluation: Option<&'a mut crate::loss_execution::Evaluation>, ) -> Self"
     },
     "crates/plenora-db-mysql/src/write.rs::bind_chunk#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1219,7 +1219,7 @@
     "crates/plenora-db-postgres/src/write.rs::execute#1": {
       "classification": "ingresso guardato",
       "reason": "execute ora finalizza il ledger e delega a execute_inner nello stesso file: il validated_batch e nel consumer delegato, prima di evaluation.batch e stamp_declared_srid.",
-      "review_sha256": "a9e6118adf6bf7730badfa6e9378c5d710f3ee74b56aaa08267b9aafe3ab1478",
+      "review_sha256": "42a72ea4b54eae84c24ef15b76d053246cb3c02e497d5f571dc3c184b4622af1",
       "required": [
         "execute_inner("
       ],
@@ -8527,7 +8527,7 @@
       "classification": "ingresso guardato",
       "reason": "Provider MySQL: execute_with_consent -> execute_mysql_write; validazione completa per ogni fetch ordinario e diagnostico prima dei codec.",
       "signature": "fn write<'a>( &'a self, secret: &'a SecretString, prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &'a ResourceBudget, cancellation: &'a CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> ProviderFuture<'a, WriteOutcome>",
-      "review_sha256": "7c9826c1b5e11f1e708026c4ce0d2ab1a263d9f522feccc8f9c9696d1a081a23",
+      "review_sha256": "46c07c9f496c686e6c5a39ba7fce55fc8390316638b5b046fab03150e5ac2c25",
       "required": [
         "execute_mysql_write("
       ],
@@ -9541,7 +9541,7 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Evaluation e confinato nel modulo write privato PostgreSQL. batch riceve gli originali dopo validated_batch e controllo schema in execute_inner o PostgresRowWriter::locate; nessun ingresso pubblico indipendente.",
       "signature": "pub fn batch( &mut self, batch: &RecordBatch, plans: &[WriteColumnPlan], operation: &WriteOperation, ) -> Result<bool>",
-      "review_sha256": "54e4b9f4685bec490d8771fb223c01e1cd9f61ad19b75b519084ee9d4e8e3c67"
+      "review_sha256": "55268772105d70427dee1d792d2b15f90d57760884d67997f1933dc596a62c3b"
     },
     "crates/plenora-db-postgres/src/write/effective.rs::classify#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9565,7 +9565,7 @@
       "classification": "non riceve dati Arrow esterni",
       "reason": "Evaluation nel modulo write privato SQL Server: consumer ordinario e diagnostico chiamano validated_batch prima di batch e bind_row. Nessuna esportazione pubblica del valutatore.",
       "signature": "pub fn batch(&mut self, batch: &RecordBatch, plan: &WritePlan) -> Result<()>",
-      "review_sha256": "44da74a62c1f4e33e035ebf9627eb30001a7157e948b13c875b93c4a981cd5f6"
+      "review_sha256": "5f63179464a734c3b03093d033694d7d25cdce5e738eebaf0ffd3158cd8dc7e6"
     },
     "crates/plenora-db-sqlserver/src/write/effective.rs::classify#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -9606,6 +9606,129 @@
       "reason": "Fixture di test privata: restituisce lo schema costruito localmente, senza leggere celle.",
       "signature": "fn schema(&self) -> SchemaRef",
       "review_sha256": "ef6716a3965d505e28f994395998fe219a96974c27830e6b5d730012bc392e1b"
+    },
+    "crates/plenora-database-core/src/loss_registry.rs::resolve_rewrite#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Costruttore/risolutore legge solo DataType, schema e metadati del piano; nessuna cella Arrow.",
+      "review_sha256": "24a98da9287ab8f88d80e6c45006366cf85ae6181fddd5e066927d16b7813ae1",
+      "signature": "pub fn resolve_rewrite( provider: ProviderKind, arrow: &arrow_schema::DataType, native: &str, rewrite: crate::store_rewrite::StoreRewrite, ) -> crate::Result<RuleId>"
+    },
+    "crates/plenora-database-core/src/loss_registry.rs::classify_rewrite#1": {
+      "classification": "ingresso guardato",
+      "reason": "API core: delega StoreRewrite::classify, che valida integralmente ArrayData prima di accedere alle celle.",
+      "review_sha256": "9c11aac571e9624ac35873133d2c9f5478f076f2b0c436a6348502e5f31903ad",
+      "signature": "pub fn classify_rewrite( provider: ProviderKind, native: &str, rewrite: crate::store_rewrite::StoreRewrite, array: &dyn arrow_array::Array, row: usize, unit: crate::store_rewrite::TextLengthUnit, ) -> crate::Result<crate::loss_ledger::Classification>",
+      "required": [
+        "rewrite.classify("
+      ],
+      "proof": "Review catena dei consumer e gate Arrow/workspace; validazione completa precedente ai codec."
+    },
+    "crates/plenora-db-mysql/src/create_buffer.rs::schema#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Replay privato: restituisce schema o batch posseduti, gia validati integralmente da prepare; nessun nuovo input esterno.",
+      "review_sha256": "ef6716a3965d505e28f994395998fe219a96974c27830e6b5d730012bc392e1b",
+      "signature": "fn schema(&self) -> SchemaRef"
+    },
+    "crates/plenora-db-mysql/src/create_buffer.rs::next_batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Replay privato: restituisce schema o batch posseduti, gia validati integralmente da prepare; nessun nuovo input esterno.",
+      "review_sha256": "c1ddad274b5c4ca6c4030323506b9a8c8c436bca7c94b4660ce9ee2dd93dfefd",
+      "signature": "fn next_batch<'a>( &'a mut self, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>"
+    },
+    "crates/plenora-db-mysql/src/create_buffer.rs::prepare#1": {
+      "classification": "ingresso guardato",
+      "reason": "Create preconsuma lo stream attraverso validated_batch e validate_batch_schema prima di accedere a celle o bind.",
+      "review_sha256": "e5abbb1e8b29e4c9502f1afd1326ae4b1cce4f23c7e2d82af02caea8d5e74e91",
+      "signature": "pub async fn prepare( session: &mut MysqlSession, mut input: Box<dyn BatchStream>, operation: &WriteOperation, plan: &MysqlWritePlan, evaluation: &mut Evaluation, database: &str, budget: &ResourceBudget, token: &CancellationToken, ) -> Result<Buffer>",
+      "required": [
+        "validated_batch(",
+        "validate_batch_schema("
+      ],
+      "proof": "Review catena dei consumer e gate Arrow/workspace; validazione completa precedente ai codec."
+    },
+    "crates/plenora-db-mysql/src/live_tests.rs::schema#8": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Harness cfg(test): schema/batch locali del test, nessuna superficie pubblica.",
+      "review_sha256": "ef6716a3965d505e28f994395998fe219a96974c27830e6b5d730012bc392e1b",
+      "signature": "fn schema(&self) -> SchemaRef"
+    },
+    "crates/plenora-db-mysql/src/live_tests.rs::next_batch#8": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Harness cfg(test): schema/batch locali del test, nessuna superficie pubblica.",
+      "review_sha256": "6deb3617e73264c3b0ca5043b1a63a7287612da8779eb3314c33564af3dda664",
+      "signature": "fn next_batch<'a>( &'a mut self, cancellation: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>"
+    },
+    "crates/plenora-db-mysql/src/live_tests.rs::schema#9": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Harness cfg(test): schema/batch locali del test, nessuna superficie pubblica.",
+      "review_sha256": "ef6716a3965d505e28f994395998fe219a96974c27830e6b5d730012bc392e1b",
+      "signature": "fn schema(&self) -> SchemaRef"
+    },
+    "crates/plenora-db-mysql/src/live_tests.rs::next_batch#9": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Harness cfg(test): schema/batch locali del test, nessuna superficie pubblica.",
+      "review_sha256": "5406716c282b972fef54cf3bcd8e70095aeb1555da6c51ed79fc6014d70fa5b1",
+      "signature": "fn next_batch<'a>( &'a mut self, _: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>"
+    },
+    "crates/plenora-db-mysql/src/loss_codec.rs::new#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Costruttore/risolutore legge solo DataType, schema e metadati del piano; nessuna cella Arrow.",
+      "review_sha256": "d6f3baa5e2b65cddc26d956ec8ef39706c4359ae78b5cede0a1f1e7f8082c528",
+      "signature": "pub(crate) fn new( provider: ProviderKind, field: u32, arrow: DataType, native: &str, rewrite: StoreRewrite, ) -> Result<Self>"
+    },
+    "crates/plenora-db-mysql/src/loss_codec.rs::evaluate#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Adapter interno in modulo privato non riesportato: batch validati da validated_batch e controllo schema nel consumer prima di codec/cache; catena fissata nei support_sources.",
+      "review_sha256": "f878915cf0701c96a8cb934560e11d61a5091cdd7fdf84bd59d0f66927622957",
+      "signature": "pub(crate) fn evaluate( &self, context: &mut ExecutionLossContext, array: &dyn Array, row: usize, key: bool, ) -> Result<(Vec<LossToken>, Value)>"
+    },
+    "crates/plenora-db-mysql/src/loss_codec.rs::new#2": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Costruttore/risolutore legge solo DataType, schema e metadati del piano; nessuna cella Arrow.",
+      "review_sha256": "9f50efd412f823115faa5af82b263d35628ef8c82a3b1431acc4e14faebee09c",
+      "signature": "pub(crate) fn new( provider: ProviderKind, field_id: u32, arrow: DataType, native: &str, rewrite: StoreRewrite, ) -> Result<Self>"
+    },
+    "crates/plenora-db-mysql/src/loss_execution.rs::new#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Costruttore/risolutore legge solo DataType, schema e metadati del piano; nessuna cella Arrow.",
+      "review_sha256": "92a84262a0ac9a5a9646179643550ba622b385ac31dd2fe911cc64ca554e818b",
+      "signature": "pub fn new( schema: &SchemaRef, plan: &MysqlWritePlan, operation: &WriteOperation, consent: LossConsent, budget: &ResourceBudget, ) -> Result<Self>"
+    },
+    "crates/plenora-db-mysql/src/loss_execution.rs::begin#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Adapter interno in modulo privato non riesportato: batch validati da validated_batch e controllo schema nel consumer prima di codec/cache; catena fissata nei support_sources.",
+      "review_sha256": "d306bf27dc7b6547ae44067ff86ea3fd1ef8326dc4194c39f394f773c947f92e",
+      "signature": "pub fn begin(&mut self, batch: &RecordBatch) -> Result<()>"
+    },
+    "crates/plenora-db-mysql/src/loss_execution.rs::bind_keys#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Adapter interno in modulo privato non riesportato: batch validati da validated_batch e controllo schema nel consumer prima di codec/cache; catena fissata nei support_sources.",
+      "review_sha256": "9901ca0fe66725ef36a05f5b83208abec96b56ddffc92d0f7d12a8aa471ecb5e",
+      "signature": "pub fn bind_keys( &mut self, plan: &MysqlWritePlan, batch: &RecordBatch, row: usize, ) -> Result<Params>"
+    },
+    "crates/plenora-db-mysql/src/loss_execution.rs::bind#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Adapter interno in modulo privato non riesportato: batch validati da validated_batch e controllo schema nel consumer prima di codec/cache; catena fissata nei support_sources.",
+      "review_sha256": "70633f725667799895fd60c07ebaf886e6c417a1217002c30ffa0629660c3134",
+      "signature": "pub fn bind( &mut self, plan: &MysqlWritePlan, batch: &RecordBatch, start: usize, count: usize, ) -> Result<Params>"
+    },
+    "crates/plenora-db-mysql/src/provider.rs::execute_mysql_write#1": {
+      "classification": "ingresso guardato",
+      "reason": "Wrapper dei consumer ordinario, diagnostico e Create: ogni fetch passa da validated_batch prima dei codec; catena fissata nei support_sources.",
+      "review_sha256": "a67b285a433117eed6bdfe44f8952447b9fcde0d7b3fd738a9b00546396e11f5",
+      "signature": "pub async fn execute_mysql_write( provider: &MysqlProvider, secret: &SecretString, mut prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, internal_test: bool, ) -> Result<WriteOutcome>",
+      "required": [
+        "guard_input_keys(",
+        "create_buffer::prepare(",
+        "execute_mysql_write_after_ddl("
+      ],
+      "proof": "Review catena dei consumer e gate Arrow/workspace; validazione completa precedente ai codec."
+    },
+    "crates/plenora-db-mysql/src/write.rs::bind_value#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Adapter interno in modulo privato non riesportato: batch validati da validated_batch e controllo schema nel consumer prima di codec/cache; catena fissata nei support_sources.",
+      "review_sha256": "dd4e6899ecb3ad55b8c78f1f2c71086630881390a45c9d62e16f9b7faa06b5c0",
+      "signature": "pub(crate) fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<Value>"
     }
   },
   "support_sources": {
@@ -9634,8 +9757,8 @@
       "reason": "write applica validated_input allo stream del resolver prima di prepare/write_with_consent; gli output passano da validated_batch."
     },
     "crates/plenora-db-postgres/src/write.rs": {
-      "reason": "execute usa validated_batch prima dei codec e della valutazione. Il dry run compila le stesse regole dai soli metadati offline; reexport limitati al crate, nessun consumer alternativo.",
-      "review_sha256": "1db37c36ff94925850527991efa3a1102b3bfed99d7ad793a9d97f2efe543885"
+      "review_sha256": "694d747f12a1b6696def683b1f7e3e69f55413dff3e8e71f303ed9bd9e78299d",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-postgres/src/write/dry_run.rs": {
       "reason": "verify e row_scoped usano validated_batch prima del controllo schema, risorse, Evaluation::batch e codec. I rifiuti conservano ledger.report con effective vuoto e remote_effect None; consenso non aggira validazione o limiti.",
@@ -9650,20 +9773,20 @@
       "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
     },
     "crates/plenora-db-sqlserver/src/write/mod.rs": {
-      "review_sha256": "0d1ba37056a68ff4e7025dabc9af15aa66118a9defb7dc12964d1c97ef615ccd",
-      "reason": "write_prepared -> execute_evaluated -> write_prepared_inner: validated_batch prima di evaluation.batch e invio; diagnostica delegata al modulo registrato."
+      "review_sha256": "b190f0453bf88a7bbedc7b970a45392914a6b5387d7eea9e2d54a780558aaf78",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-sqlserver/src/write/row_diagnostics.rs": {
       "review_sha256": "776c57774be859bc55ace5acd6fb1a8ae418a2030470d97f00681982da09f23e",
       "reason": "locate e drain usano validated_batch; evaluation.batch precede bind/invio e segue la validazione."
     },
     "crates/plenora-db-mysql/src/provider.rs": {
-      "review_sha256": "ee1a4f1e9fc17403984b9c09d7d031fd6abfa19b50c03908222b8d19285f83c9",
-      "reason": "MySQL e MariaDB delegano al consumer execute_mysql_write con validated_batch prima dei codec; consenso non bypassa il fetch validante."
+      "review_sha256": "4f4bb695d1a8ffac9ab45d31e9dad6fbda694a7ff95363cff400f3587fb9e7f2",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/row_diagnostics.rs": {
-      "review_sha256": "1df2cf75dcf75d3b75ed61bfabe5249c99e4d79b4316fdb18752e97006a5172b",
-      "reason": "Unica variazione funzionale del diff inventariato: loss_report None nell errore. Fetch e drain conservano validated_batch."
+      "review_sha256": "b26241f57a2c17f734a451f1f8b398e287e5d019d51f29521416fccaff0999c8",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-db2/src/row_diagnostics.rs": {
       "review_sha256": "543a223e1468fd2d589d85fc315232be5735cc9da9d56c5c9a7f82ca9617afbb",
@@ -9870,12 +9993,12 @@
       "reason": "Pins the standard-library Union re-export together with the reviewed spatial constructors."
     },
     "crates/plenora-db-postgres/src/write/effective.rs": {
-      "reason": "Evaluation::batch riceve batch validati e schema controllato da writer e dry run, anche row-scoped. profile ora richiamato dal dry run legge solo WriteOperation e consenso; nessun buffer Arrow. bind applica i typmod alle istanze prima della classificazione.",
-      "review_sha256": "65c04ea18ce8c74c0b9b995242076223b324b190c343ac9d2c40c96c74b616df"
+      "review_sha256": "b048400ece91bbc7caf6d0b579345fc6ea370e0d42ac5f37c62b5ebaacfbd568",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-sqlserver/src/write/effective.rs": {
-      "reason": "Evaluation nel modulo write privato SQL Server: consumer ordinario e diagnostico chiamano validated_batch prima di batch e bind_row. Nessuna esportazione pubblica del valutatore. Classificatore pub(super) SQL Server: Evaluation::batch lo chiama su batch gia validati dal consumer; accessi String/Binary/temporali non sono ingressi pubblici autonomi.",
-      "review_sha256": "04d0ace6d014e259a2b088f5d0b53d5f4d243d3b602cf58b9e8598898f513911"
+      "review_sha256": "13a324bdab6f6652276bf29988515c18cf10f2fc0a1352bd0e80e5bf52eff108",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-postgres/src/write/canonical.rs": {
       "reason": "canonical::check e pub(super) nel writer privato: check_independent e effective::classify consumano array gia validati dai fetch ordinari/diagnostici o dagli ingressi codec guardati.",
@@ -9884,6 +10007,22 @@
     "crates/plenora-database-core/src/prepared_execution.rs": {
       "reason": "execute/execute_with_consent autorizzano report e invocano la closure una volta; non ricevono ne leggono buffer Arrow, validazione affidata ai consumer registrati.",
       "review_sha256": "cc135f872bf6ad3eef456a7ce2f20cfa9a1874674665ea456b85405b47fe99e4"
+    },
+    "crates/plenora-db-mysql/src/loss_codec.rs": {
+      "review_sha256": "7e7009add42b0a8ece284d6da7f1a643b9385df304979ac6e6da132acb932180",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
+    },
+    "crates/plenora-db-mysql/src/loss_execution.rs": {
+      "review_sha256": "f89b0e1a23f7180a1e73e1fc3fdeae26616e4e274e2f1eded67609888d6a662d",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
+    },
+    "crates/plenora-db-mysql/src/create_buffer.rs": {
+      "review_sha256": "fcd56f5913f0b2374c8e5791c3accf31676f552c6ea72c4c7c91fbe279ddf502",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
+    },
+    "crates/plenora-db-mysql/src/lib.rs": {
+      "review_sha256": "44e585ef1df6802ed119d87dc8445ec0ceb974dba231dfa8354214504ac5beeb",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     }
   },
   "evidence_sources": {

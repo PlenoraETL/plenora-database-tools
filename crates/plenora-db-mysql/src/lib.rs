@@ -13,6 +13,7 @@ mod arrow;
 mod catalog;
 mod conditional_json;
 mod config;
+mod create_buffer;
 mod error;
 mod loss_codec;
 mod loss_execution;

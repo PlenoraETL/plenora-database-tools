@@ -59,6 +59,8 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 
 EXPECTED_UNIT_TESTS = {
     "loss_execution::tests::p4_cache_second_batch_and_commit_attribution",
+    "loss_execution::tests::p5_frozen_replay_preserves_values_tokens_and_counts",
+    "loss_execution::tests::p5_reserves_remaining_budget_and_rejects_loss_before_replay",
     "loss_execution::tests::p4_no_match_consent_and_stage_only_uncertain",
     "loss_execution::tests::p4_rollback_and_lost_commit_preserve_evaluation",
     "loss_execution::tests::p4_retry_reuses_authorized_values_and_limit_precedes_effects",
@@ -416,6 +418,10 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_p5_create_drift_and_lost_commit",
+    "live_tests::live_p5_create_budget_keys_and_empty",
+    "live_tests::live_p5_create_replay_and_prevalidation",
+    "live_tests::live_p5_create_residue_after_ddl",
     "live_tests::live_p4_executor_abandoned_future",
     "live_tests::live_p4_executor_multiple_chunks",
     "live_tests::live_p4_executor_selection_and_keys",
