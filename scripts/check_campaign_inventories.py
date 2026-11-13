@@ -81,7 +81,7 @@ class InventoryRegressions(unittest.TestCase):
 
     def test_python_parameter_cases_and_unknown_forms(self):
         import tempfile
-        with tempfile.TemporaryDirectory(dir=ROOT / "target") as temporary:
+        with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "test_sample.py"
             path.write_text('@pytest.mark.parametrize("a", [1, 2])\n'
                             '@pytest.mark.parametrize("b", range(3))\n'
@@ -94,7 +94,7 @@ class InventoryRegressions(unittest.TestCase):
 
     def test_integration_target_is_discovered(self):
         import tempfile
-        with tempfile.TemporaryDirectory(dir=ROOT / "target") as temporary:
+        with tempfile.TemporaryDirectory() as temporary:
             crate = Path(temporary)
             (crate / "src").mkdir()
             (crate / "tests").mkdir()
@@ -112,7 +112,7 @@ class InventoryRegressions(unittest.TestCase):
 
     def test_python_fixture_alias_and_parameter_growth(self):
         import tempfile
-        with tempfile.TemporaryDirectory(dir=ROOT / "target") as temporary:
+        with tempfile.TemporaryDirectory() as temporary:
             suite = Path(temporary)
             (suite / "_harness.py").write_text("def postgres_dsn_or_skip(): pass", encoding="utf-8")
             test = suite / "test_fixture.py"

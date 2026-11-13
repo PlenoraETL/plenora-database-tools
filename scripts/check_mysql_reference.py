@@ -52,6 +52,9 @@ EXPECTED_LIVE_DEFAULT_TESTS = set(_INVENTORY["live_default"])
 EXPECTED_LIVE_REFERENCE_TESTS = set(_INVENTORY["live_reference"])
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def run(
     command: list[str],
     *,
@@ -59,6 +62,8 @@ def run(
     capture: bool = False,
     timeout: int = 15 * 60,
 ) -> str:
+    command = complete_command(command)
+    capture = capture or "--no-fail-fast" in command
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -68,6 +73,7 @@ def run(
         capture_output=capture,
         timeout=timeout,
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if capture:
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
@@ -251,20 +257,25 @@ def validate_inventory() -> None:
 
 
 def validate_fixture() -> None:
-    validate_compose_pins_the_baseline()
-    run([sys.executable, str(ROOT / "scripts" / "test_check_mysql_reference.py")])
-    run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{ROOT / 'docker' / 'mysql' / 'tls'}:/fixture:ro",
-            EXPECTED_REFERENCE,
-            "/bin/bash",
-            "/fixture/test_generate.sh",
-        ]
-    )
+    collection = Collection("mysql-fixture-contract")
+    with collection.stage(EXPECTED_VERSION, "compose-pin"):
+        validate_compose_pins_the_baseline()
+    with collection.stage(EXPECTED_VERSION, "python-self-tests"):
+        run([sys.executable, str(ROOT / "scripts" / "test_check_mysql_reference.py")])
+    with collection.stage(EXPECTED_VERSION, "tls-generator-self-test"):
+        run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{ROOT / 'docker' / 'mysql' / 'tls'}:/fixture:ro",
+                EXPECTED_REFERENCE,
+                "/bin/bash",
+                "/fixture/test_generate.sh",
+            ]
+        )
+    collection.finish()
 
 
 def ensure_reference_running() -> None:
@@ -309,6 +320,7 @@ def run_unit_suite() -> None:
         ["test", "-p", "plenora-db-mysql", "--locked", "--", "--skip", "live_"],
         capture=True,
     )
+    observe(output)
     verify_suite(
         "unit",
         EXPECTED_UNIT_TESTS,
@@ -332,6 +344,7 @@ def run_live_default_suite() -> None:
         ],
         capture=True,
     )
+    observe(output)
     verify_suite(
         "live default",
         EXPECTED_LIVE_DEFAULT_TESTS,
@@ -356,6 +369,7 @@ def run_live_reference_suite() -> None:
         ],
         capture=True,
     )
+    observe(output)
     verify_suite(
         "live reference",
         EXPECTED_LIVE_REFERENCE_TESTS,
@@ -386,6 +400,7 @@ def run_live_cli_probe() -> None:
         ],
         capture=True,
     )
+    observe(output)
     if not re.search(rf"^test {re.escape(test_name)} \.\.\. ok$", output, re.MULTILINE):
         raise RuntimeError("probe CLI live MySQL non eseguito")
     if not re.search(
@@ -430,27 +445,37 @@ def run_static_checks() -> int:
 
 
 def main() -> int:
-    validate_inventory()
-    validate_fixture()
-    ensure_reference_running()
-    identity = validate_reference()
-    run_cargo(["fmt", "--all", "--", "--check"])
-    run_cargo(
-        [
-            "clippy",
-            "-p",
-            "plenora-db-mysql",
-            "--all-targets",
-            "--locked",
-            "--",
-            "-D",
-            "warnings",
-        ]
-    )
-    run_unit_suite()
-    run_live_default_suite()
-    run_live_reference_suite()
-    run_live_cli_probe()
+    collection = Collection("mysql-reference")
+    with collection.stage(EXPECTED_VERSION, "inventory"):
+        validate_inventory()
+    with collection.stage(EXPECTED_VERSION, "fixture-contract"):
+        validate_fixture()
+    # An unavailable or wrong server cannot supply qualification evidence.
+    try:
+        ensure_reference_running()
+        identity = validate_reference()
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        for family, expected in (("fmt", ()), ("clippy", ()),
+                                 ("unit", EXPECTED_UNIT_TESTS),
+                                 ("live-default", EXPECTED_LIVE_DEFAULT_TESTS),
+                                 ("live-reference", EXPECTED_LIVE_REFERENCE_TESTS),
+                                 ("cli", ("live_database_probe_mysql_private_ca",))):
+            with collection.stage(EXPECTED_VERSION, family, expected):
+                raise RuntimeError("fixture unavailable")
+        collection.finish()
+        raise AssertionError("unreachable")
+    for family, operation, expected in (
+        ("fmt", lambda: run_cargo(["fmt", "--all", "--", "--check"]), ()),
+        ("clippy", lambda: run_cargo(["clippy", "-p", "plenora-db-mysql",
+                                     "--all-targets", "--locked", "--", "-D", "warnings"]), ()),
+        ("unit", run_unit_suite, EXPECTED_UNIT_TESTS),
+        ("live-default", run_live_default_suite, EXPECTED_LIVE_DEFAULT_TESTS),
+        ("live-reference", run_live_reference_suite, EXPECTED_LIVE_REFERENCE_TESTS),
+        ("cli", run_live_cli_probe, ("live_database_probe_mysql_private_ca",)),
+    ):
+        with collection.stage(EXPECTED_VERSION, family, expected):
+            operation()
+    collection.finish()
     print(
         json.dumps(
             {

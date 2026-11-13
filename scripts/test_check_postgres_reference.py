@@ -277,7 +277,7 @@ class CliLiveFixtures(unittest.TestCase):
         L'opzione deve restare nella stessa invocazione inventariata dal report.
         """
         source = self.source()
-        start = source.index('"-p",\n                    "plenora-db-postgres",')
+        start = source.index("provider_output = run(")
         block = source[start : source.index("validate_live_row_diagnostics", start)]
         self.assertIn("--include-ignored", block)
 

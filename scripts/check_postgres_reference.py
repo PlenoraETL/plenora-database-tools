@@ -55,7 +55,12 @@ REQUIRED_LIVE_TESTS = frozenset(
 )
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def run(command: list[str], *, capture: bool = False) -> str:
+    command = complete_command(command)
+    capture = capture or "--no-fail-fast" in command
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -63,6 +68,7 @@ def run(command: list[str], *, capture: bool = False) -> str:
         text=True,
         capture_output=capture,
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if completed.returncode:
         if capture:
             sys.stderr.write(completed.stdout)
@@ -306,88 +312,96 @@ def main() -> int:
         if state != "running|healthy":
             raise RuntimeError("container PostgreSQL non healthy")
         steps.append("container_health")
-        run(cargo(["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))
-        steps.append("clippy_deny_warnings")
-        run(cargo([
-            "test",
-            "-p", "plenora-database-core",
-            "-p", "plenora-database-sql",
-        ]))
-        steps.append("core_and_sql_unit_tests")
-        # La cattura dell'harness preserva righe complete test/nome/esito anche
-        # quando i test scrivono su stdout in parallelo. Il parser usa queste
-        # righe per verificare l'inventario eseguito; evitare --nocapture.
-        provider_output = run(
-            cargo(
-                [
-                    "test",
-                    "-p",
-                    "plenora-db-postgres",
-                    "--",
-                    "--include-ignored",
-                    "--show-output",
-                ],
-                dsn,
-            ),
-            capture=True,
-        )
-        steps.append("provider_live_suite_with_ignored")
-        validate_live_row_diagnostics(provider_output)
-        steps.append("required_live_tests_observed")
-        # La suite compilata, chiesta a cargo: e la sola vista omogenea a
-        # quella che produce le righe `... ok`, e regge dove una regex sui
-        # sorgenti si romperebbe su una forma sintattica nuova.
-        listing = run(
-            cargo(
-                ["test", "-p", "plenora-db-postgres", "--", "--list", "--include-ignored"],
-                dsn,
-            ),
-            capture=True,
-        )
-        executed_live_tests = validate_live_inventory(provider_output, listing)
-        steps.append("live_inventory_matches_sources_and_run")
-        # Include anche i test ignorati e confronta l'esito con i sorgenti.
-        # I benchmark verificano risultati e percentili, senza soglie hardware.
-        for suite in CLI_REFERENCE_SUITES:
-            cli_output = run(
+        collection = Collection("postgres-reference")
+        with collection.stage("postgres-reference", "clippy_deny_warnings"):
+            run(cargo(["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))
+            steps.append("clippy_deny_warnings")
+        with collection.stage("postgres-reference", "core_and_sql_unit_tests"):
+            run(cargo([
+                "test",
+                "-p", "plenora-database-core",
+                "-p", "plenora-database-sql",
+            ]))
+            steps.append("core_and_sql_unit_tests")
+        with collection.stage("postgres-reference", "live_inventory_matches_sources_and_run"):
+            # La cattura dell'harness preserva righe complete test/nome/esito anche
+            # quando i test scrivono su stdout in parallelo. Il parser usa queste
+            # righe per verificare l'inventario eseguito; evitare --nocapture.
+            provider_output = run(
                 cargo(
                     [
                         "test",
                         "-p",
-                        "plenora-database-cli",
-                        "--test",
-                        suite,
+                        "plenora-db-postgres",
                         "--",
                         "--include-ignored",
-                        "--test-threads=1",
+                        "--show-output",
                     ],
                     dsn,
-                    insecure_local=True,
                 ),
                 capture=True,
             )
-            validate_cli_suite(suite, cli_output)
-            steps.append(f"cli_live_fixture_{suite}")
-        ipc_materialization = check_ipc_materialization(dsn)
-        steps.append("postgres_read_ipc_materialization_and_readback")
-        output = run(
-            cargo([
-                "test", "-p", "plenora-db-postgres",
-                "live_copy_vs_prepared_benchmark", "--",
-                "--ignored", "--show-output",
-            ], dsn),
-            capture=True,
-        )
-        matches = re.findall(
-            r'\{"rows":1000,"copy_text_micros":\d+,'
-            r'"copy_binary_micros":\d+,'
-            r'"prepared_micros":\d+,"differences":0\}',
-            output,
-        )
-        if not matches:
-            raise RuntimeError("risultato benchmark non trovato")
-        benchmark = json.loads(matches[-1])
-        steps.append("copy_text_binary_prepared_differential")
+            steps.append("provider_live_suite_with_ignored")
+            validate_live_row_diagnostics(provider_output)
+            steps.append("required_live_tests_observed")
+            # La suite compilata, chiesta a cargo: e la sola vista omogenea a
+            # quella che produce le righe `... ok`, e regge dove una regex sui
+            # sorgenti si romperebbe su una forma sintattica nuova.
+            listing = run(
+                cargo(
+                    ["test", "-p", "plenora-db-postgres", "--", "--list", "--include-ignored"],
+                    dsn,
+                ),
+                capture=True,
+            )
+            executed_live_tests = validate_live_inventory(provider_output, listing)
+            steps.append("live_inventory_matches_sources_and_run")
+        # Include anche i test ignorati e confronta l'esito con i sorgenti.
+        # I benchmark verificano risultati e percentili, senza soglie hardware.
+        for suite in CLI_REFERENCE_SUITES:
+            with collection.stage("postgres-reference", "cli-" + suite):
+                cli_output = run(
+                    cargo(
+                        [
+                            "test",
+                            "-p",
+                            "plenora-database-cli",
+                            "--test",
+                            suite,
+                            "--",
+                            "--include-ignored",
+                            "--test-threads=1",
+                        ],
+                        dsn,
+                        insecure_local=True,
+                    ),
+                    capture=True,
+                )
+                validate_cli_suite(suite, cli_output)
+                steps.append(f"cli_live_fixture_{suite}")
+        with collection.stage("postgres-reference", "postgres_read_ipc_materialization_and_readback"):
+            ipc_materialization = check_ipc_materialization(dsn)
+            steps.append("postgres_read_ipc_materialization_and_readback")
+        with collection.stage("postgres-reference", "copy_text_binary_prepared_differential"):
+            output = run(
+                cargo([
+                    "test", "-p", "plenora-db-postgres",
+                    "live_copy_vs_prepared_benchmark", "--",
+                    "--ignored", "--show-output",
+                ], dsn),
+                capture=True,
+            )
+            matches = re.findall(
+                r'\{"rows":1000,"copy_text_micros":\d+,'
+                r'"copy_binary_micros":\d+,'
+                r'"prepared_micros":\d+,"differences":0\}',
+                output,
+            )
+            if not matches:
+                raise RuntimeError("risultato benchmark non trovato")
+            benchmark = json.loads(matches[-1])
+            steps.append("copy_text_binary_prepared_differential")
+        collection.finish()
     except RuntimeError as error:
         print(f"postgres reference gate: {error}", file=sys.stderr)
         return 1

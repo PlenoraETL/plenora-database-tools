@@ -68,6 +68,9 @@ REQUIRED_LIVE_TESTS = frozenset(
 )
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def live_test_inventory() -> set[str]:
     """Legge i nomi dei test live dai sorgenti per verificarne identita ed esito."""
 
@@ -106,6 +109,8 @@ def run(
     capture: bool = False,
     timeout_seconds: int,
 ) -> str:
+    command = complete_command(command)
+    capture = capture or "--no-fail-fast" in command
     try:
         completed = subprocess.run(
             command,
@@ -121,11 +126,13 @@ def run(
         # l'ultimo test avviato quando il processo non arriva al riepilogo.
         for partial in (error.stdout, error.stderr):
             if partial:
+                observe(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes) else partial)
                 print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
                       else partial, end="", flush=True)
         raise RuntimeError(
             f"timeout dopo {timeout_seconds}s durante {command[0]}"
         ) from error
+    observe((completed.stdout or "") + (completed.stderr or ""))
     if capture:
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
@@ -539,70 +546,77 @@ def main() -> int:
         steps.append("server_identity")
         materialize_private_ca()
         steps.append("private_ca_materialized")
-        run_cargo(
-            [
-                "clippy",
-                "-p",
-                "plenora-db-sqlserver",
-                "--all-targets",
-                "--locked",
-                "--",
-                "-D",
-                "warnings",
-            ]
-        )
-        steps.append("clippy_deny_warnings")
-        run_cargo(
-            [
-                "test",
-                "-p",
-                "plenora-db-sqlserver",
-                "--lib",
-                "--locked",
-                "--",
-                "--skip",
-                "live_",
-            ]
-        )
-        steps.append("offline_unit_tests")
-        # I moduli live contengono test con e senza #[ignore]: entrambi
-        # devono entrare nella corsa e nella lista compilata sottostante.
-        live_output = run_cargo(
-            [
-                "test",
-                "-p",
-                "plenora-db-sqlserver",
-                "live_",
-                "--locked",
-                "--",
-                "--include-ignored",
-                "--test-threads=1",
-                # Dalla dichiarazione, non da una seconda lista scritta a mano:
-                # due elenchi separati sarebbero andati alla deriva, e il gate
-                # avrebbe saltato un test che diceva di eseguire.
-                *[argument for name in SKIPPED_LIVE_TESTS for argument in ("--skip", name)],
-            ],
-            capture=True,
-        )
-        listing = run_cargo(
-            [
-                "test",
-                "-p",
-                "plenora-db-sqlserver",
-                "live_",
-                "--locked",
-                "--",
-                "--list",
-                "--include-ignored",
-            ],
-            capture=True,
-        )
-        executed_live_tests = validate_live_result(live_output, listing)
-        steps.append("live_inventory_matches_sources_and_run")
-        run_live_cli_probe()
-        steps.append("public_cli_probe_against_private_ca")
-        tls_rotation = rotate_server_certificate()
-        steps.append("tls_certificate_rotation")
+        collection = Collection("sqlserver-reference")
+        with collection.stage("sqlserver-reference", "clippy_deny_warnings"):
+            run_cargo(
+                [
+                    "clippy",
+                    "-p",
+                    "plenora-db-sqlserver",
+                    "--all-targets",
+                    "--locked",
+                    "--",
+                    "-D",
+                    "warnings",
+                ]
+            )
+            steps.append("clippy_deny_warnings")
+        with collection.stage("sqlserver-reference", "offline_unit_tests"):
+            run_cargo(
+                [
+                    "test",
+                    "-p",
+                    "plenora-db-sqlserver",
+                    "--lib",
+                    "--locked",
+                    "--",
+                    "--skip",
+                    "live_",
+                ]
+            )
+            steps.append("offline_unit_tests")
+        with collection.stage("sqlserver-reference", "live_inventory_matches_sources_and_run"):
+            # I moduli live contengono test con e senza #[ignore]: entrambi
+            # devono entrare nella corsa e nella lista compilata sottostante.
+            live_output = run_cargo(
+                [
+                    "test",
+                    "-p",
+                    "plenora-db-sqlserver",
+                    "live_",
+                    "--locked",
+                    "--",
+                    "--include-ignored",
+                    "--test-threads=1",
+                    # Dalla dichiarazione, non da una seconda lista scritta a mano:
+                    # due elenchi separati sarebbero andati alla deriva, e il gate
+                    # avrebbe saltato un test che diceva di eseguire.
+                    *[argument for name in SKIPPED_LIVE_TESTS for argument in ("--skip", name)],
+                ],
+                capture=True,
+            )
+            listing = run_cargo(
+                [
+                    "test",
+                    "-p",
+                    "plenora-db-sqlserver",
+                    "live_",
+                    "--locked",
+                    "--",
+                    "--list",
+                    "--include-ignored",
+                ],
+                capture=True,
+            )
+            executed_live_tests = validate_live_result(live_output, listing)
+            steps.append("live_inventory_matches_sources_and_run")
+        with collection.stage("sqlserver-reference", "public_cli_probe_against_private_ca"):
+            run_live_cli_probe()
+            steps.append("public_cli_probe_against_private_ca")
+        with collection.stage("sqlserver-reference", "tls_certificate_rotation"):
+            tls_rotation = rotate_server_certificate()
+            steps.append("tls_certificate_rotation")
+        collection.finish()
     except RuntimeError as error:
         print(f"sqlserver reference gate: {error}", file=sys.stderr)
         return 1

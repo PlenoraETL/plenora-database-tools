@@ -122,9 +122,14 @@ REQUIRED_LIVE_TESTS = frozenset(
 )
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def run(command: list[str], *, capture: bool = True, timeout: int = TIMEOUT) -> str:
     """Esegue un passo con timeout e rende visibile tutto il suo output."""
 
+    command = complete_command(command)
+    capture = capture or "--no-fail-fast" in command
     try:
         completed = subprocess.run(
             command,
@@ -140,10 +145,12 @@ def run(command: list[str], *, capture: bool = True, timeout: int = TIMEOUT) -> 
         # l'ultimo test avviato quando il processo non arriva al riepilogo.
         for partial in (error.stdout, error.stderr):
             if partial:
+                observe(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes) else partial)
                 print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
                       else partial, end="", flush=True)
         raise RuntimeError(f"timeout dopo {timeout}s durante {command[0]}") from error
     output = f"{completed.stdout}{completed.stderr}" if capture else ""
+    observe(output)
     if output:
         print(output, end="")
     if completed.returncode:
@@ -351,7 +358,7 @@ def run_python_live() -> None:
         "cd /tmp && "
         "PLENORA_EXPECT_DB2_RUNTIME=1 "
         "python3.12 /workspace/.github/scripts/verify_wheel.py && "
-        "python3.12 -m pytest -q -ra " + " ".join(PYTHON_LIVE_TARGETS)
+        "python3.12 -m pytest -q -rA " + " ".join(PYTHON_LIVE_TARGETS)
     )
     output = compose_exec(["sh", "-lc", script], PYTHON_ENV)
     if not re.search(rf"\b{PYTHON_LIVE_EXPECTED} passed in ", output):
@@ -365,61 +372,68 @@ def main() -> int:
         steps.append("immutable_base_images_and_distinct_db2_wheel_contract")
         container = container_identity()
         steps.append("container_health")
-        compose_exec(
-            [
-                "cargo",
-                "clippy",
-                "--locked",
-                "-p",
-                "plenora-db-db2",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-            DB2_ENV,
-        )
-        steps.append("clippy_deny_warnings")
-        compose_exec(
-            ["cargo", "test", "--locked", "-p", "plenora-db-db2", "--lib"], DB2_ENV
-        )
-        steps.append("offline_unit_tests")
-        listing = compose_exec(
-            [
-                "cargo",
-                "test",
-                "--locked",
-                "-p",
-                "plenora-db-db2",
-                "live_",
-                "--",
-                "--list",
-                "--ignored",
-            ],
-            DB2_ENV,
-        )
-        live = compose_exec(
-            [
-                "cargo",
-                "test",
-                "--locked",
-                "-p",
-                "plenora-db-db2",
-                "live_",
-                "--",
-                "--ignored",
-                "--test-threads=1",
-                "--show-output",
-            ],
-            DB2_ENV,
-            timeout=LIVE_TIMEOUT,
-        )
-        executed = validate_live_run(listing, live)
-        steps.append("live_inventory_matches_sources_and_run")
-        probe = run_cli_probe()
-        steps.append("public_cli_probe")
-        run_python_live()
-        steps.append("installed_python_wheel_sync_async_live")
+        collection = Collection("db2-reference")
+        with collection.stage("db2-reference", "clippy_deny_warnings"):
+            compose_exec(
+                [
+                    "cargo",
+                    "clippy",
+                    "--locked",
+                    "-p",
+                    "plenora-db-db2",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+                DB2_ENV,
+            )
+            steps.append("clippy_deny_warnings")
+        with collection.stage("db2-reference", "offline_unit_tests"):
+            compose_exec(
+                ["cargo", "test", "--locked", "-p", "plenora-db-db2", "--lib"], DB2_ENV
+            )
+            steps.append("offline_unit_tests")
+        with collection.stage("db2-reference", "live_inventory_matches_sources_and_run"):
+            listing = compose_exec(
+                [
+                    "cargo",
+                    "test",
+                    "--locked",
+                    "-p",
+                    "plenora-db-db2",
+                    "live_",
+                    "--",
+                    "--list",
+                    "--ignored",
+                ],
+                DB2_ENV,
+            )
+            live = compose_exec(
+                [
+                    "cargo",
+                    "test",
+                    "--locked",
+                    "-p",
+                    "plenora-db-db2",
+                    "live_",
+                    "--",
+                    "--ignored",
+                    "--test-threads=1",
+                    "--show-output",
+                ],
+                DB2_ENV,
+                timeout=LIVE_TIMEOUT,
+            )
+            executed = validate_live_run(listing, live)
+            steps.append("live_inventory_matches_sources_and_run")
+        with collection.stage("db2-reference", "public_cli_probe"):
+            probe = run_cli_probe()
+            steps.append("public_cli_probe")
+        with collection.stage("db2-reference", "installed_python_wheel_sync_async_live"):
+            run_python_live()
+            steps.append("installed_python_wheel_sync_async_live")
+        collection.finish()
     except RuntimeError as error:
         print(f"db2 reference gate: {error}", file=sys.stderr)
         return 1

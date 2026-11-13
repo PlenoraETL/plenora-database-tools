@@ -137,6 +137,9 @@ SQLSERVER_TLS_HOST = "sqlserver"
 POSTGRES_PORT = 5432
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 @dataclass(frozen=True)
 class ScopeContract:
     """Quanti test deve aver eseguito uno scope, e quali puo aver saltato.
@@ -240,6 +243,7 @@ def run(command: list[str], *, capture: bool = False) -> str:
     # thread di lettura moriva con `UnicodeDecodeError` e il runner
     # proseguiva con un output vuoto — cioe senza le righe che il verdetto
     # deve leggere, per una ragione che non riguarda ne build ne test.
+    command = complete_command(command)
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -248,6 +252,7 @@ def run(command: list[str], *, capture: bool = False) -> str:
         encoding="utf-8",
         errors="replace",
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if completed.returncode:
         if capture:
             sys.stderr.write(completed.stdout)
@@ -928,7 +933,7 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
         f"echo \"{PYTHON_MARKER}$(python -V 2>&1 | cut -d' ' -f2)\"; "
         f"echo \"{PACKAGES_MARKER}$(pip freeze | tr '\\n' ' ')\"; "
         f"python {REPOSITORY_MOUNT}/scripts/{PROBE.name}; "
-        f"python -m pytest {' '.join(selection)} -q -rs"
+        f"python -m pytest {' '.join(selection)} -q -rA"
     )
     command += [
         "-v",
@@ -1277,37 +1282,40 @@ def measure_scopes(
         # che non riguarda ne la build ne la suite. Si calcola una volta e si
         # riusa: gli scope girano sugli stessi due artefatti.
         images: dict[str, object] | None = None
+        collection = Collection("sdk-scopes")
         for scope in scopes:
-            output = run(
-                pytest_command(
-                    scope=scope, artifacts=artifacts, wheel=artifact["wheel"]
-                ),
-                capture=True,
-            )
-            assert_worktree_unchanged(before, f"l'esecuzione della suite ({scope})")
-            print(output)
-            if images is None:
-                images = {
-                    "build": image_identity(RUST_IMAGE),
-                    "test": image_identity(PYTHON_IMAGE),
-                }
-            summary = pytest_summary(output)
-            counts = assert_scope_contract(scope=scope, output=output, summary=summary)
-            # Copia, non aggiornamento in luogo: l'origine del package la
-            # dichiara l'interprete che ha eseguito **quello** scope, e
-            # sovrascriverla lascerebbe due verdetti che citano la stessa.
-            measured = dict(artifact)
-            measured.update(installed_origin(output))
-            documents[scope] = verdict(
-                scope=scope,
-                commit=commit,
-                dirty=dirty,
-                artifact=measured,
-                images=images,
-                versions=installed_versions(output),
-                counts=counts,
-                summary=summary,
-            )
+            with collection.stage(scope, "pytest"):
+                output = run(
+                    pytest_command(
+                        scope=scope, artifacts=artifacts, wheel=artifact["wheel"]
+                    ),
+                    capture=True,
+                )
+                assert_worktree_unchanged(before, f"l'esecuzione della suite ({scope})")
+                print(output)
+                if images is None:
+                    images = {
+                        "build": image_identity(RUST_IMAGE),
+                        "test": image_identity(PYTHON_IMAGE),
+                    }
+                summary = pytest_summary(output)
+                counts = assert_scope_contract(scope=scope, output=output, summary=summary)
+                # Copia, non aggiornamento in luogo: l'origine del package la
+                # dichiara l'interprete che ha eseguito **quello** scope, e
+                # sovrascriverla lascerebbe due verdetti che citano la stessa.
+                measured = dict(artifact)
+                measured.update(installed_origin(output))
+                documents[scope] = verdict(
+                    scope=scope,
+                    commit=commit,
+                    dirty=dirty,
+                    artifact=measured,
+                    images=images,
+                    versions=installed_versions(output),
+                    counts=counts,
+                    summary=summary,
+                )
+        collection.finish()
     return documents
 
 

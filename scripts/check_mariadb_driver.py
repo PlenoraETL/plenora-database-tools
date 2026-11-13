@@ -61,7 +61,7 @@ MARKER = "PLENORA_MARIADB_EVIDENCE "
 # Il test e `#[ignore]` perche pretende un riferimento vivo: qui lo si chiede
 # per nome, con `--nocapture` perche il verdetto viaggia sullo stdout.
 TEST_COMMAND = (
-    "cargo test --locked -p plenora-db-mysql --lib mariadb_driver_evidence "
+    "cargo test --no-fail-fast --locked -p plenora-db-mysql --lib mariadb_driver_evidence "
     "-- --ignored --nocapture --test-threads=1"
 )
 
@@ -435,6 +435,9 @@ EXPECTED_PROBES: tuple[str, ...] = (
 )
 
 
+from scripts.campaign_collection import Collection, collect_all, observe, complete_command
+
+
 def inventory_violations(document: dict[str, object]) -> list[str]:
     """Cosa manca, cosa avanza, e cosa si e spostato.
 
@@ -672,6 +675,7 @@ def soak_rounds() -> list[str]:
 
 
 def run(command: list[str]) -> str:
+    command = complete_command(command)
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -680,6 +684,7 @@ def run(command: list[str]) -> str:
         encoding="utf-8",
         errors="replace",
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if completed.returncode:
         sys.stderr.write(completed.stdout[-4000:])
         sys.stderr.write(completed.stderr[-4000:])
@@ -747,28 +752,37 @@ def measure(
         *environment,
         RUST_IMAGE, "sh", "-c", test_command,
     ]
+    collection = Collection("mariadb-measure")
     if test_command == TEST_COMMAND:
-        product = "mysql" if server.key == "mysql" else "mariadb"
-        regression = command[:-1] + [
-            f"CARGO_BUILD_JOBS=4 PLENORA_MYSQL_PRODUCT={product} cargo test --locked "
-            "-p plenora-db-mysql --lib live_sospetti_ "
-            "-- --ignored --show-output --test-threads=1"
-        ]
-        output = run(regression)
-        for name in ["live_sospetti_fixed_session_frontier", "live_sospetti_minimal_privileges", "live_sospetti_warnings_and_byte_domains", "live_sospetti_warning_frontier", "live_sospetti_mysql_lexer_and_protected_settings", "live_sospetti_conditional_update_closes_scope", "live_sospetti_unfinished_stream_prevents_commit", "live_sospetti_implicit_commit_preflight", "live_sospetti_database_reset_and_checkout", "live_sospetti_routine_session_drift_prevents_commit"]:
-            if f"test live_tests::{name} ... ok" not in output:
-                raise RuntimeError("regressione warning/domini non eseguita: " + name)
-    output = run(command)
-    # Il marcatore non e a inizio riga: `cargo test` stampa "test nome ... "
-    # e poi lascia scrivere al test, quindi il JSON arriva in coda alla riga
-    # del risultato. Cercarlo con `startswith` non trovava niente.
-    for line in reversed(output.splitlines()):
-        position = line.find(marker)
-        if position >= 0:
-            return json.loads(line[position + len(marker) :])
-    raise RuntimeError(
-        f"{server.label}: la misura non ha stampato il marcatore {marker.strip()}"
-    )
+        with collection.stage(server.key, "regressions"):
+            product = "mysql" if server.key == "mysql" else "mariadb"
+            regression = command[:-1] + [
+                f"CARGO_BUILD_JOBS=4 PLENORA_MYSQL_PRODUCT={product} cargo test --no-fail-fast --locked "
+                "-p plenora-db-mysql --lib live_sospetti_ "
+                "-- --ignored --show-output --test-threads=1"
+            ]
+            output = run(regression)
+            for name in ["live_sospetti_fixed_session_frontier", "live_sospetti_minimal_privileges", "live_sospetti_warnings_and_byte_domains", "live_sospetti_warning_frontier", "live_sospetti_mysql_lexer_and_protected_settings", "live_sospetti_conditional_update_closes_scope", "live_sospetti_unfinished_stream_prevents_commit", "live_sospetti_implicit_commit_preflight", "live_sospetti_database_reset_and_checkout", "live_sospetti_routine_session_drift_prevents_commit"]:
+                if f"test live_tests::{name} ... ok" not in output:
+                    raise RuntimeError("regressione warning/domini non eseguita: " + name)
+    document = None
+    with collection.stage(server.key, "probes"):
+        output = run(command)
+        # The marker can follow libtest's prefix on the same line.
+        for line in reversed(output.splitlines()):
+            position = line.find(marker)
+            if position >= 0:
+                document = json.loads(line[position + len(marker) :])
+                break
+        if document is None:
+            raise RuntimeError("probe marker missing")
+        for observation in document["observations"]:
+            collection.results.append(dict(
+                version=server.key, stage="probes", test=observation["probe"],
+                outcome="passed", observed_outcome=observation["outcome"],
+                message="observation collected; detail redacted"))
+    collection.finish()
+    return document
 
 
 def compare(
@@ -873,15 +887,14 @@ def compare(
 
 def verdict() -> dict[str, object]:
     fleet = servers()
-    for server in fleet:
+    def measure_verified(server):
         identities = image_identities(server.container)
         if not declares_image(identities, server.digest):
-            raise RuntimeError(
-                f"{server.label}: il container esegue {', '.join(identities)}, il "
-                f"documento dichiara {server.digest} — la misura non riguarderebbe "
-                "l'immagine dichiarata"
-            )
-    documents = {server.key: measure(server) for server in fleet}
+            raise RuntimeError("fixture image mismatch")
+        return measure(server)
+
+    documents = collect_all(fleet, measure_verified,
+                            gate="mariadb_driver", key=lambda server: server.key)
     results = compare(documents, fleet, OUTCOME_ONLY, EXPECTED_PROBES)
     families = sorted({entry["family"] for entry in results})
     differing = [entry for entry in results if entry["verdict"] == "differs"]

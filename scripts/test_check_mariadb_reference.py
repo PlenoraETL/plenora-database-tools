@@ -771,7 +771,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         self.assertIn('"{{.Image}}"', source)
         self.assertIn("RepoDigests", source)
         self.assertIn("declared_digest", source)
-        self.assertIn("la misura non riguarderebbe", source)
+        self.assertIn("fixture image mismatch", source)
 
     def test_the_runner_records_the_code_it_measured(self) -> None:
         """Commit e stato dell'albero, come nel gate del SDK."""
@@ -983,8 +983,8 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
             for name, value in shared.items():
                 setattr(lifecycle, name, value)
 
-        self.assertIn("e cambiato durante la misura", str(raised.exception))
-        self.assertIn("A -> B", str(raised.exception))
+        self.assertIn("campaign collection contains failures", str(raised.exception))
+        self.assertNotIn("A -> B", str(raised.exception))  # payload omitted from aggregate errors
 
         # E la pulizia c'e stata: dopo l'ultima accensione arriva uno
         # spegnimento, che e la cosa che prima non succedeva.

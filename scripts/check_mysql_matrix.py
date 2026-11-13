@@ -51,6 +51,9 @@ MatrixEntry = MysqlReference
 MATRIX = REFERENCES
 
 
+from scripts.campaign_collection import Collection, observe, complete_command
+
+
 def server_command(entry: MatrixEntry) -> list[str]:
     """Le stesse difese del riferimento fissato, per ogni versione."""
     del entry
@@ -199,6 +202,7 @@ def run(
     timeout: int = 900,
     capture: bool = False,
 ) -> str:
+    command = complete_command(command)
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -208,6 +212,7 @@ def run(
         capture_output=capture,
         timeout=timeout,
     )
+    observe((getattr(completed, "stdout", None) or "") + (getattr(completed, "stderr", None) or ""))
     if capture:
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
@@ -411,23 +416,27 @@ def discard(entry: MatrixEntry) -> None:
 def qualify(entry: MatrixEntry, environment: dict[str, str]) -> dict[str, Any]:
     discard(entry)
     try:
-        generate_tls(entry)
-        start(entry, environment)
-        wait_ready(entry)
-        probe = probe_server(entry)
-        verify_hardening(entry, probe)
-        verify_live_inventory(
-            entry,
-            "live default",
-            EXPECTED_LIVE_DEFAULT_TESTS,
-            run_suite(entry, environment, live_default_command()),
-        )
-        verify_live_inventory(
-            entry,
-            "live reference",
-            EXPECTED_LIVE_REFERENCE_TESTS,
-            run_suite(entry, environment, live_reference_command()),
-        )
+        collection = Collection("mysql-version-" + entry.label)
+        ready = False
+        with collection.stage(entry.exact_version, "fixture-identity-and-hardening"):
+            generate_tls(entry)
+            start(entry, environment)
+            wait_ready(entry)
+            probe = probe_server(entry)
+            verify_hardening(entry, probe)
+            ready = True
+        for family, expected, command in (
+            ("live default", EXPECTED_LIVE_DEFAULT_TESTS, live_default_command()),
+            ("live reference", EXPECTED_LIVE_REFERENCE_TESTS, live_reference_command()),
+        ):
+            with collection.stage(entry.exact_version, family, expected):
+                if not ready:
+                    raise RuntimeError("fixture unavailable or identity not verified")
+                output = run_suite(entry, environment, command)
+                # Also observe injected runners used by the orchestration tests.
+                observe(output)
+                verify_live_inventory(entry, family, expected, output)
+        collection.finish()
         return entry_report(entry, probe)
     finally:
         discard(entry)
@@ -439,12 +448,18 @@ def main() -> int:
     environment["MYSQL_PASSWORD"] = password
     environment["PLENORA_MYSQL_PASSWORD"] = password
     results: list[dict[str, Any]] = []
+    collection = Collection("mysql-version-matrix-v1")
     try:
-        validate_inventory()
-        verify_candidate_unit()
-        ensure_network()
+        with collection.stage("offline", "inventory"):
+            validate_inventory()
+        with collection.stage("offline", "unit", EXPECTED_UNIT_TESTS):
+            verify_candidate_unit()
+        with collection.stage("fixtures", "network"):
+            ensure_network()
         for entry in MATRIX:
-            results.append(qualify(entry, environment))
+            with collection.stage(entry.exact_version, "reference"):
+                results.append(qualify(entry, environment))
+        collection.finish()
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         print(f"mysql matrix gate: {error}", file=sys.stderr)
         return 1
