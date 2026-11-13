@@ -135,13 +135,16 @@ class CommitCutter:
         try:
             while data := client.recv(65536):
                 if scanner.feed(data):
+                    # L'interruzione si registra prima di chiudere il client:
+                    # il chiamante vede l'errore appena il socket si chiude, e
+                    # contarla dopo l'inoltro lasciava al test una corsa.
+                    with self._lock:
+                        self.cuts += 1
                     # Prima si chiude il client, poi si inoltra: la conferma
                     # del server non ha piu una strada per tornare indietro.
                     client.shutdown(socket.SHUT_RDWR)
                     client.close()
                     server.sendall(data)
-                    with self._lock:
-                        self.cuts += 1
                     time.sleep(2)
                     break
                 server.sendall(data)
