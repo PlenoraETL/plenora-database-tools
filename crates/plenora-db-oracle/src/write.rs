@@ -867,6 +867,7 @@ async fn load_target(
         CommitOutcome::OutcomeUnknown { recovery } => {
             let outcome = WriteOutcome {
                 schema_version: 2,
+                loss_report: None,
                 status: WriteStatus::OutcomeUnknown,
                 execution_id,
                 provider: ProviderKind::Oracle,
@@ -1779,6 +1780,7 @@ fn committed_outcome(
     };
     let outcome = WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id,
         provider: ProviderKind::Oracle,

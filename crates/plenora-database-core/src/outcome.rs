@@ -59,12 +59,29 @@ pub struct Recovery {
 #[serde(deny_unknown_fields)]
 pub struct WriteOutcome {
     pub schema_version: u32,
+    /// Rapporto del piano eseguito; assente soltanto negli esiti legacy v2.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_report"
+    )]
+    pub loss_report: Option<crate::execution_loss::VersionedLossReport>,
     pub status: WriteStatus,
     pub execution_id: String,
     pub provider: ProviderKind,
     pub rows: RowCounts,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_recovery"
+    )]
     pub recovery: Option<Recovery>,
+}
+
+fn present_report<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<crate::execution_loss::VersionedLossReport>, D::Error> {
+    crate::execution_loss::VersionedLossReport::deserialize(deserializer).map(Some)
 }
 
 /// Le lunghezze massime che `contracts/v2/write-outcome.schema.json`
@@ -89,10 +106,19 @@ impl WriteOutcome {
     /// lunghezze del contratto, campi di recovery troppo lunghi, combinazioni
     /// di stato/recovery incoerenti o conteggi superiori alle righe ricevute.
     pub fn validate(&self) -> crate::Result<()> {
-        if self.schema_version != 2 {
+        if !matches!(
+            (self.schema_version, &self.loss_report),
+            (2, None) | (3, Some(_))
+        ) {
             return Err(crate::DatabaseError::invalid_plan(
                 "esito di scrittura con schema_version non supportata",
             ));
+        }
+        if let Some(report) = &self.loss_report {
+            report.validate()?;
+            if let crate::execution_loss::VersionedLossReport::Execution(report) = report {
+                report.validate_outcome(self.status, self.rows.confirmed)?;
+            }
         }
         // `minLength: 1` e `maxLength: 128` contano code point.
         let execution_id_chars = self.execution_id.chars().count();
@@ -232,6 +258,7 @@ impl WriteOutcome {
                     message: "esito di scrittura fuori contratto: verificare lo stato remoto \
                               prima di ogni nuovo tentativo"
                         .to_owned(),
+                    loss_report: None,
                     diagnostics: None,
                 },
                 outcome: None,
@@ -275,6 +302,7 @@ impl WriteOutcome {
             provider: Some(self.provider),
             execution_id: Some(self.execution_id.clone()),
             message: message.to_owned(),
+            loss_report: self.loss_report.clone().map(Box::new),
             diagnostics: None,
         };
         Err(Box::new(UnsettledWrite {
@@ -364,3 +392,9 @@ impl UnsettledWrite {
 #[cfg(test)]
 #[path = "outcome_tests.rs"]
 mod tests;
+
+fn present_recovery<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Recovery>, D::Error> {
+    Recovery::deserialize(deserializer).map(Some)
+}

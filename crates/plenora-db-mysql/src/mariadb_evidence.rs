@@ -3204,7 +3204,14 @@ async fn scripted_write(
         served: 0,
     };
     provider
-        .write(&secret(), prepared, Box::new(stream), &budget, cancellation)
+        .write(
+            &secret(),
+            prepared,
+            Box::new(stream),
+            &budget,
+            cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
 }
 

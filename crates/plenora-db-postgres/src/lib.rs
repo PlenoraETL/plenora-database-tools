@@ -114,117 +114,180 @@ impl PostgresProvider {
         budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<PostgresWriteDryRun> {
-        let schema = input.schema();
-        let mut gate = write::StatementGate::default();
-        let mut row_security = write::target::RowSecurity::NotPerformed;
-        let (state, loss_report, prepared, resolved, null_keys) = if let Some(secret) = secret {
-            let mut prepared = self
-                .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
-                .await?;
-            // Il target risolto una volta dalla preparazione (regola T): il
-            // dry run legge e pubblica quello che la scrittura scriverebbe.
-            let operation = &prepared.operation.clone();
-            let mut state = prepared
-                .take_driver_state::<write::PreparedPostgresWrite>()
-                .ok_or_else(|| {
-                    DatabaseError::invalid_plan("stato prepared write PostgreSQL assente")
-                })?;
-            // Cio che la scrittura chiede al target, sul catalogo e nel suo
-            // ordine: DDL e svuotamento, poi la registrazione degli id dei
-            // campi, poi lo statement e la prima riga (`gate`).
-            let client = self.connect_session(secret).await?;
-            let session = client.client()?;
-            let row_scoped = operation.mode == plenora_database_core::plan::WriteMode::Append
-                && operation.transaction_profile
-                    == plenora_database_core::plan::TransactionProfile::SingleTransaction
-                && input.declared_input_rows().is_some();
-            // Cio che la scrittura legge, nel suo ordine e come lo legge: in
-            // una transazione che si annulla, con il percorso chiuso della
-            // regola Q2 (`search_path`) e la regola W2 prima di ogni altra
-            // lettura del target; `set_config` non resta nella sessione.
-            session
-                .batch_execute("BEGIN")
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-            let read = async {
-                search_path::SessionPath::close(session, ErrorPhase::Write).await?;
-                write::visibility::pin_session(session).await?;
-                let verdict = write::target::inspect(
-                    session,
-                    operation,
-                    &schema,
-                    write::target::WritePath::of(operation, row_scoped, self.insert_mode),
-                    self.schema_evolution,
-                )
-                .await?;
-                if let Some(error) = verdict.before_input {
-                    return Err(error);
-                }
-                field_identity::check(session, operation, &schema, verdict.may_lock, verdict.owner)
-                    .await?;
-                // La regola V come la scrittura: le colonne del target che
-                // il server legge secondo la sessione.
-                write::assign_dry_run_session_rules(Some(session), &mut state, operation, &schema)
-                    .await?;
-                // La regola K2 come la scrittura: l'uguaglianza delle chiavi.
-                write::assign_dry_run_key_equality(Some(session), &mut state, operation, &schema)
-                    .await?;
-                let null_keys = write::key_facts(session, operation).await?;
-                Ok((verdict, null_keys))
-            }
-            .await;
-            session
-                .batch_execute("ROLLBACK")
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-            let (verdict, null_keys) = read?;
-            drop(client);
-            gate.at_statement = verdict.at_statement;
-            gate.at_first_row = verdict.at_first_row;
-            row_security = verdict.row_security;
-            let report = Some(prepared.loss_report.clone());
-            (state, report, Some(prepared), operation.clone(), null_keys)
-        } else {
-            let mut state = write::prepare_state(&schema, operation)?;
-            write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
-            write::assign_dry_run_key_equality(None, &mut state, operation, &schema).await?;
-            let offline = plenora_database_core::write_keys::NullKeys::Distinct;
-            (state, None, None, operation.clone(), offline)
-        };
-        let operation = &resolved;
-        // La regola K come la scrittura, con i `NULL` dell'indice che prova le
-        // chiavi (senza la DSN `NULLS DISTINCT`: limite di `write_keys`).
-        let mut input = plenora_database_core::write_keys::guard_input_keys(
-            operation.mode,
-            &operation.keys,
+        self.dry_run_write_with_consent(
+            secret,
+            operation,
             input,
             budget,
-            null_keys,
-        )?;
-        let control = BudgetCancellation::new(cancellation, budget)?;
-        let verified = write::verify_input(
-            &state,
-            operation,
-            input.as_mut(),
-            budget,
-            control.token(),
-            write::InputLimits {
-                insert_mode: self.insert_mode,
-                max_batch_bytes: self.max_batch_bytes,
-                max_wkb_cell_bytes: self.max_wkb_cell_bytes,
-            },
-            gate,
+            cancellation,
+            plenora_database_core::loss::LossConsent::Deny,
         )
-        .await?;
-        // Le prenotazioni del piano restano vive mentre si giudica
-        // l'ingresso, come nella scrittura.
-        drop(prepared);
-        Ok(PostgresWriteDryRun {
-            batches: verified.batches,
-            rows: verified.rows,
-            loss_report,
-            row_security,
-            target: operation.target.clone(),
+        .await
+    }
+
+    /// Giudica la stessa scrittura con consenso esplicito, senza effetti remoti.
+    /// # Errors
+    /// I rifiuti della preparazione e dei valori conservano categoria e fase.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub async fn dry_run_write_with_consent(
+        &self,
+        secret: Option<&SecretString>,
+        operation: &WriteOperation,
+        input: Box<dyn BatchStream>,
+        budget: &ResourceBudget,
+        cancellation: &CancellationToken,
+        consent: plenora_database_core::loss::LossConsent,
+    ) -> Result<PostgresWriteDryRun> {
+        let mut prepared_report = None;
+        let result = async {
+            let schema = input.schema();
+            let mut gate = write::StatementGate::default();
+            let mut row_security = write::target::RowSecurity::NotPerformed;
+            let (state, loss_report, prepared, resolved, null_keys) = if let Some(secret) = secret {
+                let mut prepared = self
+                    .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
+                    .await?;
+
+                // Il target risolto una volta dalla preparazione (regola T): il
+                // dry run legge e pubblica quello che la scrittura scriverebbe.
+                let operation = &prepared.operation.clone();
+                let mut state = prepared
+                    .take_driver_state::<write::PreparedPostgresWrite>()
+                    .ok_or_else(|| {
+                        DatabaseError::invalid_plan("stato prepared write PostgreSQL assente")
+                    })?;
+                prepared_report = Some(
+                    plenora_database_core::loss_registry::compile_instances(
+                        plenora_database_core::plan::ProviderKind::Postgres,
+                        operation.mapping_policy,
+                        state.loss_instances.clone(),
+                    )?
+                    .1,
+                );
+                plenora_database_core::prepared_execution::authorize(&prepared.loss_report)?;
+                write::dry_run_profile(operation, consent)?;
+                // Cio che la scrittura chiede al target, sul catalogo e nel suo
+                // ordine: DDL e svuotamento, poi la registrazione degli id dei
+                // campi, poi lo statement e la prima riga (`gate`).
+                let client = self.connect_session(secret).await?;
+                let session = client.client()?;
+                let row_scoped = operation.mode == plenora_database_core::plan::WriteMode::Append
+                    && operation.transaction_profile
+                        == plenora_database_core::plan::TransactionProfile::SingleTransaction
+                    && input.declared_input_rows().is_some();
+                // Cio che la scrittura legge, nel suo ordine e come lo legge: in
+                // una transazione che si annulla, con il percorso chiuso della
+                // regola Q2 (`search_path`) e la regola W2 prima di ogni altra
+                // lettura del target; `set_config` non resta nella sessione.
+                session
+                    .batch_execute("BEGIN")
+                    .await
+                    .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+                let read = async {
+                    search_path::SessionPath::close(session, ErrorPhase::Write).await?;
+                    write::visibility::pin_session(session).await?;
+                    let verdict = write::target::inspect(
+                        session,
+                        operation,
+                        &schema,
+                        write::target::WritePath::of(operation, row_scoped, self.insert_mode),
+                        self.schema_evolution,
+                    )
+                    .await?;
+                    if let Some(error) = verdict.before_input {
+                        return Err(error);
+                    }
+                    field_identity::check(
+                        session,
+                        operation,
+                        &schema,
+                        verdict.may_lock,
+                        verdict.owner,
+                    )
+                    .await?;
+                    // La regola V come la scrittura: le colonne del target che
+                    // il server legge secondo la sessione.
+                    write::assign_dry_run_session_rules(
+                        Some(session),
+                        &mut state,
+                        operation,
+                        &schema,
+                    )
+                    .await?;
+                    // La regola K2 come la scrittura: l'uguaglianza delle chiavi.
+                    write::assign_dry_run_key_equality(
+                        Some(session),
+                        &mut state,
+                        operation,
+                        &schema,
+                    )
+                    .await?;
+                    let null_keys = write::key_facts(session, operation).await?;
+                    Ok((verdict, null_keys))
+                }
+                .await;
+                session
+                    .batch_execute("ROLLBACK")
+                    .await
+                    .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+                let (verdict, null_keys) = read?;
+                drop(client);
+                gate.at_statement = verdict.at_statement;
+                gate.at_first_row = verdict.at_first_row;
+                row_security = verdict.row_security;
+                let report = Some(prepared.loss_report.clone());
+                (state, report, Some(prepared), operation.clone(), null_keys)
+            } else {
+                let mut state = write::prepare_state(&schema, operation)?;
+                write::dry_run_profile(operation, consent)?;
+                write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
+                write::assign_dry_run_key_equality(None, &mut state, operation, &schema).await?;
+                let offline = plenora_database_core::write_keys::NullKeys::Distinct;
+                (state, None, None, operation.clone(), offline)
+            };
+            let operation = &resolved;
+            // La regola K come la scrittura, con i `NULL` dell'indice che prova le
+            // chiavi (senza la DSN `NULLS DISTINCT`: limite di `write_keys`).
+            let mut input = plenora_database_core::write_keys::guard_input_keys(
+                operation.mode,
+                &operation.keys,
+                input,
+                budget,
+                null_keys,
+            )?;
+            let control = BudgetCancellation::new(cancellation, budget)?;
+            let verified = write::verify_input_with_consent(
+                &state,
+                operation,
+                input.as_mut(),
+                budget,
+                control.token(),
+                write::InputLimits {
+                    insert_mode: self.insert_mode,
+                    max_batch_bytes: self.max_batch_bytes,
+                    max_wkb_cell_bytes: self.max_wkb_cell_bytes,
+                },
+                gate,
+                consent,
+            )
+            .await?;
+            // Le prenotazioni del piano restano vive mentre si giudica
+            // l'ingresso, come nella scrittura.
+            drop(prepared);
+            Ok(PostgresWriteDryRun {
+                batches: verified.batches,
+                rows: verified.rows,
+                loss_report,
+                row_security,
+                target: operation.target.clone(),
+            })
+        }
+        .await;
+        result.map_err(|mut error: DatabaseError| {
+            if error.loss_report.is_none() {
+                error.loss_report = prepared_report.map(|report| Box::new(report.into()));
+            }
+            error
         })
     }
 }
@@ -1124,11 +1187,19 @@ impl Provider for PostgresProvider {
             let mut driver_state = write::prepare_state(&input_schema, operation)?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-            let (loss_report, admitted) =
+            let (loss_report, admitted, instances, snapshot) =
                 preflight::write(self, secret, operation, &input_schema).await?;
             // La regola A: le riscritture misurate del target, che la
             // scrittura e il dry run verificano valore per valore.
             driver_state.apply_admission(&input_schema, operation, &admitted);
+            driver_state.covered = true;
+            driver_state.loss_instances.clone_from(&instances);
+            driver_state.snapshot = snapshot;
+            let (_, execution) = plenora_database_core::loss_registry::compile_instances(
+                ProviderKind::Postgres,
+                operation.mapping_policy,
+                instances,
+            )?;
             Ok(PreparedWrite::new(
                 operation.clone(),
                 input_schema,
@@ -1137,7 +1208,8 @@ impl Provider for PostgresProvider {
                 operation_lease,
                 columns_lease,
             )
-            .with_driver_state(driver_state))
+            .with_driver_state(driver_state)
+            .with_execution_loss(execution))
         })
     }
 
@@ -1148,49 +1220,58 @@ impl Provider for PostgresProvider {
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
+
+        consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(async move {
-            validate_prepared_budget(&prepared.budget, budget)?;
-            let control = BudgetCancellation::new(cancellation, budget)?;
-            let target = prepared.operation.target.clone();
-            // La regola K: una chiave ripetuta nell'ingresso di una mode per
-            // chiavi rifiuta la scrittura prima del COMMIT. Lo stream della
-            // condizione 2 lo costruisce la transazione, che legge come
-            // l'indice che prova le chiavi tratta i `NULL`
-            // (`write::visibility::null_keys`); qui le verifiche delle chiavi.
-            plenora_database_core::write_keys::validate_input_keys(
-                prepared.operation.mode,
-                &prepared.operation.keys,
-                &input.schema(),
-            )?;
-            let result = write::execute(
-                secret,
+        Box::pin(
+            plenora_database_core::prepared_execution::execute_with_consent(
                 prepared,
-                input,
-                budget,
-                control.token(),
-                write::WriteRuntime {
-                    statement_timeout_ms: self.statement_timeout_ms,
-                    lock_timeout_ms: self.lock_timeout_ms,
-                    fault_point: self.fault_point,
-                    insert_mode: self.insert_mode,
-                    max_batch_bytes: self.max_batch_bytes,
-                    max_wkb_cell_bytes: self.max_wkb_cell_bytes,
-                    tls_mode: self.tls_mode,
-                    tls_config: self.tls_config.clone(),
-                    network_options: self.network_options,
-                    schema_evolution: self.schema_evolution,
-                    pool: Arc::clone(&self.pool),
-                    metrics: Arc::clone(&self.metrics),
-                    pool_acquire_timeout_ms: self.pool_acquire_timeout_ms,
+                consent,
+                move |prepared, consent| async move {
+                    validate_prepared_budget(&prepared.budget, budget)?;
+                    let control = BudgetCancellation::new(cancellation, budget)?;
+                    let target = prepared.operation.target.clone();
+                    // La regola K: una chiave ripetuta nell'ingresso di una mode per
+                    // chiavi rifiuta la scrittura prima del COMMIT. Lo stream della
+                    // condizione 2 lo costruisce la transazione, che legge come
+                    // l'indice che prova le chiavi tratta i `NULL`
+                    // (`write::visibility::null_keys`); qui le verifiche delle chiavi.
+                    plenora_database_core::write_keys::validate_input_keys(
+                        prepared.operation.mode,
+                        &prepared.operation.keys,
+                        &input.schema(),
+                    )?;
+                    let result = write::execute(
+                        secret,
+                        prepared,
+                        input,
+                        budget,
+                        control.token(),
+                        write::WriteRuntime {
+                            statement_timeout_ms: self.statement_timeout_ms,
+                            lock_timeout_ms: self.lock_timeout_ms,
+                            fault_point: self.fault_point,
+                            insert_mode: self.insert_mode,
+                            max_batch_bytes: self.max_batch_bytes,
+                            max_wkb_cell_bytes: self.max_wkb_cell_bytes,
+                            tls_mode: self.tls_mode,
+                            tls_config: self.tls_config.clone(),
+                            network_options: self.network_options,
+                            schema_evolution: self.schema_evolution,
+                            pool: Arc::clone(&self.pool),
+                            metrics: Arc::clone(&self.metrics),
+                            pool_acquire_timeout_ms: self.pool_acquire_timeout_ms,
+                        },
+                        consent,
+                    )
+                    .await;
+                    if result.is_ok() {
+                        self.invalidate_cached_schema(secret, &target);
+                    }
+                    result
                 },
-            )
-            .await;
-            if result.is_ok() {
-                self.invalidate_cached_schema(secret, &target);
-            }
-            result
-        })
+            ),
+        )
     }
 
     fn open_transaction<'a>(
@@ -1354,3 +1435,6 @@ mod parameter_fidelity_live_tests;
 #[cfg(test)]
 #[path = "audit900_live_tests.rs"]
 mod audit900_live_tests;
+
+#[cfg(test)]
+mod effective_loss_live_tests;

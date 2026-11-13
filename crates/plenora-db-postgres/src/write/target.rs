@@ -496,6 +496,13 @@ pub async fn inspect(
     // il LOCK e il COMMENT della registrazione degli id.
     verdict.owner = table.owner && table.schema_usage;
     verdict.may_lock = table.lock && table.schema_usage;
+    // Il writer blocca ogni target esistente prima della regola R, del DDL,
+    // della registrazione degli id e dei valori. Il dry run legge il
+    // privilegio dal catalogo: non prende un lock di scrittura.
+    if !verdict.may_lock {
+        verdict.before_input = Some(denied(ErrorPhase::Write));
+        return Ok(verdict);
+    }
     let evolves = path != WritePath::RowScoped
         && evolution == PostgresSchemaEvolution::AddNullableColumns
         && matches!(

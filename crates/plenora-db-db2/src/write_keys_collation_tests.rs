@@ -115,6 +115,7 @@ async fn delete_by_text_keys(
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }

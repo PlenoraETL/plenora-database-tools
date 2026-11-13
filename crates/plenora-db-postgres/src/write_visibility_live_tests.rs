@@ -213,7 +213,16 @@ pub async fn write_stream(
         &cancellation,
     )
     .await?;
-    Provider::write(provider, secret, prepared, stream, &budget, &cancellation).await
+    Provider::write(
+        provider,
+        secret,
+        prepared,
+        stream,
+        &budget,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
 }
 
 pub async fn dry_run(
@@ -233,12 +242,13 @@ pub async fn dry_run_stream(
     stream: Box<dyn BatchStream>,
 ) -> Result<PostgresWriteDryRun> {
     provider
-        .dry_run_write(
+        .dry_run_write_with_consent(
             Some(secret),
             operation,
             stream,
             &budget(),
             &CancellationToken::new(),
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }

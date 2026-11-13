@@ -1567,6 +1567,7 @@ async fn write_rows(hooks: &dyn ProbeHooks, batteries: &[&Battery], row: Option<
             Box::new(input),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
     {

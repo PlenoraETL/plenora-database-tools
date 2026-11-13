@@ -253,6 +253,7 @@ fn refused() -> plenora_database_core::DatabaseError {
         provider: None,
         execution_id: None,
         message: "filtro spatial richiede validazione WKB e SRID".to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

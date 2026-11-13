@@ -345,7 +345,14 @@ async fn run_write(
         )
         .await?;
     provider
-        .write(&secret(), prepared, stream, &resources, cancellation)
+        .write(
+            &secret(),
+            prepared,
+            stream,
+            &resources,
+            cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
 }
 

@@ -23,6 +23,7 @@ fn parses_the_unknown_outcome_example() {
 fn row_accounting_overflow_is_rejected_without_panicking() {
     let outcome = WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id: "overflow".to_owned(),
         provider: ProviderKind::Postgres,
@@ -44,6 +45,7 @@ fn row_accounting_overflow_is_rejected_without_panicking() {
 fn committed_outcome_for_boundaries() -> WriteOutcome {
     WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id: "01J3BOUNDARY".to_owned(),
         provider: ProviderKind::Postgres,
@@ -310,5 +312,48 @@ fn an_unknown_outcome_takes_the_category_of_its_cause() {
         assert_eq!(error.phase, ErrorPhase::Commit);
         assert_eq!(error.remote_effect, RemoteEffect::Unknown);
         assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    }
+}
+
+#[test]
+fn every_status_requires_or_forbids_recovery_and_rejects_null() {
+    let source: WriteOutcome = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/outcome-v3-unknown.json"
+    ))
+    .unwrap();
+    for status in [
+        WriteStatus::Committed,
+        WriteStatus::RolledBack,
+        WriteStatus::PartiallyCommitted,
+        WriteStatus::OutcomeUnknown,
+    ] {
+        for present in [false, true] {
+            let mut outcome = source.clone();
+            outcome.status = status;
+            if let Some(crate::execution_loss::VersionedLossReport::Execution(report)) =
+                &mut outcome.loss_report
+            {
+                report.effective.clear(); // Questo test isola il vincolo recovery.
+            }
+            outcome.rows.received = 0;
+            outcome.rows.confirmed = 0;
+            outcome.rows.failed = 0;
+            outcome.rows.skipped = 0;
+            if !present {
+                outcome.recovery = None;
+            }
+            let uncertain = matches!(
+                status,
+                WriteStatus::PartiallyCommitted | WriteStatus::OutcomeUnknown
+            );
+            assert_eq!(
+                outcome.validate().is_ok(),
+                present == uncertain,
+                "{status:?}"
+            );
+            let mut document = serde_json::to_value(outcome).unwrap();
+            document["recovery"] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<WriteOutcome>(document).is_err());
+        }
     }
 }

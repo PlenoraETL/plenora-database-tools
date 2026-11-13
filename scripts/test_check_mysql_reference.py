@@ -2203,7 +2203,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "dentro il repository"):
                 sdk.cli_binary_path()
 
-        sdk.assert_artifacts_outside_repository(Path(tempfile.gettempdir()))
+        # La verifica e puramente lessicale: TMPDIR puo stare nel checkout.
+        sdk.assert_artifacts_outside_repository(sdk.ROOT.parent / "sdk-artifacts")
         with self.assertRaisesRegex(RuntimeError, "TMPDIR"):
             sdk.assert_artifacts_outside_repository(ROOT / "target" / "staging")
 
@@ -2312,9 +2313,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (999, 27, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (1009, 27, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (706, 320, 0)
+            (offline.passed, offline.skipped, offline.deselected), (706, 330, 0)
         )
         self.assertEqual(
             (
@@ -2326,7 +2327,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 1024),
+            (2, 0, 1034),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 e Oracle anche live, e nessuno

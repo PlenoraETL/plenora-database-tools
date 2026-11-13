@@ -388,6 +388,7 @@ const fn mapping_error_owned(message: String) -> DatabaseError {
         provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message,
+        loss_report: None,
         diagnostics: None,
     }
 }

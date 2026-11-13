@@ -401,9 +401,13 @@ fn char_n_completa_e_la_regola_s_lo_rifiuta() {
     }
     assert!(check(&strict, 3).is_err(), "regola P: oltre la lunghezza");
     let lenient = rule(false, false);
-    for row in 0..4 {
+    for row in 0..3 {
         check(&lenient, row).expect("dichiarato nel LossReport");
     }
+    assert!(
+        check(&lenient, 3).is_err(),
+        "mai troncare, anche non strict"
+    );
     let key = rule(false, true);
     check(&key, 0).expect("chiave piena");
     for row in [1, 2, 3] {
@@ -500,12 +504,60 @@ fn bounded_content_all_policies() {
             };
             assert!(super::check_text(&rule, Some(10), padded, &values, 0).is_ok());
             for row in [1, 2] {
-                assert_eq!(
-                    super::check_text(&rule, Some(10), padded, &values, row).is_err(),
-                    policy == MappingPolicy::Strict
-                );
+                assert!(super::check_text(&rule, Some(10), padded, &values, row).is_err());
             }
         }
+    }
+}
+
+#[test]
+fn bounded_text_never_truncates_trailing_spaces_or_list_elements() {
+    use arrow_array::{builder::ListBuilder, builder::StringBuilder, StringArray};
+    for strict in [false, true] {
+        for key in [false, true] {
+            let rule = SessionRule {
+                leaves: Vec::new(),
+                strict,
+                key,
+            };
+            let values = StringArray::from(vec![None, Some("abc"), Some("abc ")]);
+            assert!(super::check_text(&rule, Some(3), None, &values, 0).is_ok());
+            assert!(super::check_text(&rule, Some(3), None, &values, 1).is_ok());
+            assert!(super::check_text(&rule, Some(3), None, &values, 2).is_err());
+            let mut list = ListBuilder::new(StringBuilder::new());
+            list.values().append_value("abc");
+            list.values().append_null();
+            list.append(true);
+            list.values().append_value("abc ");
+            list.append(true);
+            let list = list.finish();
+            assert!(super::check_text(&rule, Some(3), None, &list, 0).is_ok());
+            assert!(super::check_text(&rule, Some(3), None, &list, 1).is_err());
+        }
+    }
+}
+
+#[test]
+fn bounded_nested_text_refuses_when_leaf_values_cannot_be_checked() {
+    use super::super::plan::WriteColumnPlan;
+    use arrow_array::StringArray;
+    let mut plan = WriteColumnPlan::compile(&Field::new("v", DataType::Utf8, true)).unwrap();
+    plan.session_rule = Some(SessionRule {
+        leaves: vec![Leaf {
+            class: LeafClass::Text { max_chars: Some(3) },
+            shape: SessionShape::Nested,
+        }],
+        strict: false,
+        key: false,
+    });
+    let values = StringArray::from(vec!["(abc)", "(abc )"]);
+    for row in 0..2 {
+        let error = super::check(&plan, &values, row).unwrap_err();
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+        assert!(!error.message.contains("abc"));
     }
 }
 
@@ -551,5 +603,38 @@ fn nul_text_is_refused_before_any_writer_codec_sends_the_value() {
         );
         assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
         assert!(!error.message.contains("a\0b"));
+    }
+}
+
+/// La specializzazione Numeric di B2 non apre i typmod 0..3 in Strict.
+#[test]
+fn strict_numeric_predicate_matches_903_baseline_enumeration() {
+    use super::super::plan::WriteColumnPlan;
+    use arrow_array::StringArray;
+    let values = StringArray::from(vec![Some("1"), Some("1.005"), Some("-0"), None]);
+    for typmod in [-1, 0, 1, 2, 3, 4, (5 << 16) + 2 + 4] {
+        for key in [false, true] {
+            let mut plan =
+                WriteColumnPlan::compile(&Field::new("v", DataType::Utf8, true)).unwrap();
+            plan.session_rule = Some(SessionRule {
+                strict: true,
+                key,
+                leaves: vec![Leaf {
+                    class: classify(Some("numeric_in"), typmod),
+                    shape: SessionShape::Scalar,
+                }],
+            });
+            for row in 0..4 {
+                // 99ec6332: numeric_in con typmod >= 0 era Rounding;
+                // senza typmod era Parsed (chiavi non nulle rifiutate).
+                // Rounding rifiutava il tipo testuale anche per una cella NULL.
+                let baseline = typmod < 0 && (!key || row == 3);
+                assert_eq!(
+                    super::check(&plan, &values, row).is_ok(),
+                    baseline,
+                    "typmod={typmod} key={key} row={row}"
+                );
+            }
+        }
     }
 }

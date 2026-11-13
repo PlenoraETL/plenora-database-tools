@@ -12,6 +12,7 @@ fn mk_error(retry: RetryDisposition) -> DatabaseError {
         provider: None,
         execution_id: None,
         message: "test".to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

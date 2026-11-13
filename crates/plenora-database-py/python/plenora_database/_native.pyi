@@ -311,6 +311,7 @@ class DatabaseSession:
         mapping_policy: str = "strict",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict: ...
 
 # ============================ AsyncDatabaseSession ==============================
@@ -381,6 +382,7 @@ class AsyncDatabaseSession:
         mapping_policy: str = "strict",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> Any: ...  # awaitable → dict
 # ============================ Session (sync) ============================
 
@@ -470,6 +472,7 @@ class Session:
         mapping_policy: str = "compatible",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict: ...
 
 # ============================ Transaction (sync) ============================
@@ -610,6 +613,7 @@ class AsyncSession:
         mapping_policy: str = "compatible",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> Any: ...  # awaitable → dict
 
 
@@ -720,6 +724,7 @@ class PlenoraError(RuntimeError):
     message: str
     details: dict | None
     diagnostics: dict | list | None
+    loss_report: dict | None
     parameter_index: int | None
     portable_type: str | None
     target_type: str | None
@@ -750,3 +755,8 @@ class PlenoraInternalError(PlenoraError): ...
 class PlenoraCommitOutcomeUnknownError(PlenoraInternalError):
     automatic_retry_allowed: bool  # sempre False per outcome unknown
     recovery_action: str  # istruzione human-readable
+
+
+class MappingLossWarning(UserWarning):
+    """Perdite effettive committate; con filtro error conserva il commit."""
+    write_outcome: dict

@@ -204,6 +204,7 @@ class Session(_BuilderFactory):
         mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict:
         """Bulk write via `prepare_write` + `write` del provider.
 
@@ -259,7 +260,7 @@ class Session(_BuilderFactory):
         ipc_bytes = _to_ipc_bytes(source)
         return self._native.copy_from(
             schema, table, ipc_bytes, mode, transaction_profile,
-            mapping_policy, keys, update_columns,
+            mapping_policy, keys, update_columns, accept_loss,
         )
 
     # ------------------------ transactions -----------------------------

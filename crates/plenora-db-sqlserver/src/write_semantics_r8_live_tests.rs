@@ -331,7 +331,13 @@ async fn run_r8(
         SqlServerInsertMode::Prepared,
     )
     .await?;
-    write_prepared(prepared, Box::new(input), &cancellation).await
+    write_prepared(
+        prepared,
+        Box::new(input),
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
 }
 
 async fn admin_texts(admin: &mut SqlServerSession, sql: &str) -> Vec<String> {
@@ -961,9 +967,14 @@ async fn live_bounded_content_reports_loss_and_refuses_split_utf16() {
             |loss| loss.severity == plenora_database_core::loss::LossSeverity::DataLoss
                 && loss.reason.contains("contenuto oltre")
         ));
-    let outcome = write_prepared(prepared, Box::new(input), &cancellation)
-        .await
-        .unwrap();
+    let outcome = write_prepared(
+        prepared,
+        Box::new(input),
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome.status, WriteStatus::Committed);
     assert_eq!(
         admin_texts(&mut admin, "SELECT v FROM [plenora_test].[length_loss]").await,

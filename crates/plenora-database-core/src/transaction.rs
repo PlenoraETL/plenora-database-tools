@@ -264,6 +264,7 @@ pub fn concurrent_modification_error(message: impl Into<String>) -> crate::Datab
         provider: None,
         execution_id: None,
         message: message.into(),
+        loss_report: None,
         diagnostics: None,
     }
 }

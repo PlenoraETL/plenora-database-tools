@@ -455,6 +455,7 @@ impl AsyncDatabaseSession {
         mapping_policy="strict",
         keys=None,
         update_columns=None,
+        accept_loss=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn acopy_from<'py>(
@@ -468,6 +469,7 @@ impl AsyncDatabaseSession {
         mapping_policy: &str,
         keys: Option<Vec<String>>,
         update_columns: Option<Vec<String>>,
+        accept_loss: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -493,6 +495,7 @@ impl AsyncDatabaseSession {
                 &policy,
                 keys,
                 update_columns,
+                accept_loss,
                 cancellation,
             )
             .await

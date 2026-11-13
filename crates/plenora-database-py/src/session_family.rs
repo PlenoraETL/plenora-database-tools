@@ -473,6 +473,7 @@ impl DatabaseSession {
         mapping_policy="strict",
         keys=None,
         update_columns=None,
+        accept_loss=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn copy_from<'py>(
@@ -486,6 +487,7 @@ impl DatabaseSession {
         mapping_policy: &str,
         keys: Option<Vec<String>>,
         update_columns: Option<Vec<String>>,
+        accept_loss: bool,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         self.ensure_open()?;
         let keys = keys.unwrap_or_default();
@@ -502,6 +504,7 @@ impl DatabaseSession {
                 mapping_policy,
                 keys,
                 update_columns,
+                accept_loss,
                 self.cancellation(),
             )
         });

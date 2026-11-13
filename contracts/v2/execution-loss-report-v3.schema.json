@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/execution-loss-report-v3.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy",
+    "risk",
+    "evaluation",
+    "effective"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "policy": {
+      "$ref": "common.schema.json#/$defs/mapping_policy"
+    },
+    "risk": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/risk"
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete",
+        "entries"
+      ],
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/evaluation_entry"
+          }
+        }
+      }
+    },
+    "effective": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/effective"
+      }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "basis": {
+      "enum": [
+        "exact",
+        "conservative"
+      ]
+    },
+    "rule": {
+      "enum": [
+        "pg.add_nullable",
+        "pg.arrow_mismatch",
+        "pg.crs",
+        "pg.jsonb",
+        "pg.missing_column",
+        "pg.nullability",
+        "pg.numeric",
+        "pg.pad_text",
+        "pg.srid",
+        "pg.temporal",
+        "pg.text_limit",
+        "ss.add_nullable",
+        "ss.binary_limit",
+        "ss.encoding",
+        "ss.offset",
+        "ss.temporal",
+        "ss.text_limit",
+        "ss.xml",
+        "store.empty_to_null",
+        "store.every",
+        "store.excess_spaces",
+        "store.fractional_seconds",
+        "store.json_numbers",
+        "store.negative_zero",
+        "store.non_ascii",
+        "store.pad_binary",
+        "store.pad_text",
+        "store.strip_trailing",
+        "store.underflow"
+      ]
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field_id",
+        "rule_id",
+        "category",
+        "severity",
+        "reason"
+      ],
+      "properties": {
+        "field_id": {
+          "$ref": "common.schema.json#/$defs/field_id"
+        },
+        "category": {
+          "enum": [
+            "precision",
+            "scale",
+            "range",
+            "timezone",
+            "encoding",
+            "collation",
+            "native_type",
+            "geometry_type",
+            "dimensions",
+            "srid",
+            "crs",
+            "nullability",
+            "default",
+            "generated"
+          ]
+        },
+        "severity": {
+          "enum": [
+            "information",
+            "warning",
+            "data_loss"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "source_type": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "target_type": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "rule_id": {
+          "$ref": "#/$defs/rule"
+        }
+      }
+    },
+    "evaluation_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field_id",
+        "rule_id",
+        "basis",
+        "checked",
+        "would_change"
+      ],
+      "properties": {
+        "field_id": {
+          "$ref": "common.schema.json#/$defs/field_id"
+        },
+        "rule_id": {
+          "$ref": "#/$defs/rule"
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "checked": {
+          "$ref": "#/$defs/count"
+        },
+        "would_change": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "effective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field_id",
+        "rule_id",
+        "category",
+        "basis",
+        "committed",
+        "uncertain"
+      ],
+      "properties": {
+        "field_id": {
+          "$ref": "common.schema.json#/$defs/field_id"
+        },
+        "rule_id": {
+          "$ref": "#/$defs/rule"
+        },
+        "category": {
+          "enum": [
+            "precision",
+            "scale",
+            "range",
+            "timezone",
+            "encoding",
+            "collation",
+            "native_type",
+            "geometry_type",
+            "dimensions",
+            "srid",
+            "crs",
+            "nullability",
+            "default",
+            "generated"
+          ]
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "committed": {
+          "$ref": "#/$defs/count"
+        },
+        "uncertain": {
+          "$ref": "#/$defs/count"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "committed": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "uncertain": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

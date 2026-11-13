@@ -51,6 +51,7 @@ pub(crate) fn commit_outcome_unknown(
         message: format!(
             "commit {provider_label} outcome unknown: verificare stato del target out-of-band"
         ),
+        loss_report: None,
         diagnostics: None,
     }
 }

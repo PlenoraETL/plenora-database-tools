@@ -822,6 +822,7 @@ async fn finish_commit(
         CommitOutcome::OutcomeUnknown { recovery } => {
             let outcome = WriteOutcome {
                 schema_version: 2,
+                loss_report: None,
                 status: WriteStatus::OutcomeUnknown,
                 execution_id,
                 provider: ProviderKind::Db2,
@@ -1110,6 +1111,7 @@ fn committed_outcome(
     };
     let outcome = WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id,
         provider: ProviderKind::Db2,

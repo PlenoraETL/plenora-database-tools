@@ -485,6 +485,7 @@ async fn bulk(
             Box::new(Input(Some(batch), schema)),
             &budget,
             &cancel,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await;
     let refused = target.provider.kind() == P::Postgres && text.contains('\0');

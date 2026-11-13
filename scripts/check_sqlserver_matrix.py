@@ -191,7 +191,7 @@ def run_suite(entry: MatrixEntry) -> None:
         "-e", f"PLENORA_SQLSERVER_EXPECTED_MAJOR={entry.major}",
         "-e", f"PLENORA_SQLSERVER_EXPECTED_COMPATIBILITY={entry.compatibility}",
         RUST_IMAGE, "cargo", "test", "-p", "plenora-db-sqlserver", "live_",
-        "--locked", "--", "--ignored", "--test-threads=1",
+        "--locked", "--", "--include-ignored", "--test-threads=1",
         *[argument for name in SKIPPED_TESTS for argument in ("--skip", name)],
     ]
     output = run(command, timeout=1200, capture=True)

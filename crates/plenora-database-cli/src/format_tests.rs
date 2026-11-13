@@ -4,6 +4,36 @@ use serde_json::json;
 static FORMAT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn loss_report_survives_all_output_renderers() {
+    let mut value: Value = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/outcome-v3-loss.json"
+    ))
+    .unwrap();
+    value["loss_report"] = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/execution-loss-v3.json"
+    ))
+    .unwrap();
+    for rendered in [
+        serde_json::to_string(&value).unwrap(),
+        render_markdown("write", &value),
+        render_junit("write", &value),
+    ] {
+        assert!(rendered.contains("loss_report"));
+        assert!(rendered.contains("data_loss"));
+        for key in [
+            "risk",
+            "evaluation",
+            "effective",
+            "would_change",
+            "committed",
+            "uncertain",
+        ] {
+            assert!(rendered.contains(key));
+        }
+    }
+}
+
+#[test]
 fn strip_format_extracts_value_and_returns_remaining_args() {
     let _guard = FORMAT_TEST_LOCK
         .lock()
@@ -60,4 +90,44 @@ fn junit_wraps_failure_status_as_failure_element() {
     let x = render_junit("test-x", &json!({"status": "unhealthy"}));
     assert!(x.contains("failures=\"1\""));
     assert!(x.contains("<failure message=\"unhealthy\""));
+}
+
+#[test]
+fn prepared_error_report_survives_all_renderers() {
+    let mut error = plenora_database_core::DatabaseError::invalid_plan("esecuzione interrotta");
+    let mut report: plenora_database_core::execution_loss::ExecutionLossReport =
+        serde_json::from_str(include_str!(
+            "../../../contracts/v2/examples/execution-loss-v3.json"
+        ))
+        .unwrap();
+    report.effective.clear();
+    error.loss_report = Some(Box::new(report.into()));
+    error.remote_effect = plenora_database_core::RemoteEffect::RolledBack;
+    let value = serde_json::to_value(error.public_projection()).unwrap();
+    for rendered in [
+        serde_json::to_string(&value).unwrap(),
+        render_markdown("write", &value),
+        render_junit("write", &value),
+    ] {
+        assert!(rendered.contains("loss_report"));
+        for key in [
+            "risk",
+            "evaluation",
+            "effective",
+            "rolled_back",
+            "retry",
+            "phase",
+        ] {
+            assert!(rendered.contains(key));
+        }
+    }
+}
+
+#[test]
+fn markdown_distinguishes_empty_effective_from_absent_measurement() {
+    let value = json!({"loss_report": {"risk": [], "evaluation": {"complete": false, "entries": []}, "effective": []}});
+    let rendered = render_markdown("write", &value);
+    assert!(rendered.contains("**effective**: []"));
+    assert!(rendered.contains("**entries**: []"));
+    assert!(rendered.contains("**complete**: false"));
 }

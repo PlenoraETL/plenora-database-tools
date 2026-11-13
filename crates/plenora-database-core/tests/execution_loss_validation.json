@@ -1,0 +1,1693 @@
+[
+  {
+    "name": "committed",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": true,
+    "structural": true
+  },
+  {
+    "name": "empty",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [],
+      "evaluation": {
+        "complete": false,
+        "entries": []
+      },
+      "effective": []
+    },
+    "valid": true,
+    "structural": true
+  },
+  {
+    "name": "unknown_()",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ],
+      "extra": true
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "unknown_('risk', 0)",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio",
+          "extra": true
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "unknown_('evaluation',)",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ],
+        "extra": true
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "unknown_('evaluation', 'entries', 0)",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1,
+            "extra": true
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "unknown_('effective', 0)",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0,
+          "extra": true
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "missing_schema_version",
+    "document": {
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_schema_version",
+    "document": {
+      "schema_version": null,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "missing_policy",
+    "document": {
+      "schema_version": 3,
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_policy",
+    "document": {
+      "schema_version": 3,
+      "policy": null,
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "missing_risk",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_risk",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": null,
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "missing_evaluation",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_evaluation",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": null,
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "missing_effective",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      }
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_effective",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": null
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "reason1024",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": true,
+    "structural": true
+  },
+  {
+    "name": "reason1025",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_reason",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": null
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "source_type512",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio",
+          "source_type": "????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": true,
+    "structural": true
+  },
+  {
+    "name": "source_type513",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio",
+          "source_type": "?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_source_type",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio",
+          "source_type": null
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "target_type512",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio",
+          "target_type": "????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": true,
+    "structural": true
+  },
+  {
+    "name": "target_type513",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio",
+          "target_type": "?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "null_target_type",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio",
+          "target_type": null
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "empty_reason",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": ""
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "unknown_id",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "other",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "unknown_basis",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "other",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "duplicate_risk",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        },
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "duplicate_effective",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        },
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "duplicate_evaluation",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          },
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "missing_risk",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "missing_evaluation",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": []
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "wrong_category",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "encoding",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "wrong_risk_category",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "encoding",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "would_change_over_checked",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 3
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "effective_over_change",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 2,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "zero_effective",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 0,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "sum_overflow",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 18446744073709551615,
+          "uncertain": 1
+        }
+      ]
+    },
+    "valid": false,
+    "structural": true
+  },
+  {
+    "name": "u64_overflow",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 18446744073709551616,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "negative",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": -1,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 1,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": false,
+    "structural": false
+  },
+  {
+    "name": "maximum",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 18446744073709551615,
+            "would_change": 18446744073709551615
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 18446744073709551615,
+          "uncertain": 0
+        }
+      ]
+    },
+    "valid": true,
+    "structural": true
+  },
+  {
+    "name": "uncertain",
+    "document": {
+      "schema_version": 3,
+      "policy": "compatible",
+      "risk": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "severity": "warning",
+          "reason": "rischio"
+        }
+      ],
+      "evaluation": {
+        "complete": true,
+        "entries": [
+          {
+            "field_id": 0,
+            "rule_id": "ss.text_limit",
+            "basis": "exact",
+            "checked": 2,
+            "would_change": 1
+          }
+        ]
+      },
+      "effective": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "category": "precision",
+          "basis": "exact",
+          "committed": 0,
+          "uncertain": 1
+        }
+      ]
+    },
+    "valid": true,
+    "structural": true
+  }
+]

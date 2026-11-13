@@ -23,7 +23,18 @@ pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliRe
     let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
     let write_op_path = args.next().ok_or("manca il percorso WRITE_OP.json")?;
     let input_path = args.next().ok_or("manca il percorso INPUT.arrow")?;
-    let dry_run = parse_dry_run(args)?;
+    let mut accept_loss = false;
+    let rest: Vec<String> = args
+        .filter(|arg| {
+            if arg == "--accept-loss" {
+                accept_loss = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    let dry_run = parse_dry_run(&mut rest.into_iter())?;
 
     // Il percorso e un argomento posizionale e non entra nel messaggio: in
     // quello slot puo finire una DSN o un token (`DatabaseError::message`).
@@ -39,7 +50,7 @@ pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliRe
         })?;
 
     let stream = IpcFileBatchStream::open(&input_path)?;
-    execute_bulk_write(&dsn_env, operation, Box::new(stream), dry_run).await
+    execute_bulk_write(&dsn_env, operation, Box::new(stream), dry_run, accept_loss).await
 }
 
 // ============================================================================
@@ -60,6 +71,7 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
     let mut update_columns: Vec<String> = Vec::new();
     let mut dry_run = false;
     let mut offline = false;
+    let mut accept_loss = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--mode" => {
@@ -74,6 +86,7 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
                 let value = args.next().ok_or("--update-columns richiede una lista")?;
                 update_columns = value.split(',').map(|s| s.trim().to_owned()).collect();
             }
+            "--accept-loss" => accept_loss = true,
             "--dry-run" => dry_run = true,
             "--offline" => offline = true,
             other => {
@@ -102,7 +115,7 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
     };
     let dry_run = DryRun::from_flags(dry_run, offline)?;
     let stream = IpcFileBatchStream::open(&input_path)?;
-    execute_bulk_write(&dsn_env, operation, Box::new(stream), dry_run).await
+    execute_bulk_write(&dsn_env, operation, Box::new(stream), dry_run, accept_loss).await
 }
 
 /// Il dry run chiesto: nessuno, con il catalogo del target, o offline.
@@ -157,6 +170,7 @@ async fn execute_bulk_write(
     operation: WriteOperation,
     stream: Box<dyn BatchStream>,
     dry_run: DryRun,
+    accept_loss: bool,
 ) -> CliResult<()> {
     if dry_run != DryRun::No {
         // Il dry run decide cio che la scrittura deciderebbe, senza effetti
@@ -180,7 +194,14 @@ async fn execute_bulk_write(
         let budget = pfm_budget()?;
         let cancel = CancellationToken::new();
         let decided = provider
-            .dry_run_write(secret.as_ref(), &operation, stream, &budget, &cancel)
+            .dry_run_write_with_consent(
+                secret.as_ref(),
+                &operation,
+                stream,
+                &budget,
+                &cancel,
+                plenora_database_core::loss::LossConsent::from_accept_loss(accept_loss),
+            )
             .await?;
         let loss_report = decided
             .loss_report
@@ -251,7 +272,7 @@ async fn execute_bulk_write(
         .await?;
     // Solo un commit certo e completo e un successo (SURF-014).
     let outcome = provider
-        .write(&secret, prepared, stream, &budget, &cancel)
+        .write_with_consent(&secret, prepared, stream, &budget, &cancel, accept_loss)
         .await?
         .settle()?;
 

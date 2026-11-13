@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/write-outcome-v3.schema.json",
+  "title": "WriteOutcome v3 with execution loss report (legacy report readable)",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/committed"
+    },
+    {
+      "$ref": "#/$defs/rolled_back"
+    },
+    {
+      "$ref": "#/$defs/partial"
+    },
+    {
+      "$ref": "#/$defs/unknown"
+    }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "execution_id",
+        "provider",
+        "rows",
+        "loss_report"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "status": {
+          "type": "string"
+        },
+        "execution_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "provider": {
+          "$ref": "common.schema.json#/$defs/provider_kind"
+        },
+        "rows": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "received",
+            "confirmed",
+            "failed",
+            "skipped"
+          ],
+          "properties": {
+            "received": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "confirmed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "inserted": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "updated": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "deleted": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "loss_report": {
+          "oneOf": [
+            {
+              "$ref": "execution-loss-report-v3.schema.json"
+            },
+            {
+              "$ref": "loss-report.schema.json"
+            }
+          ]
+        }
+      }
+    },
+    "committed": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "committed"
+            },
+            "loss_report": {
+              "properties": {
+                "effective": {
+                  "items": {
+                    "properties": {
+                      "uncertain": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "rolled_back": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "rolled_back"
+            },
+            "loss_report": {
+              "properties": {
+                "effective": {
+                  "items": {
+                    "properties": {
+                      "committed": {
+                        "const": 0
+                      },
+                      "uncertain": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "rows": {
+              "properties": {
+                "confirmed": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "partial": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "recovery"
+          ],
+          "properties": {
+            "status": {
+              "const": "partially_committed"
+            },
+            "recovery": {
+              "$ref": "#/$defs/recovery"
+            }
+          }
+        }
+      ]
+    },
+    "unknown": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "recovery"
+          ],
+          "properties": {
+            "status": {
+              "const": "outcome_unknown"
+            },
+            "recovery": {
+              "$ref": "#/$defs/recovery"
+            },
+            "loss_report": {
+              "properties": {
+                "effective": {
+                  "items": {
+                    "properties": {
+                      "committed": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "rows": {
+              "properties": {
+                "confirmed": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "last_certain_phase",
+        "automatic_retry_allowed"
+      ],
+      "properties": {
+        "last_certain_phase": {
+          "enum": [
+            "session_ready",
+            "transaction_begun",
+            "staging_prepared",
+            "writing",
+            "finalizing",
+            "commit_requested"
+          ]
+        },
+        "automatic_retry_allowed": {
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "staging_object": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "verification_action": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024
+        }
+      }
+    }
+  },
+  "$comment": "Full validation also requires scripts.execution_loss_semantics.validate_outcome (cross-field counts and report invariants)."
+}

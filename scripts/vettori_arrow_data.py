@@ -137,7 +137,11 @@ def busta(argv: list[str]) -> dict:
     if not isinstance(errore, dict):
         controlli = documento.get("checks") if isinstance(documento, dict) else None
         controlli = controlli if isinstance(controlli, dict) else {}
+        status = documento.get("status") if isinstance(documento, dict) else None
         return {"exit": esito.returncode, "category": None, "code": None,
+                "phase": None, "retry": None,
+                "remote_effect": {"dry_run": "none", "dry_run_offline": "none",
+                                  "committed": "committed"}.get(status),
                 "catalog": controlli.get("catalog"),
                 "row_security": controlli.get("row_security")}
     retry = errore.get("retry")
@@ -694,6 +698,13 @@ SCENARI_DELLA_REGOLA_W1 = frozenset({"identita-always-append", "identita-always-
 # valori, e il dry run deve dirlo invece di tacerlo.
 SCENARI_RLS_DICHIARATA = {"rls-con-policy-append"}
 
+# Il lock iniziale del writer richiede UPDATE, DELETE, TRUNCATE (o MAINTAIN
+# sulle major che lo supportano) e USAGE sullo schema, anche senza field_id.
+# L'accordo da solo non basta: entrambi non devono accettare questi ingressi.
+SCENARI_DEL_LOCK = frozenset({
+    "privilegi-append-concessi", "rls-con-policy-append", "schema-senza-usage",
+})
+
 
 SCENARI_DEL_TARGET = "dry-run-postgres-target"
 
@@ -814,6 +825,11 @@ class Scenari:
                     righe[-1]["verdetto"] = "regola-r-non-applicata"
                 if nome in SCENARI_DELLA_REGOLA_W1 and scrittura["exit"] == 0:
                     righe[-1]["verdetto"] = "regola-w1-non-applicata"
+                if nome in SCENARI_DEL_LOCK and (
+                    scrittura["exit"] == 0 or scrittura.get("category") != "authorization"
+                    or scrittura.get("phase") != "write"
+                ):
+                    righe[-1]["verdetto"] = "lock-non-applicato"
                 # Un rifiuto non ha effetti: il bersaglio ha le righe di prima.
                 if scrittura["exit"] != 0 and preparazione:
                     scrittura["righe"] = [prima, self.righe(tabella, schema)]

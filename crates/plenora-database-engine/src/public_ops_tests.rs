@@ -111,3 +111,40 @@ fn inspection_document_refuses_a_reserved_field() {
     assert_eq!(document["schemas"][0], "public");
     assert_eq!(document["provider"], "postgres");
 }
+
+#[test]
+fn provider_configuration_cannot_supply_loss_consent() {
+    for argument in ["--accept-loss", "--accept-loss=true", "--accept-loss=false"] {
+        let error = target("DSN", vec![argument.into()]).validate().unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
+        assert_eq!(
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
+    }
+}
+
+#[test]
+fn write_request_consent_is_explicit_and_defaults_to_deny() {
+    let base = serde_json::json!({
+        "provider": "postgres", "secret_environment": "DSN",
+        "provider_arguments": [], "operation_path": "operation.json"
+    });
+    for supplied in [None, Some(false), Some(true)] {
+        let mut document = base.clone();
+        if let Some(value) = supplied {
+            document["accept_loss"] = value.into();
+        }
+        let request: WriteRequest = serde_json::from_value(document).unwrap();
+        assert_eq!(request.accept_loss, supplied.unwrap_or(false));
+    }
+    for invalid in [
+        serde_json::Value::Null,
+        serde_json::json!("true"),
+        serde_json::json!(1),
+    ] {
+        let mut document = base.clone();
+        document["accept_loss"] = invalid;
+        assert!(serde_json::from_value::<WriteRequest>(document).is_err());
+    }
+}

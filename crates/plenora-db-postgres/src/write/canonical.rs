@@ -176,11 +176,15 @@ pub(super) enum SessionShape {
 pub(super) enum LeafClass {
     /// Una lettura che non dipende dalla sessione ([`TEXT_INPUTS`]), con la
     /// lunghezza massima in caratteri di `varchar(n)`.
-    Text { max_chars: Option<usize> },
+    Text {
+        max_chars: Option<usize>,
+    },
     /// `char(n)`: un testo come [`Self::Text`] con la lunghezza `chars`, che
     /// il server completa con spazi se e piu corto (regola S,
     /// `plenora_database_core::store_rewrite`).
-    Padded { chars: usize },
+    Padded {
+        chars: usize,
+    },
     /// Un tipo temporale o `money`, con le cifre frazionarie dei secondi che
     /// conserva e se la precisione e ridotta (typmod).
     Session {
@@ -198,6 +202,10 @@ pub(super) enum LeafClass {
     /// composto il tipo Arrow e quello della colonna, e la differenza di tipo
     /// non la dichiara.
     Rounding,
+    Numeric {
+        precision: u32,
+        scale: i32,
+    },
     /// UUID: sulle chiavi solo la forma minuscola 8-4-4-4-12.
     Uuid,
     /// Testo interpretato: uguaglianza delle chiavi non provata per byte.
@@ -264,6 +272,15 @@ fn lossy() -> DatabaseError {
         ErrorPhase::Write,
         false,
         &format!("scrittura rifiutata: {LOSSY_VALUE}"),
+    )
+}
+
+fn bounded_refusal() -> DatabaseError {
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        "scrittura rifiutata: PostgreSQL non ammette troncatura del testo, anche con consenso",
     )
 }
 
@@ -334,6 +351,11 @@ pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
         },
         "jsonb_in" => LeafClass::Jsonb,
         "float4in" | "float8in" => LeafClass::Rounding,
+        "numeric_in" if typmod >= 4 => LeafClass::Numeric {
+            precision: ((typmod - 4) >> 16).cast_unsigned() & 65535,
+            scale: (((typmod - 4) & 2047) ^ 1024) - 1024,
+        },
+        // Typmod non canonici conservano il rifiuto Strict della 9.0.3.
         "numeric_in" if typmod >= 0 => LeafClass::Rounding,
         "uuid_in" => LeafClass::Uuid,
         "boolin" | "int2in" | "int4in" | "int8in" | "numeric_in" | "inet_in" | "cidr_in"
@@ -705,7 +727,9 @@ pub(super) fn leaf_losses(
     rule.leaves
         .iter()
         .filter_map(|leaf| match leaf.class {
-            LeafClass::Rounding if text_bearing(data_type) => Some(LeafLoss::Rounding),
+            LeafClass::Rounding | LeafClass::Numeric { .. } if text_bearing(data_type) => {
+                Some(LeafLoss::Rounding)
+            }
             LeafClass::Text { max_chars: Some(_) } => Some(LeafLoss::Bounded),
             LeafClass::Padded { .. } => Some(LeafLoss::Padded),
             LeafClass::Jsonb => Some(LeafLoss::Jsonb),
@@ -841,6 +865,26 @@ pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRu
 /// `data_mapping` con [`NOT_CANONICAL`] (regola V2) o con [`LOSSY_VALUE`]
 /// (regola P).
 pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Result<()> {
+    check_independent(plan, array, row)?;
+    if let Some(rule) = &plan.session_rule {
+        if !rule.strict && !rule.key && !array.is_null(row) {
+            for loss in leaf_losses(rule, array.data_type()) {
+                use plenora_database_core::loss_registry::RuleId;
+                let id = match loss {
+                    LeafLoss::ReducedTemporal => RuleId::PgTemporal,
+                    LeafLoss::Bounded => RuleId::PgTextLimit,
+                    LeafLoss::Padded => RuleId::PgPadText,
+                    LeafLoss::Rounding => RuleId::PgNumeric,
+                    LeafLoss::Jsonb => RuleId::PgJsonb,
+                };
+                super::effective::classify(id, plan, array, row)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_independent(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Result<()> {
     if !array.is_null(row) {
         if let Some(text) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
             plenora_database_core::parameter_fidelity::reject_nul(
@@ -882,11 +926,12 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
     }
     let Some(leaf) = rule.single() else {
         // Un composto, un multirange o un array di range: soltanto testo,
-        // e con `Strict` senza lunghezze massime da verificare per campo.
+        // senza lunghezze massime da verificare per campo. Senza un controllo
+        // esatto delle foglie, nessuna politica autorizza la troncatura.
         let text_only = rule.leaves.iter().all(|leaf| match leaf.class {
-            LeafClass::Text { max_chars } => !((rule.strict || rule.key) && max_chars.is_some()),
+            LeafClass::Text { max_chars } => max_chars.is_none(),
             LeafClass::Uuid | LeafClass::Parsed => !rule.key,
-            LeafClass::Padded { .. } | LeafClass::Jsonb | LeafClass::Rounding => {
+            LeafClass::Jsonb | LeafClass::Rounding | LeafClass::Numeric { .. } => {
                 !(rule.strict || rule.key)
             }
             _ => false,
@@ -900,9 +945,14 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
                     | LeafClass::Padded { .. }
                     | LeafClass::Jsonb
                     | LeafClass::Rounding
+                    | LeafClass::Numeric { .. }
             )
         }) {
-            Err(lossy())
+            Err(if rule.strict || rule.key {
+                lossy()
+            } else {
+                bounded_refusal()
+            })
         } else {
             Err(refused())
         };
@@ -914,7 +964,7 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
         // Un valore Arrow tipizzato si converte da se, esatto o rifiutato
         // dal preflight; un testo con `Strict` no, nemmeno nei limiti di un
         // range (una struttura di testi).
-        LeafClass::Rounding => {
+        LeafClass::Rounding | LeafClass::Numeric { .. } => {
             if (rule.strict || rule.key) && text_bearing(array.data_type()) {
                 Err(lossy())
             } else {
@@ -977,7 +1027,7 @@ fn check_key(rule: &SessionRule, array: &dyn Array, row: usize) -> Result<()> {
     Ok(())
 }
 
-/// Una foglia di testo: con `Strict`, la lunghezza massima (regola P) e,
+/// Una foglia di testo: con ogni politica, la lunghezza massima (regola P) e,
 /// per `char(n)`, la lunghezza piena (regola S: un testo piu corto si
 /// completerebbe con spazi). In una chiave, con ogni politica: un testo che
 /// il server troncherebbe o completerebbe non e una chiave.
@@ -988,7 +1038,7 @@ fn check_text(
     array: &dyn Array,
     row: usize,
 ) -> Result<()> {
-    if !(rule.strict || rule.key) {
+    if array.is_null(row) {
         return Ok(());
     }
     let Some(limit) = max_chars else {
@@ -1000,8 +1050,14 @@ fn check_text(
     let verdict = |text: &str| {
         let chars = text.chars().count();
         if chars > limit {
-            Some(if rule.key { rewritten(true) } else { lossy() })
-        } else if padded_to.is_some_and(|full| chars < full) {
+            Some(if rule.key {
+                rewritten(true)
+            } else if rule.strict {
+                lossy()
+            } else {
+                bounded_refusal()
+            })
+        } else if (rule.strict || rule.key) && padded_to.is_some_and(|full| chars < full) {
             Some(rewritten(rule.key))
         } else {
             None

@@ -20,6 +20,11 @@ from scripts import live_inventory
 
 
 REQUIRED_LIVE = (
+    "live_b2_matrix_a_to_e_all_modes_transports_policies",
+    "live_b2_text_second_batch_rollback_and_strict_baseline",
+    "live_b2_no_match_suppressed_rows_and_profiles",
+    "live_b2_schema_change_keys_and_add_column_rollback",
+    "live_b2_strict_and_uncertain_commit_reports",
     "live_duplicate_result_names_require_aliases",
     "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
     "live_provider_row_diagnostics_lost_rollback_ack_is_quarantined",

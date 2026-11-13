@@ -258,6 +258,7 @@ fn row_error(message: &'static str) -> DatabaseError {
         provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

@@ -204,6 +204,8 @@ impl Provider for TestProvider {
         _input: Box<dyn BatchStream>,
         _budget: &'a ResourceBudget,
         _cancellation: &'a CancellationToken,
+
+        _consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async {
             Err(DatabaseError::unsupported(

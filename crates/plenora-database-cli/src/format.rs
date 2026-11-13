@@ -121,6 +121,8 @@ fn render_markdown(command: &str, value: &Value) -> String {
 
 fn render_markdown_value(buf: &mut String, value: &Value, depth: usize) {
     match value {
+        Value::Array(items) if items.is_empty() => buf.push_str("[]\n"),
+        Value::Object(map) if map.is_empty() => buf.push_str("{}\n"),
         Value::Object(map) => {
             // Se tutte le foglie sono scalari, render come lista `**k**: v`.
             for (k, v) in map {
@@ -129,7 +131,9 @@ fn render_markdown_value(buf: &mut String, value: &Value, depth: usize) {
                 }
                 buf.push_str("- **");
                 buf.push_str(k);
-                if v.is_object() || v.is_array() {
+                if v.as_object().is_some_and(|map| !map.is_empty())
+                    || v.as_array().is_some_and(|items| !items.is_empty())
+                {
                     buf.push_str("**:\n");
                     render_markdown_value(buf, v, depth + 1);
                 } else {

@@ -1039,6 +1039,7 @@ fn an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservabl
         provider: Some(ProviderKind::Mysql),
         execution_id: None,
         message: "conteggio righe MySQL incoerente".to_owned(),
+        loss_report: None,
         diagnostics: None,
     };
 

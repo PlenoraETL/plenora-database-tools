@@ -10,6 +10,7 @@ fn unknown_effect_is_not_a_cause_category() {
         provider: Some(ProviderKind::Postgres),
         execution_id: Some("execution-1".to_owned()),
         message: "esito commit non verificabile".to_owned(),
+        loss_report: None,
         diagnostics: None,
     };
 
@@ -43,6 +44,7 @@ fn automatic_retry_and_manual_recovery_partition_the_dispositions() {
             provider: None,
             execution_id: None,
             message: "classificazione".to_owned(),
+            loss_report: None,
             diagnostics: None,
         };
         assert_eq!(error.is_retryable(), automatic, "{retry:?}");
@@ -63,6 +65,7 @@ fn quarantine_is_not_a_retryable_disposition() {
         provider: Some(ProviderKind::Mysql),
         execution_id: Some("execution-2".to_owned()),
         message: "annullamento non confermato".to_owned(),
+        loss_report: None,
         diagnostics: None,
     };
     assert!(!error.is_retryable());

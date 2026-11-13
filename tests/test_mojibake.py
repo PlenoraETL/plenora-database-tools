@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -27,7 +28,9 @@ class MojibakeTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text, encoding="utf-8")
-            return check_mojibake.check_repository(root)
+            # Fixture senza indice Git, anche quando TMPDIR e sotto il checkout.
+            with patch.object(check_mojibake.subprocess, "run", side_effect=OSError):
+                return check_mojibake.check_repository(root)
 
     def test_il_testo_corretto_passa(self) -> None:
         checked, problems = self.check({"a.rs": f"// {CORRECT}\n", "b.md": CORRECT})

@@ -230,7 +230,10 @@ pub async fn load_columns_and_token(
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn schema_token(client: &Client, source: &ObjectRef) -> Result<CatalogSchemaToken> {
+pub async fn schema_token<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    source: &ObjectRef,
+) -> Result<CatalogSchemaToken> {
     let schema = crate::target_schema::schema_of(source)?;
     let postgis = crate::postgis_schema::qualifier(client, ErrorPhase::Probe).await?;
     let row = client

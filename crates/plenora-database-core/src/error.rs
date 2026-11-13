@@ -126,6 +126,8 @@ pub struct DatabaseError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Box<RowDiagnostics>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loss_report: Option<Box<crate::execution_loss::VersionedLossReport>>,
 }
 
 /// Proiezione JSON conforme a `plenora-error-v1`.
@@ -150,7 +152,10 @@ pub struct PublicDatabaseError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublicErrorDetails {
-    pub row_diagnostics: RowDiagnostics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_diagnostics: Option<RowDiagnostics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loss_report: Option<crate::execution_loss::VersionedLossReport>,
 }
 
 /// La categoria pubblica di un'interruzione, secondo la causa che l'ha
@@ -188,6 +193,7 @@ impl DatabaseError {
             provider,
             execution_id: None,
             message: message.into(),
+            loss_report: None,
             diagnostics: None,
         }
     }
@@ -398,11 +404,12 @@ impl DatabaseError {
             provider: self.provider,
             execution_id: self.execution_id.clone(),
             message: bounded_message(&self.message),
-            details: self
-                .diagnostics
-                .as_deref()
-                .cloned()
-                .map(|row_diagnostics| PublicErrorDetails { row_diagnostics }),
+            details: (self.diagnostics.is_some() || self.loss_report.is_some()).then(|| {
+                PublicErrorDetails {
+                    row_diagnostics: self.diagnostics.as_deref().cloned(),
+                    loss_report: self.loss_report.as_deref().cloned(),
+                }
+            }),
         }
     }
 }

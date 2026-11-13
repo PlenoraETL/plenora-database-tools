@@ -116,7 +116,7 @@
 //! - **Rientro**: i tipi riletti nella transazione dopo il lock, con la
 //!   regola R.
 
-use crate::loss::{LossCategory, LossSeverity, MappingLoss, MappingPolicy};
+use crate::loss::{MappingLoss, MappingPolicy};
 use crate::plan::{ProviderKind, WriteOperation};
 use crate::provider::{BatchStream, ProviderFuture};
 use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -199,54 +199,25 @@ impl StoreRewrite {
     /// Il motivo della perdita nel `LossReport`.
     #[must_use]
     pub const fn reason(self) -> &'static str {
-        match self {
-            Self::EmptyToNull => {
-                "regola S: il server salva come NULL il testo vuoto e il binario vuoto"
-            }
-            Self::PadText { .. } => {
-                "regola S: il tipo a lunghezza fissa completa con spazi un testo piu corto"
-            }
-            Self::PadBinary { .. } => {
-                "regola S: il tipo a lunghezza fissa completa con 0x00 un binario piu corto"
-            }
-            Self::StripTrailing => {
-                "regola S: la colonna toglie gli spazi finali del testo e gli 0x00 finali del binario"
-            }
-            Self::ExcessSpaces { .. } => {
-                "regola S: la colonna tronca gli spazi finali oltre la propria lunghezza"
-            }
-            Self::Underflow { .. } => {
-                "regola S: il tipo numerico salva come 0 un float sotto il proprio minimo"
-            }
-            Self::NegativeZero => "regola S: il tipo numerico salva -0.0 come 0",
-            Self::FractionalSeconds { .. } => {
-                "regola S: il tipo temporale arrotonda o tronca le cifre frazionarie oltre la propria precisione"
-            }
-            Self::NonAscii => {
-                "regola S: il charset della colonna non conserva ogni carattere fuori da ASCII"
-            }
-            Self::JsonNumbers => {
-                "regola S: il tipo JSON del target riscrive la forma dei numeri fuori dagli interi brevi"
-            }
-            Self::Every => {
-                "regola S: la misura della coppia di tipi (regola A) ha trovato valori riscritti al salvataggio"
-            }
-        }
+        self.rule_id().definition().reason
     }
 
-    const fn category(self) -> LossCategory {
+    /// Identificatore stabile, esaustivo per tutte le riscritture misurate.
+    #[must_use]
+    pub const fn rule_id(self) -> crate::loss_registry::RuleId {
+        use crate::loss_registry::RuleId;
         match self {
-            Self::EmptyToNull => LossCategory::Nullability,
-            Self::PadText { .. }
-            | Self::PadBinary { .. }
-            | Self::StripTrailing
-            | Self::ExcessSpaces { .. }
-            | Self::Every => LossCategory::NativeType,
-            Self::Underflow { .. }
-            | Self::NegativeZero
-            | Self::FractionalSeconds { .. }
-            | Self::JsonNumbers => LossCategory::Precision,
-            Self::NonAscii => LossCategory::Encoding,
+            Self::EmptyToNull => RuleId::StoreEmptyToNull,
+            Self::PadText { .. } => RuleId::StorePadText,
+            Self::PadBinary { .. } => RuleId::StorePadBinary,
+            Self::StripTrailing => RuleId::StoreStripTrailing,
+            Self::ExcessSpaces { .. } => RuleId::StoreExcessSpaces,
+            Self::Underflow { .. } => RuleId::StoreUnderflow,
+            Self::NegativeZero => RuleId::StoreNegativeZero,
+            Self::FractionalSeconds { .. } => RuleId::StoreFractionalSeconds,
+            Self::NonAscii => RuleId::StoreNonAscii,
+            Self::JsonNumbers => RuleId::StoreJsonNumbers,
+            Self::Every => RuleId::StoreEvery,
         }
     }
 
@@ -271,6 +242,76 @@ impl StoreRewrite {
             Self::FractionalSeconds { .. } => instant,
             Self::Every => true,
         }
+    }
+
+    /// Classificazione condivisa v3, senza consenso e senza effetti contabili.
+    /// Le guardie legacy conservano la propria semantica fino alla migrazione provider.
+    /// # Errors
+    /// Tipo, struttura, indice, parametro o JSON invalido sono errori indipendenti.
+    pub fn classify(
+        self,
+        array: &dyn Array,
+        row: usize,
+        unit: TextLengthUnit,
+    ) -> Result<crate::loss_ledger::Classification> {
+        use crate::execution_loss::Basis;
+        use crate::loss_ledger::Classification;
+        let invalid = || {
+            DatabaseError::new(
+                ErrorCategory::DataMapping,
+                ErrorPhase::Write,
+                None,
+                "valore non classificabile dalla regola di riscrittura",
+            )
+        };
+        array.to_data().validate_full().map_err(|_| invalid())?;
+        if row >= array.len() || !self.admits(array.data_type()) {
+            return Err(invalid());
+        }
+        match self {
+            Self::Underflow { min_abs } if !min_abs.is_finite() || min_abs <= 0.0 => {
+                return Err(DatabaseError::invalid_plan("soglia underflow invalida"))
+            }
+            Self::FractionalSeconds { digits } if digits > 9 => {
+                return Err(DatabaseError::invalid_plan("precisione temporale invalida"))
+            }
+            _ => {}
+        }
+        let basis = if matches!(
+            self,
+            Self::ExcessSpaces { .. } | Self::NonAscii | Self::JsonNumbers | Self::Every
+        ) {
+            Basis::Conservative
+        } else {
+            Basis::Exact
+        };
+        if array.is_null(row) {
+            return Ok(Classification::Exact(basis));
+        }
+        if let Value::Float(number) = value(array, row) {
+            if !number.is_finite() {
+                return Ok(Classification::HardReject);
+            }
+        }
+        if self == Self::JsonNumbers {
+            if let Value::Text(text) = value(array, row) {
+                serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| invalid())?;
+            }
+        }
+        if matches!(self, Self::PadText { .. }) && unit == TextLengthUnit::SingleByte {
+            if let Value::Text(text) = value(array, row) {
+                if !text.is_ascii() {
+                    return Ok(Classification::WouldChange(Basis::Conservative));
+                }
+            }
+        }
+        let changes = matches!(self, Self::ExcessSpaces { .. } | Self::Every)
+            || self.rewrites_in_unit(array, row, unit);
+        Ok(if changes {
+            Classification::WouldChange(basis)
+        } else {
+            Classification::Exact(basis)
+        })
     }
 
     /// Se il valore non nullo di `array` alla riga `row` sarebbe riscritto.
@@ -560,13 +601,12 @@ impl RewriteGuard {
             .iter()
             .filter(|(_, key)| !*key)
             .flat_map(|(column, _)| {
-                column.rewrites.iter().map(|rewrite| MappingLoss {
-                    field_id: u32::try_from(column.field).unwrap_or(u32::MAX),
-                    category: rewrite.category(),
-                    severity: LossSeverity::DataLoss,
-                    reason: rewrite.reason().to_owned(),
-                    source_type: None,
-                    target_type: Some(column.target_type.clone()),
+                column.rewrites.iter().map(|rewrite| {
+                    rewrite.rule_id().canonical(self.provider).legacy(
+                        u32::try_from(column.field).unwrap_or(u32::MAX),
+                        None,
+                        Some(column.target_type.clone()),
+                    )
                 })
             })
             .collect()

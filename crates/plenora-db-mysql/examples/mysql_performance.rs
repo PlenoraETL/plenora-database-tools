@@ -455,6 +455,7 @@ async fn measure_appends(
                 Box::new(MemoryBatchStream::new(schema, batches)),
                 &budget,
                 cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
             )
             .await?;
         let total_micros = started.elapsed().as_micros();

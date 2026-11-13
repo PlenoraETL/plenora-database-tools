@@ -483,7 +483,7 @@ async fn live_p_precisione_temporale_ridotta() {
 
 /// `'abc   '` verso `varchar(3)` diventava `'abc'` in ogni profilo: il
 /// server tronca in silenzio gli spazi oltre la lunghezza. Con `Strict` si
-/// rifiuta; con `Lossy` passa, e la perdita possibile e dichiarata.
+/// rifiuta; anche con consenso le politiche non strette rifiutano la troncatura.
 #[tokio::test]
 async fn live_p_spazi_finali_oltre_la_lunghezza() {
     let Some(dsn) = live_dsn() else {
@@ -520,10 +520,39 @@ async fn live_p_spazi_finali_oltre_la_lunghezza() {
             if written.is_err() {
                 difformi.push(format!("{column} entro {profile:?}: {}", rows_of(&written)));
             }
-            let lossy = with_policy(strict, MappingPolicy::Lossy);
-            let written = write_stream(&provider, &secret, &lossy, text_input(3, "abc   ")).await;
-            if written.is_err() {
-                difformi.push(format!("{column} Lossy {profile:?}: {}", rows_of(&written)));
+            let before = texts(&admin, "SELECT at::text FROM pln_regola_r.v").await;
+            for policy in [
+                MappingPolicy::Compatible,
+                MappingPolicy::Lossy,
+                MappingPolicy::Native,
+            ] {
+                let operation = with_policy(strict.clone(), policy);
+                let dry =
+                    dry_run_stream(&provider, &secret, &operation, text_input(3, "abc   ")).await;
+                // Il dry run bulk binario resta non supportato: non misura i valori.
+                let dry_category = if profile == PostgresInsertMode::CopyBinary {
+                    ErrorCategory::Unsupported
+                } else {
+                    ErrorCategory::DataMapping
+                };
+                let written =
+                    write_stream(&provider, &secret, &operation, text_input(3, "abc   ")).await;
+                let stored = texts(&admin, "SELECT at::text FROM pln_regola_r.v").await;
+                if !written
+                    .as_ref()
+                    .is_err_and(|error| error.category == ErrorCategory::DataMapping)
+                    || !dry
+                        .as_ref()
+                        .is_err_and(|error| error.category == dry_category)
+                    || stored != before
+                {
+                    difformi.push(format!(
+                        "colonna=at ({column}) {policy:?} {profile:?}: write={:?}, dry={:?}, unchanged={}",
+                        written.as_ref().err().map(|error| (error.category, error.phase, &error.message)),
+                        dry.as_ref().err().map(|error| (error.category, error.phase, &error.message)),
+                        stored == before
+                    ));
+                }
             }
         }
     }

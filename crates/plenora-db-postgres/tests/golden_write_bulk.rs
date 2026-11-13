@@ -198,7 +198,14 @@ async fn h7d_write_create_builds_table_and_inserts_batch() {
     let batches = vec![build_batch(0..50), build_batch(50..100)];
     let stream: Box<dyn BatchStream> = Box::new(MemoryStream::new(simple_schema(), batches));
     let outcome = p
-        .write(&secret(), prepared, stream, &b, &cancel)
+        .write(
+            &secret(),
+            prepared,
+            stream,
+            &b,
+            &cancel,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
         .expect("write");
 
@@ -240,9 +247,16 @@ async fn h7d_write_append_adds_rows_to_existing_table() {
         simple_schema(),
         vec![build_batch(0..100)],
     ));
-    p.write(&secret(), prepared_create, stream, &b_seed, &cancel)
-        .await
-        .expect("create write");
+    p.write(
+        &secret(),
+        prepared_create,
+        stream,
+        &b_seed,
+        &cancel,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect("create write");
 
     // Append 50 righe con id != esistenti. Nuovo budget per la seconda op.
     let b_append = budget();
@@ -261,7 +275,14 @@ async fn h7d_write_append_adds_rows_to_existing_table() {
         vec![build_batch(100..150)],
     ));
     let outcome = p
-        .write(&secret(), prepared_append, stream, &b_append, &cancel)
+        .write(
+            &secret(),
+            prepared_append,
+            stream,
+            &b_append,
+            &cancel,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
         .expect("append write");
 
@@ -300,9 +321,16 @@ async fn h7d_write_replace_swaps_table_content() {
         simple_schema(),
         vec![build_batch(0..100)],
     ));
-    p.write(&secret(), prepared, stream, &b_seed, &cancel)
-        .await
-        .expect("seed write");
+    p.write(
+        &secret(),
+        prepared,
+        stream,
+        &b_seed,
+        &cancel,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect("seed write");
     assert_eq!(count_rows(target).await, 100);
 
     // Replace con 25 righe (id 500..525): il contenuto deve essere sostituito.
@@ -322,7 +350,14 @@ async fn h7d_write_replace_swaps_table_content() {
         vec![build_batch(500..525)],
     ));
     let outcome = p
-        .write(&secret(), prepared_replace, stream, &b_replace, &cancel)
+        .write(
+            &secret(),
+            prepared_replace,
+            stream,
+            &b_replace,
+            &cancel,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
         .expect("replace write");
 

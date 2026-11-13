@@ -88,7 +88,7 @@ Il contenuto per esito:
 
 - Le operazioni JSON restituiscono il documento della CLI: `verified` e la
   discovery runtime per `test_connection`; il documento d'ispezione; l'esito
-  `plenora-database-write-result-v1`; il riepilogo di `database.query`
+  `plenora-database-write-result-v2`; il riepilogo di `database.query`
   (batch, righe e campi, senza valori).
 - `database.read` scrive lo stream Arrow IPC nel sink dell'host, con lo
   stesso budget della CLI ristretto alla deadline. Il risultato ha content
@@ -140,3 +140,49 @@ risultato query e applicato prima della consegna; l'host puo restringerlo con
 `RuntimeBinding::with_query_payload_limit` e dichiara il proprio limite nel
 suo manifest. Lo schema degli attributi v1 resta invariato: la mancata
 pubblicazione del limite in discovery e una deviazione esplicita.
+
+## Scritture Arrow: rapporto e consenso
+
+La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
+PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
+`compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
+viene controllato prima dell'invio. Se cambierebbe, serve consenso esplicito,
+anche se la regola ha severità Warning. Il default nega: Rust puro usa
+`LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
+SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
+Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
+vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
+il consenso non rende disponibile un profilo non qualificato.
+
+PostgreSQL non tronca mai testo, neppure spazi finali oltre capacità o con
+consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anche
+con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
+altera i valori e dichiara le trasformazioni nel rapporto.
+
+Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
+ExecutionLossReport v3:
+`risk` descrive il piano; `evaluation` registra i valori controllati e quelli
+che cambierebbero; `effective` distingue `committed` da `uncertain`.
+Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
+confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
+non diventa un commit. `basis: conservative` conta valori trattati come perdita,
+non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+regole diverse non dà il numero di celle uniche. NULL e input vuoto non
+richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
+Il perimetro è il mapping Arrow qualificato, non il confronto universale con
+trigger, default, funzioni o SQL nativo.
+
+### Adozione in runtime-tools
+
+Il binding annuncia `database.write@2`, input/result v2 con WriteOutcome v3.
+Runtime-tools deve adottare il catalogo dell'operazione 2, propagare
+`accept_loss` (assente/false nega) e leggere il rapporto esecutivo v3 anche
+negli errori. Questa attività lato consumer non è attestata come completata
+qui. Il pin in [adoption-source.json](../contracts/adoption-source.json)
+conserva write@1: la migrazione locale è una deviazione esplicita, non una
+conformità inventata a write@1. Le altre operazioni mantengono la loro versione.
+I reader legacy non devono trasformare un rapporto assente in una misura vuota.
+Vedere [contratti](../contracts/v2/README.md) e
+[avvisi di migrazione](operativo.md#migrazione-da-8x-e-9x).

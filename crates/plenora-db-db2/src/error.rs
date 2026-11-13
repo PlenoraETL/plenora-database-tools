@@ -85,6 +85,7 @@ pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
         provider: Some(ProviderKind::Db2),
         execution_id: None,
         message,
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -107,6 +108,7 @@ pub fn interruption_error(cancellation: &CancellationToken, phase: ErrorPhase) -
         } else {
             "operazione Db2 cancellata".to_owned()
         },
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -129,6 +131,7 @@ pub fn task_error(phase: ErrorPhase) -> DatabaseError {
         provider: Some(ProviderKind::Db2),
         execution_id: None,
         message: "worker ODBC Db2 terminato in modo anomalo".to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

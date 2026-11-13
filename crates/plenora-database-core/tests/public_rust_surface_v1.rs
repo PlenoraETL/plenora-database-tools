@@ -122,6 +122,7 @@ fn provider_exports_compile<P: Provider>(
         input,
         budget,
         cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     ));
 }
 

@@ -138,6 +138,7 @@ pub async fn write(
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }

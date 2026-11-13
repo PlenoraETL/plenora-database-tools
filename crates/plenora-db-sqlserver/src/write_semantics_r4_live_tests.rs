@@ -195,6 +195,7 @@ async fn append(
             batch: Some(batch),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
 }

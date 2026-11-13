@@ -423,3 +423,44 @@ Software proprietario. I termini sono in [`LICENSE`](LICENSE).
 Gli avvisi dei crate Rust viaggiano negli archivi CLI, nei wheel e nel
 sorgente di release. Raccolta offline, confezionamento e controllo degli
 artefatti sono descritti in [`docs/RELEASE.md`](docs/RELEASE.md).
+
+## Scritture Arrow: rapporto e consenso
+
+La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
+PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
+`compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
+viene controllato prima dell'invio. Se cambierebbe, serve consenso esplicito,
+anche se la regola ha severità Warning. Il default nega: Rust puro usa
+`LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
+SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
+Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
+vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
+il consenso non rende disponibile un profilo non qualificato.
+
+PostgreSQL non tronca mai testo, neppure spazi finali oltre capacità o con
+consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anche
+con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
+altera i valori e dichiara le trasformazioni nel rapporto.
+
+Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
+ExecutionLossReport v3:
+`risk` descrive il piano; `evaluation` registra i valori controllati e quelli
+che cambierebbero; `effective` distingue `committed` da `uncertain`.
+Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
+confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
+non diventa un commit. `basis: conservative` conta valori trattati come perdita,
+non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+regole diverse non dà il numero di celle uniche. NULL e input vuoto non
+richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
+Il perimetro è il mapping Arrow qualificato, non il confronto universale con
+trigger, default, funzioni o SQL nativo.
+
+Regole e predicati sono nella [tabella generata](docs/loss-registry.md).
+Per schema, compatibilità legacy ed esempi vedere i [contratti](contracts/v2/README.md);
+per invocazioni e migrazione vedere le [schede CLI](docs/cli-write.md),
+il [README Python](crates/plenora-database-py/README.md#bulk-write-arrow)
+e la [guida operativa](docs/operativo.md#scritture-arrow-rapporto-e-consenso).
+Il binding `database.write@2` richiede adozione anche in runtime-tools:
+catalogo, `accept_loss` e WriteOutcome v3; vedere [runtime](docs/runtime.md).

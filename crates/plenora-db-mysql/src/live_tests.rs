@@ -3318,6 +3318,7 @@ async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
             Box::new(input),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write append MySQL live");
@@ -3546,6 +3547,7 @@ async fn live_append_spatial_xy_preserves_srid_and_coordinates() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write append spatial MySQL live");
@@ -3693,6 +3695,7 @@ async fn live_geographic_axis_order_round_trips_and_derived_srid_is_verified() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write");
@@ -3865,6 +3868,7 @@ async fn live_append_batch_failure_rolls_back_without_partial_rows() {
             Box::new(input),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("chiave duplicata nel secondo batch");
@@ -3957,6 +3961,7 @@ async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
             Box::new(input),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("constraint row-scoped MySQL live");
@@ -4085,6 +4090,7 @@ async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("prima write MySQL live");
@@ -4127,6 +4133,7 @@ async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
             }),
             &blocked_budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("INSERT bloccato oltre il timeout di operazione");
@@ -4179,6 +4186,7 @@ async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
             }),
             &recovery_budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write dopo la sostituzione della sessione");
@@ -4968,6 +4976,7 @@ async fn live_v12_an_abandoned_create_is_recorded_as_a_possible_residue() {
             Box::new(stream),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         ),
     )
     .await;
@@ -5035,6 +5044,7 @@ async fn live_v12_write_create_mode_builds_table_and_inserts() {
             Box::new(stream),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write create");
@@ -5128,6 +5138,7 @@ async fn live_v12_write_create_mode_conflict_if_exists() {
             Box::new(stream),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await;
     assert!(
@@ -5218,6 +5229,7 @@ async fn live_v12_write_upsert_updates_existing_and_inserts_new() {
             Box::new(stream),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write upsert");
@@ -5406,6 +5418,7 @@ async fn live_v12_write_delete_by_keys_removes_matching_rows() {
             Box::new(stream),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write delete");
@@ -5500,6 +5513,7 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
             Box::new(stream),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write update");
@@ -7024,6 +7038,7 @@ async fn live_v12_write_replace_preserves_table_identity_and_metadata() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write replace");
@@ -7108,6 +7123,7 @@ async fn live_v12_write_replace_restores_the_previous_rows_when_the_stream_fails
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
     else {
@@ -7163,6 +7179,7 @@ async fn live_v12_write_replace_restores_the_previous_rows_on_cancellation() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
     else {
@@ -7284,6 +7301,7 @@ async fn live_v12_write_create_failure_leaves_the_table_and_reports_partial() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
     else {
@@ -7522,6 +7540,7 @@ async fn live_v12_write_create_with_keys_declares_the_primary_key() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write create con keys");
@@ -8235,6 +8254,7 @@ async fn semantica_write_with(
             Box::new(input),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }
@@ -8556,6 +8576,7 @@ async fn semantica_write_batch(
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }
@@ -9860,6 +9881,7 @@ async fn regola_a_write(
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }
@@ -14240,6 +14262,7 @@ async fn minimal_privileges_writer(config: MysqlConfig) {
             }),
             &budget,
             &cancel,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .unwrap();

@@ -20,9 +20,14 @@ fn every_operation_uses_immutable_contract_ids() {
     let document = public_capabilities(PublicSurface::Rust, "plenora-database-core", None);
     for operation in document.operations {
         assert!(operation.input.contract.starts_with("plenora-database-"));
-        assert!(operation.input.contract.ends_with("-v1"));
+        let suffix = if operation.id == "database.write" {
+            "-v2"
+        } else {
+            "-v1"
+        };
+        assert!(operation.input.contract.ends_with(suffix));
         assert!(operation.output.contract.starts_with("plenora-database-"));
-        assert!(operation.output.contract.ends_with("-v1"));
+        assert!(operation.output.contract.ends_with(suffix));
     }
 }
 

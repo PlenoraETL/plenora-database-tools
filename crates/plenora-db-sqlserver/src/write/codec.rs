@@ -7,6 +7,7 @@ use plenora_database_core::arrow::array::{
 };
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::geometry_value::verify_field_value;
+use plenora_database_core::loss_ledger::Classification;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use tiberius::{IntoSql, Query, TokenRow};
 
@@ -377,6 +378,11 @@ pub(super) fn bind_column(
 /// comando bulk, così un errore di mapping non lascia un flusso TDS parziale.
 #[allow(clippy::too_many_lines)]
 pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<Vec<TokenRow<'a>>> {
+    // La misura raw del server resta distinta dal replay delle guardie del writer.
+    #[cfg(test)]
+    let raw_probe = plenora_database_testkit::write_probe::is_raw_probe(&plan.object);
+    #[cfg(not(test))]
+    let raw_probe = false;
     let mut rows = Vec::with_capacity(batch.num_rows());
     for row_index in 0..batch.num_rows() {
         let mut row = TokenRow::with_capacity(plan.columns.len());
@@ -453,6 +459,22 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                     let values = downcast::<StringArray>(array.as_ref())?;
                     if !values.is_null(row_index) {
                         check_text(plan, column, values.value(row_index))?;
+                        // Il bulk non applica il cast del percorso Prepared: rifiuta
+                        // prima di aprire il request TDS, che puo diventare non drenabile.
+                        if !raw_probe
+                            && super::plan::text_limit(
+                                &column.native_type,
+                                &column.native_declaration,
+                                column.collation.as_deref(),
+                            )
+                            .is_some_and(|limit| {
+                                limit.max.is_some_and(|max| {
+                                    limit.length_unit().count(values.value(row_index)) > max
+                                })
+                            })
+                        {
+                            return Err(mapping_error("testo oltre la capacita TDS bulk"));
+                        }
                     }
                     row.push(
                         (!values.is_null(row_index))
@@ -464,6 +486,14 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                     let values = downcast::<BinaryArray>(array.as_ref())?;
                     if !values.is_null(row_index) {
                         check_binary(plan, column, values.value(row_index))?;
+                        if !raw_probe
+                            && matches!(
+                                super::effective::binary(column, values.value(row_index).len()),
+                                Classification::WouldChange(_)
+                            )
+                        {
+                            return Err(mapping_error("binario oltre la capacita TDS bulk"));
+                        }
                     }
                     row.push(
                         (!values.is_null(row_index))
@@ -662,14 +692,14 @@ pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str
     {
         return Err(mapping_error(super::plan::LOSSY_VALUE));
     }
-    if !limit.code_page.represents(value) {
+    if !matches!(
+        super::effective::encoding(column, value)?,
+        Classification::Exact(_)
+    ) || !matches!(
+        super::effective::text(column, value, None)?,
+        Classification::Exact(_)
+    ) {
         return Err(mapping_error(super::plan::LOSSY_VALUE));
-    }
-    if let Some(max) = limit.max {
-        let length = limit.length_unit().count(value);
-        if length > max {
-            return Err(mapping_error(super::plan::LOSSY_VALUE));
-        }
     }
     Ok(())
 }
@@ -687,8 +717,10 @@ pub(super) fn check_binary(plan: &WritePlan, column: &WriteColumnPlan, value: &[
     if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
         return Ok(());
     }
-    match super::plan::binary_limit(&column.native_type, &column.native_declaration) {
-        Some(max) if value.len() > max => Err(mapping_error(super::plan::LOSSY_VALUE)),
+    match super::effective::binary(column, value.len()) {
+        plenora_database_core::loss_ledger::Classification::WouldChange(_) => {
+            Err(mapping_error(super::plan::LOSSY_VALUE))
+        }
         _ => Ok(()),
     }
 }
@@ -712,8 +744,10 @@ pub(super) fn check_offset(
     if (!plan.strict && !plan.key_input_indices.contains(&column.input_index)) || scale >= 9 {
         return Ok(());
     }
-    let unit = 10_u32.pow(9 - scale);
-    if value.nanosecond().is_multiple_of(unit) {
+    if matches!(
+        super::effective::offset(column, value.nanosecond()),
+        plenora_database_core::loss_ledger::Classification::Exact(_)
+    ) {
         Ok(())
     } else {
         Err(mapping_error(super::plan::LOSSY_VALUE))
@@ -741,8 +775,8 @@ pub(super) fn check_temporal(
     if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
         return Ok(());
     }
-    match super::plan::temporal_unit(&column.native_type, &column.native_declaration) {
-        Some(unit) if microseconds.rem_euclid(unit) != 0 => {
+    match super::effective::temporal(column, microseconds) {
+        plenora_database_core::loss_ledger::Classification::WouldChange(_) => {
             Err(mapping_error(super::plan::LOSSY_VALUE))
         }
         _ => Ok(()),
@@ -758,7 +792,7 @@ pub(super) fn check_temporal(
 /// frazionarie si rifiutano in ogni politica, come `fraction_digits` di
 /// PostgreSQL: nessun tipo di SQL Server le conserva, e la libreria non le
 /// toglie in silenzio.
-fn datetimeoffset(value: &str) -> Result<DateTime<FixedOffset>> {
+pub(super) fn datetimeoffset(value: &str) -> Result<DateTime<FixedOffset>> {
     let fraction_digits = value.split_once('.').map_or(0, |(_, fraction)| {
         fraction.bytes().take_while(u8::is_ascii_digit).count()
     });

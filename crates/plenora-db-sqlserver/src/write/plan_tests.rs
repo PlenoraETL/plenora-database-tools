@@ -3,6 +3,7 @@ use crate::{
     SqlServerColumn, SqlServerConstraint, SqlServerIndex, SqlServerSchemaEvolution,
     SqlServerSchemaToken, SqlServerSpatialBoundingBox, SqlServerSpatialIndex,
 };
+use plenora_database_core::loss::LossCategory;
 use plenora_database_core::loss::{LossSeverity, MappingPolicy};
 use plenora_database_core::plan::{ObjectRef, SridPolicy};
 use std::collections::HashMap;
@@ -816,6 +817,69 @@ fn run_end_schema_is_rejected_before_buffers() {
                 .expect("schema")
             )
             .is_err());
+        }
+    }
+}
+
+#[test]
+fn synthetic_precision_selectors_cover_both_planner_paths() {
+    for (native, declaration, expected) in [
+        (
+            "varchar",
+            "varchar(4)",
+            vec![RuleId::SsEncoding, RuleId::SsTextLimit],
+        ),
+        ("nvarchar", "nvarchar(4)", vec![RuleId::SsTextLimit]),
+        ("varbinary", "varbinary(4)", vec![RuleId::SsBinaryLimit]),
+        ("datetime2", "datetime2(3)", vec![RuleId::SsTemporal]),
+        (
+            "datetimeoffset",
+            "datetimeoffset(3)",
+            vec![RuleId::SsOffset],
+        ),
+        ("xml", "xml", vec![RuleId::SsXml]),
+        ("int", "int", vec![]),
+    ] {
+        let column = WriteColumnPlan {
+            input_index: 0,
+            name: "v".into(),
+            kind: SqlServerColumnKind::Utf8,
+            native_type: native.into(),
+            native_declaration: declaration.into(),
+            nullable: false,
+            collation: None,
+            spatial_srid: None,
+            rewrites: vec![],
+        };
+        assert_eq!(select_precision_rules(false, &column), expected);
+        assert!(select_precision_rules(true, &column).is_empty());
+        for mode in [WriteMode::Create, WriteMode::Append] {
+            for key in [false, true] {
+                for policy in [
+                    MappingPolicy::Strict,
+                    MappingPolicy::Compatible,
+                    MappingPolicy::Lossy,
+                    MappingPolicy::Native,
+                ] {
+                    let mut op = operation(mode);
+                    op.mapping_policy = policy;
+                    if key {
+                        op.keys = vec!["v".into()];
+                    }
+                    let mut losses = vec![];
+                    let field = Field::new("v", DataType::Utf8, false);
+                    rule_p(&op, &column, &field, &mut losses).unwrap();
+                    let projected: Vec<_> = if policy == MappingPolicy::Strict {
+                        vec![]
+                    } else {
+                        expected
+                            .iter()
+                            .map(|id| id.legacy(0, Some("Utf8".into()), Some(declaration.into())))
+                            .collect()
+                    };
+                    assert_eq!(losses, projected);
+                }
+            }
         }
     }
 }

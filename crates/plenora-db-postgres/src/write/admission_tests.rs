@@ -93,6 +93,36 @@ fn il_fixture_incorporato_e_valido() {
 }
 
 #[test]
+fn sdk_loss_sample_uses_measured_jsonb_not_rejected_timestamp_precision() {
+    for major in 14..=18 {
+        let server = ServerFacts {
+            major: major.to_string(),
+            ..server()
+        };
+        let measured = admission_table().unwrap().server(&server.major).unwrap();
+        for (arrow, native, admitted) in [
+            (DataType::Utf8, "jsonb", true),
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                "timestamp(3) without time zone",
+                false,
+            ),
+        ] {
+            let (key, dimensions) = admission_key(
+                &arrow,
+                &[leaf(native, "b", -1, SessionShape::Scalar)],
+                &server,
+            );
+            assert_eq!(
+                plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)
+                    .is_ok(),
+                admitted
+            );
+        }
+    }
+}
+
+#[test]
 fn una_major_non_misurata_si_rifiuta_con_ogni_politica() {
     let error = admission_table()
         .expect("fixture")

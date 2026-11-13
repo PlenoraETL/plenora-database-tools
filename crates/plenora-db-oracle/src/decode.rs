@@ -367,6 +367,7 @@ fn mapping_error(phase: ErrorPhase, message: &'static str) -> DatabaseError {
         provider: Some(ProviderKind::Oracle),
         execution_id: None,
         message: message.to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }

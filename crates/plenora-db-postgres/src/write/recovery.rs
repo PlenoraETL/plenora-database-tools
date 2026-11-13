@@ -226,6 +226,7 @@ pub(super) fn unknown_write_outcome(
 ) -> WriteOutcome {
     WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::OutcomeUnknown,
         execution_id,
         provider: ProviderKind::Postgres,

@@ -1359,7 +1359,14 @@ async fn live_common_provider_contract_read_and_write() {
         .expect("provider prepare write");
     reference_copy_losses(&prepared.loss_report, &input_schema);
     let outcome = provider
-        .write(&secret, prepared, source, &write_budget, &cancellation)
+        .write(
+            &secret,
+            prepared,
+            source,
+            &write_budget,
+            &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
         .expect("provider write");
     assert_eq!(outcome.status, WriteStatus::Committed);
@@ -5372,6 +5379,7 @@ async fn live_common_provider_executes_opt_in_tds_bulk() {
             }),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("provider bulk write");
@@ -6240,6 +6248,7 @@ async fn live_circular_string_write_is_lossless_for_geometry_and_geography() {
                 batches: VecDeque::from([spatial_write_batch(Arc::clone(&schema), &value)]),
             }),
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write curve");
@@ -6333,6 +6342,7 @@ async fn live_spatial_write_round_trips_z_m_and_zm_losslessly() {
                     batches: VecDeque::from([batch]),
                 }),
                 &cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
             )
             .await
             .unwrap_or_else(|error| panic!("write {semantics} {dimensions}: {error}"));
@@ -6358,6 +6368,7 @@ async fn live_spatial_write_round_trips_z_m_and_zm_losslessly() {
                     batches: VecDeque::from([spatial_write_batch(Arc::clone(&schema), &value)]),
                 }),
                 &cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
             )
             .await
             .unwrap_or_else(|error| {
@@ -6531,6 +6542,7 @@ async fn live_mixed_geometry_types_share_one_column_on_both_semantics() {
                 batches: VecDeque::from([batch]),
             }),
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .unwrap_or_else(|error| panic!("scrittura {semantics} dei tipi misti: {error}"));
@@ -6613,9 +6625,14 @@ async fn live_prepared_write_round_trips_all_reference_types() {
     .await
     .expect("prepare write");
     reference_copy_losses(prepared.loss_report(), &input_schema);
-    let outcome = write_prepared(prepared, source, &cancellation)
-        .await
-        .expect("write committed");
+    let outcome = write_prepared(
+        prepared,
+        source,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect("write committed");
     assert_eq!(
         outcome.status,
         plenora_database_core::outcome::WriteStatus::Committed
@@ -6771,6 +6788,7 @@ async fn live_update_upsert_and_delete_by_keys_are_exact_and_atomic() {
             batches: VecDeque::from([batch(vec![1, 9], vec!["updated", "missing"], vec![11, 90])]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect("execute update");
@@ -6796,6 +6814,7 @@ async fn live_update_upsert_and_delete_by_keys_are_exact_and_atomic() {
             )]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect("execute upsert");
@@ -6828,6 +6847,7 @@ async fn live_update_upsert_and_delete_by_keys_are_exact_and_atomic() {
             batches: VecDeque::from([delete_batch]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect("execute delete");
@@ -6868,6 +6888,7 @@ async fn live_update_upsert_and_delete_by_keys_are_exact_and_atomic() {
             ]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect_err("later constraint failure must roll back prior update");
@@ -6985,9 +7006,14 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
     )
     .await
     .expect("prepare native bulk");
-    let outcome = write_prepared(prepared, source, &cancellation)
-        .await
-        .expect("native bulk write");
+    let outcome = write_prepared(
+        prepared,
+        source,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect("native bulk write");
     assert_eq!(outcome.status, WriteStatus::Committed);
     assert_eq!(outcome.rows.confirmed, 5);
     let mut differences = admin
@@ -7042,6 +7068,7 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
 
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta fixture isolate"]
+#[allow(clippy::too_many_lines)]
 async fn live_tds_bulk_matches_prepared_across_multiple_batches() {
     let cancellation = CancellationToken::new();
     let config = live_config(CertificatePolicy::TrustServerCertificate);
@@ -7083,6 +7110,7 @@ async fn live_tds_bulk_matches_prepared_across_multiple_batches() {
             batches: differential_batches(&schema),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect("prepared differential write");
@@ -7105,6 +7133,7 @@ async fn live_tds_bulk_matches_prepared_across_multiple_batches() {
             batches: differential_batches(&schema),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect("TDS bulk differential write");
@@ -7177,9 +7206,14 @@ async fn live_tds_bulk_constraint_failure_rolls_back_prior_batches() {
     )
     .await
     .expect("prepare bulk guard");
-    let error = write_prepared(prepared, input, &cancellation)
-        .await
-        .expect_err("duplicate bulk key must fail");
+    let error = write_prepared(
+        prepared,
+        input,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect_err("duplicate bulk key must fail");
     assert!(matches!(
         error.category,
         ErrorCategory::Conflict | ErrorCategory::Execution
@@ -7231,9 +7265,14 @@ async fn live_constraint_failure_rolls_back_truncate_and_prior_batches() {
     )
     .await
     .expect("prepare guard");
-    let error = write_prepared(prepared, input, &cancellation)
-        .await
-        .expect_err("duplicate key must fail");
+    let error = write_prepared(
+        prepared,
+        input,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect_err("duplicate key must fail");
     assert!(matches!(
         error.category,
         ErrorCategory::Conflict | ErrorCategory::Execution
@@ -7286,6 +7325,7 @@ async fn live_fault_before_commit_confirms_rollback() {
         prepared,
         input,
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
         crate::write::WriteFaultPoint::BeforeCommit,
     )
     .await
@@ -7330,6 +7370,7 @@ async fn live_fault_transport_loss_requires_recovery_and_server_rolls_back() {
         prepared,
         input,
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
         crate::write::WriteFaultPoint::TransportLostAfterFirstInsert,
     )
     .await
@@ -7375,6 +7416,7 @@ async fn live_fault_commit_confirmation_lost_is_outcome_unknown() {
         prepared,
         input,
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
         crate::write::WriteFaultPoint::CommitConfirmationLost,
     )
     .await
@@ -7551,8 +7593,15 @@ async fn live_physical_tds_cut_during_write_requires_recovery() {
     .await
     .expect("prepare proxied write");
     let writer_cancellation = cancellation.clone();
-    let writer =
-        tokio::spawn(async move { write_prepared(prepared, input, &writer_cancellation).await });
+    let writer = tokio::spawn(async move {
+        write_prepared(
+            prepared,
+            input,
+            &writer_cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
+        .await
+    });
 
     tokio::time::timeout(std::time::Duration::from_secs(2), barrier_wait)
         .await
@@ -7621,6 +7670,7 @@ async fn live_physical_tds_cut_after_server_commit_is_outcome_unknown() {
             prepared,
             input,
             &writer_cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
             crate::write::WriteFaultPoint::DelayCommitResponse,
         )
         .await
@@ -7697,6 +7747,7 @@ async fn live_physical_blackhole_after_server_rollback_requires_recovery() {
             prepared,
             input,
             &writer_cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
             crate::write::WriteFaultPoint::DelayRollbackResponse,
         )
         .await
@@ -7824,7 +7875,14 @@ async fn live_additive_schema_evolution_is_opt_in_atomic_and_reported() {
         batches: VecDeque::from([batch]),
     });
     let outcome = provider
-        .write(&secret, prepared, input, &budget, &cancellation)
+        .write(
+            &secret,
+            prepared,
+            input,
+            &budget,
+            &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
+        )
         .await
         .expect("execute additive evolution");
     assert_eq!(outcome.status, WriteStatus::Committed);
@@ -7881,6 +7939,7 @@ async fn live_additive_schema_evolution_is_opt_in_atomic_and_reported() {
             duplicate_input,
             &rollback_budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("duplicate key must roll back DDL and rows");
@@ -7969,9 +8028,14 @@ async fn live_schema_drift_after_prepare_fails_before_mutation() {
         schema: Arc::clone(&schema),
         batches: VecDeque::from([guard_batch(schema, 1, "must-not-commit")]),
     });
-    let error = write_prepared(prepared, input, &cancellation)
-        .await
-        .expect_err("schema drift must fail");
+    let error = write_prepared(
+        prepared,
+        input,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect_err("schema drift must fail");
     admin
         .execute_query(
             Query::new("ALTER TABLE [plenora_test].[write_guard_probe] DROP COLUMN [token_probe];"),
@@ -8101,6 +8165,7 @@ async fn live_create_and_staged_replace_publish_exact_schema_and_rows() {
             .expect("create batch")]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect("execute create");
@@ -8153,6 +8218,7 @@ async fn live_create_and_staged_replace_publish_exact_schema_and_rows() {
             .expect("replace batch")]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect("execute replace");
@@ -8240,9 +8306,14 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
     )
     .await
     .expect("prepare typed create");
-    let outcome = write_prepared(prepared, source, &cancellation)
-        .await
-        .expect("execute typed create");
+    let outcome = write_prepared(
+        prepared,
+        source,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect("execute typed create");
     assert_eq!(outcome.status, WriteStatus::Committed);
     assert_eq!(outcome.rows.inserted, Some(5));
 
@@ -8315,9 +8386,14 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
     )
     .await
     .expect("prepare typed replace");
-    let outcome = write_prepared(prepared, replacement_source, &cancellation)
-        .await
-        .expect("execute typed replace");
+    let outcome = write_prepared(
+        prepared,
+        replacement_source,
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect("execute typed replace");
     assert_eq!(outcome.status, WriteStatus::Committed);
     assert_eq!(outcome.rows.inserted, Some(5));
 
@@ -8425,6 +8501,7 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
             batches: VecDeque::new(),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect_err("geometry spatial index without bounds must fail closed");
@@ -8535,6 +8612,7 @@ async fn live_replace_rolls_back_load_and_published_swap_on_failure() {
             ]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
     )
     .await
     .expect_err("duplicate staged key");
@@ -8551,6 +8629,7 @@ async fn live_replace_rolls_back_load_and_published_swap_on_failure() {
             batches: VecDeque::from([guard_batch(Arc::clone(&schema), 2, "published")]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
         crate::write::WriteFaultPoint::BeforeCommit,
     )
     .await
@@ -8594,6 +8673,7 @@ async fn live_replace_rolls_back_load_and_published_swap_on_failure() {
             batches: VecDeque::from([guard_batch(Arc::clone(&schema), 3, "committed-unknown")]),
         }),
         &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
         crate::write::WriteFaultPoint::CommitConfirmationLost,
     )
     .await
@@ -8707,6 +8787,7 @@ async fn live_replace_keeps_old_target_readable_while_staging_then_publishes_new
                 release: Some(release_wait),
             }),
             &write_cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
     });
@@ -8783,6 +8864,7 @@ async fn live_replace_keeps_old_target_readable_while_staging_then_publishes_new
                 release: Some(drift_release_wait),
             }),
             &drift_cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
     });
@@ -9303,9 +9385,14 @@ async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
             examples_limit: 10,
         },
     };
-    let error = write_prepared(prepared, Box::new(input), &cancellation)
-        .await
-        .expect_err("constraint row-scoped SQL Server live");
+    let error = write_prepared(
+        prepared,
+        Box::new(input),
+        &cancellation,
+        plenora_database_core::loss::LossConsent::Accept,
+    )
+    .await
+    .expect_err("constraint row-scoped SQL Server live");
 
     // Assi rc17 del caso `write-constraint-confirmed-rollback`.
     assert_eq!(error.category, ErrorCategory::DataMapping);
@@ -9805,6 +9892,7 @@ async fn live_regola_r_rifiuta_delete_e_update_con_righe_nascoste() {
                     batches: VecDeque::from([batch]),
                 }),
                 cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
             )
             .await
         }
@@ -11833,3 +11921,7 @@ async fn live_audit900_typed_wkb_positive() {
         .await
         .unwrap();
 }
+
+#[cfg(test)]
+#[path = "effective_loss_live_tests.rs"]
+mod effective_loss;

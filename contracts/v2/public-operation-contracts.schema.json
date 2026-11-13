@@ -164,17 +164,17 @@
       "additionalProperties": true
     },
     "writeInput": {
-      "$id": "https://schemas.plenora.dev/plenora-database-write-input-v1.schema.json",
-      "x-plenora-contract": "plenora-database-write-input-v1",
+      "$id": "https://schemas.plenora.dev/plenora-database-write-input-v2.schema.json",
+      "x-plenora-contract": "plenora-database-write-input-v2",
       "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
       "required": ["operation_path"],
-      "properties": {"operation_path": {"type": "string", "minLength": 1}},
+      "properties": {"operation_path": {"type": "string", "minLength": 1}, "accept_loss": {"type": "boolean", "default": false}},
       "unevaluatedProperties": false
     },
     "writeResult": {
-      "$id": "https://schemas.plenora.dev/plenora-database-write-result-v1.schema.json",
-      "x-plenora-contract": "plenora-database-write-result-v1",
-      "$ref": "https://plenora.local/database-tools/v2/write-outcome.schema.json"
+      "$id": "https://schemas.plenora.dev/plenora-database-write-result-v2.schema.json",
+      "x-plenora-contract": "plenora-database-write-result-v2",
+      "$ref": "https://plenora.local/database-tools/v2/write-outcome-v3.schema.json"
     },
     "queryInput": {
       "$id": "https://schemas.plenora.dev/plenora-database-query-input-v1.schema.json",

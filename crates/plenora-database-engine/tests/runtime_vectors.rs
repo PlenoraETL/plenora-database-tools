@@ -155,6 +155,7 @@ enum WriteScript {
 
 /// Provider `postgres` scriptato con gli esiti dei vettori.
 struct Scripted {
+    provider_kind: ProviderKind,
     query_padding: usize,
     calls: Arc<Calls>,
     write: WriteScript,
@@ -162,7 +163,7 @@ struct Scripted {
 
 impl Provider for Scripted {
     fn kind(&self) -> ProviderKind {
-        ProviderKind::Postgres
+        self.provider_kind
     }
 
     fn test_connection<'a>(
@@ -294,7 +295,10 @@ impl Provider for Scripted {
                 operation.clone(),
                 input_schema,
                 serde_json::from_value(
-                    json!({"schema_version": 1, "policy": "strict", "losses": []}),
+                    json!({"schema_version": 2, "policy": operation.mapping_policy, "losses":
+                        if operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict { json!([]) }
+                        else { json!([{"field_id":1,"category":"precision","severity":"data_loss","reason":"precisione ridotta"}]) }
+                    }),
                 )
                 .expect("loss report"),
                 budget.clone(),
@@ -311,6 +315,8 @@ impl Provider for Scripted {
         _: Box<dyn BatchStream>,
         _: &'a ResourceBudget,
         _: &'a CancellationToken,
+
+        _consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
         self.calls.record("provider.write");
         let script = self.write;
@@ -362,6 +368,7 @@ impl Provider for Scripted {
                     execution_id: Some("vector-execution-1".to_owned()),
                     message: "Commit outcome is unknown; reconcile by execution identity."
                         .to_owned(),
+                    loss_report: None,
                     diagnostics: None,
                 }),
             }
@@ -438,10 +445,14 @@ impl ConnectionResolver for Host {
     fn open<'a>(&'a self, target: &'a RuntimeTarget) -> ProviderFuture<'a, RuntimeConnection> {
         self.calls.record("host.open");
         Box::pin(async move {
-            assert_eq!(target.provider, ProviderKind::Postgres);
+            assert!(matches!(
+                target.provider,
+                ProviderKind::Postgres | ProviderKind::Sqlserver
+            ));
             assert_eq!(target.secret_environment, SECRET_REFERENCE);
             Ok(RuntimeConnection {
                 provider: Arc::new(Scripted {
+                    provider_kind: target.provider,
                     query_padding: self.query_padding,
                     calls: Arc::clone(&self.calls),
                     write: self.write,
@@ -547,7 +558,7 @@ fn request_metadata(
         "plenora.capability.name": CAPABILITY_NAME,
         "plenora.capability.version": "1",
         "plenora.capability.operation": operation,
-        "plenora.operation.version": "1",
+        "plenora.operation.version": if operation == "database.write" { "2" } else { "1" },
         "plenora.input.contract": input_contract,
         "plenora.trace.correlation_id": correlation,
     })
@@ -616,7 +627,13 @@ fn assert_result_metadata(vector: &Value, result: &RuntimeResult) {
         "plenora.output.contract",
         "plenora.trace.correlation_id",
     ] {
-        assert_eq!(vector["metadata"][key], metadata[key], "{key}");
+        if key == "plenora.operation.version"
+            && vector["metadata"]["plenora.capability.operation"] == "database.write"
+        {
+            assert_eq!(metadata[key], "2");
+        } else {
+            assert_eq!(vector["metadata"][key], metadata[key], "{key}");
+        }
     }
 }
 
@@ -658,6 +675,12 @@ fn runtime_discovery_matches_the_pinned_catalog_and_bindings() {
     assert_eq!(document.operations.len(), selected.len());
     for (advertised, expected) in document.operations.iter().zip(&selected) {
         let advertised = serde_json::to_value(advertised).expect("json");
+        let mut expected = (*expected).clone();
+        if expected["id"] == "database.write" {
+            expected["version"] = json!(2);
+            expected["input"]["contract"] = json!("plenora-database-write-input-v2");
+            expected["output"]["contract"] = json!("plenora-database-write-result-v2");
+        }
         assert_eq!(advertised["id"], expected["id"]);
         for field in ["version", "side_effect", "controls"] {
             assert_eq!(
@@ -688,6 +711,11 @@ fn runtime_discovery_matches_the_pinned_catalog_and_bindings() {
     assert_eq!(bound.len(), document.operations.len());
     for (binding, operation) in bound.iter().zip(&document.operations) {
         assert_eq!(binding["operation"], operation.id.as_str());
+        let mut binding = binding.clone();
+        if operation.id == "database.write" {
+            binding["version"] = json!(2);
+            binding["entrypoints"] = json!([entrypoint("database.write", 2)]);
+        }
         assert_eq!(binding["version"], operation.version);
         assert_eq!(
             binding["entrypoints"],
@@ -1197,7 +1225,7 @@ fn database_write_error_vector_is_reproduced() {
     assert_eq!(vector["kind"], "error");
     let metadata = request_metadata(
         "database.write",
-        "plenora-database-write-input-v1",
+        "plenora-database-write-input-v2",
         "018f3d84-7b2c-7f00-8000-000000000203",
         vector["metadata"]["plenora.trace.correlation_id"]
             .as_str()
@@ -1248,7 +1276,7 @@ fn an_unknown_outcome_document_is_the_vector_error_not_a_result() {
     let vector = upstream("runtime-v1/database-write-error.json");
     let metadata = request_metadata(
         "database.write",
-        "plenora-database-write-input-v1",
+        "plenora-database-write-input-v2",
         "018f3d84-7b2c-7f00-8000-000000000204",
         vector["metadata"]["plenora.trace.correlation_id"]
             .as_str()
@@ -1322,7 +1350,7 @@ fn every_bound_operation_returns_its_public_result() {
         ),
         (
             "database.write",
-            "plenora-database-write-input-v1",
+            "plenora-database-write-input-v2",
             with(
                 target_payload(),
                 &json!({"operation_path": WRITE_REFERENCE}),
@@ -1520,7 +1548,7 @@ fn commit_cause_vectors_preserve_unknown_effect_and_recovery() {
         let host = Host::new(WriteScript::CommitCause(category));
         let metadata = request_metadata(
             "database.write",
-            "plenora-database-write-input-v1",
+            "plenora-database-write-input-v2",
             "018f3d84-7b2c-7f00-8000-000000000203",
             vector["metadata"]["plenora.trace.correlation_id"]
                 .as_str()
@@ -1637,6 +1665,59 @@ fn query_payload_limit_accepts_exact_size_and_rejects_one_byte_less() {
         assert_eq!(result.is_error(), error);
         if !error {
             assert_eq!(json_body(&result), json_body(&original));
+        }
+    }
+}
+
+#[test]
+fn write_consent_is_checked_before_provider_execution_for_both_providers() {
+    for provider in ["postgres", "sqlserver"] {
+        for (policy, accept) in [
+            ("strict", false),
+            ("compatible", false),
+            ("compatible", true),
+        ] {
+            let mut host = Host::new(WriteScript::Committed);
+            let mut operation: Value =
+                serde_json::from_slice(&host.documents[WRITE_REFERENCE]).unwrap();
+            operation["mapping_policy"] = json!(policy);
+            host.documents.insert(
+                WRITE_REFERENCE.to_owned(),
+                serde_json::to_vec(&operation).unwrap(),
+            );
+            let metadata = request_metadata(
+                "database.write",
+                "plenora-database-write-input-v2",
+                "018f3d84-7b2c-7f00-8000-000000000204",
+                "018f3d84-7b2c-7f00-8000-000000000205",
+            );
+            let payload = with(
+                target_payload(),
+                &json!({"provider":provider,"operation_path":WRITE_REFERENCE,"accept_loss":accept}),
+            );
+            let result = invoke(
+                &host,
+                &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &payload),
+            );
+            let body = json_body(&result);
+            let calls = host.calls.take();
+            if accept || policy == "strict" {
+                assert!(!result.is_error(), "{body}");
+                assert!(calls.iter().any(|call| call == "provider.write"));
+                assert_eq!(body["schema_version"], 3);
+                if policy == "strict" {
+                    assert_eq!(body["loss_report"]["losses"], json!([]));
+                } else {
+                    assert_eq!(body["loss_report"]["losses"][0]["severity"], "data_loss");
+                }
+            } else {
+                assert!(result.is_error());
+                assert!(!calls.iter().any(|call| call == "provider.write"));
+                assert_eq!(body["category"], "data_mapping");
+                assert_eq!(body["phase"], "prepare");
+                assert_eq!(body["remote_effect"], "none");
+                assert!(body.get("loss_report").is_none());
+            }
         }
     }
 }

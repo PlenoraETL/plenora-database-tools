@@ -125,7 +125,13 @@ Lo streaming non implica un cursore server-side riapribile: la capability
 
 `copy_from` e `acopy_from` sostituiscono `bulk-write`. La `mapping_policy` è
 obbligatoria: il chiamante deve scegliere esplicitamente il trattamento delle
-conversioni.
+conversioni. Il consenso è separato: `accept_loss=True` sync/async equivale a
+`--accept-loss` nella CLI, con default negato. Nei writer PostgreSQL/SQL Server
+il rischio da solo non richiede consenso: si controlla ogni valore prima
+dell'invio. Leggere `risk`, `evaluation` ed `effective` nell'esito v3.
+Le [schede CLI](../../../docs/cli-write.md) e gli
+[avvisi di migrazione](../../../docs/operativo.md#migrazione-da-8x-e-9x)
+spiegano limiti e azioni per gli utenti 8.x/9.x.
 
 ```python
 outcome = session.copy_from(

@@ -253,6 +253,8 @@ impl Provider for FakeProvider {
         _input: Box<dyn crate::provider::BatchStream>,
         _budget: &'a ResourceBudget,
         _cancellation: &'a CancellationToken,
+
+        _consent: crate::loss::LossConsent,
     ) -> ProviderFuture<'a, crate::outcome::WriteOutcome> {
         Box::pin(async { Err(DatabaseError::invalid_plan("non usato")) })
     }

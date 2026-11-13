@@ -285,6 +285,7 @@ fn unknown_commit_error(commit: &CommitOutcome) -> DatabaseError {
         message: "commit emesso senza conferma: verificare lo stato remoto \
                   prima di ogni retry"
             .to_owned(),
+        loss_report: None,
         diagnostics: None,
     }
 }
@@ -786,11 +787,20 @@ async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<(
     let data = args
         .next()
         .ok_or_else(|| CliError::from("--data richiede un percorso"))?;
-    no_extra_arguments(args)?;
-    set_public_command("write", "plenora-database-write-result-v1");
+    let mut accept_loss = request.accept_loss;
+    for flag in args {
+        if flag != "--accept-loss" {
+            return Err("opzione write sconosciuta".into());
+        }
+        accept_loss = true;
+    }
+    set_public_command("write", "plenora-database-write-result-v2");
     let target = request.target();
     let operation = required_value(request.operation_path, "operation_path")?;
-    let forwarded = canonical_operation_arguments(target, [operation, data])?;
+    let mut forwarded = canonical_operation_arguments(target, [operation, data])?;
+    if accept_loss {
+        forwarded.push("--accept-loss".to_owned());
+    }
     database_write_ipc(&mut forwarded.into_iter()).await
 }
 
@@ -1454,7 +1464,18 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
             error.column()
         )
     })?;
-    let opened = target.open(args)?;
+    let mut accept_loss = false;
+    let remaining: Vec<String> = args
+        .filter(|arg| {
+            if arg == "--accept-loss" {
+                accept_loss = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    let opened = target.open(&mut remaining.into_iter())?;
     let stream = ipc_input::IpcFileBatchStream::open(&input_path)?;
     let input_schema = stream.schema();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
@@ -1473,12 +1494,13 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
     // Solo un commit certo e completo e un successo (SURF-014).
     let outcome = opened
         .provider
-        .write(
+        .write_with_consent(
             &opened.secret,
             prepared,
             Box::new(stream),
             &budget,
             &cancellation,
+            accept_loss,
         )
         .await?
         .settle()?;
@@ -2208,6 +2230,7 @@ fn local_artifact_error(
         provider: None,
         execution_id: None,
         message: message.into(),
+        loss_report: None,
         diagnostics: None,
     })
 }
@@ -3219,7 +3242,7 @@ fn common_usage() -> String {
         "  list-objects --input REQUEST.json --format json".to_owned(),
         "  describe-object --input REQUEST.json --format json".to_owned(),
         "  read --input REQUEST.json --output OUTPUT.arrow --format json".to_owned(),
-        "  write --input REQUEST.json --data INPUT.arrow --format json".to_owned(),
+        "  write --input REQUEST.json --data INPUT.arrow --format json (consenso: accept_loss nel REQUEST)".to_owned(),
         "  query --input REQUEST.json [--output OUTPUT.arrows] --format json".to_owned(),
         "  execute --input REQUEST.json --format json".to_owned(),
         "  database-probe <provider> <secret-env> [args provider]".to_owned(),
@@ -3231,7 +3254,7 @@ fn common_usage() -> String {
         "  database-query-summary <provider> <secret-env> <QUERY.json> <PARAMETERS.json|-> [args provider]".to_owned(),
         "  database-read-summary <provider> <secret-env> <READ.json> <PARAMETERS.json|-> [args provider]".to_owned(),
         "  database-read-ipc <provider> <secret-env> <READ.json> <PARAMETERS.json|-> <OUTPUT.arrow> [args provider]".to_owned(),
-        "  database-write-ipc <provider> <secret-env> <WRITE.json> <INPUT.arrow> [args provider]".to_owned(),
+        "  database-write-ipc <provider> <secret-env> <WRITE.json> <INPUT.arrow> [--accept-loss] [args provider]".to_owned(),
         "  database-inspect-catalogs <provider> <secret-env> [args provider]".to_owned(),
         "  database-inspect-schemas <provider> <secret-env> [args provider]".to_owned(),
         "  database-inspect-objects <provider> <secret-env> <schema> [args provider]".to_owned(),
@@ -3300,7 +3323,7 @@ fn postgres_usage() -> String {
         "    checks.server: not_performed, sempre: trigger, CHECK ed esclusioni, unicita e",
         "    foreign key sui valori, vincoli differiti, conversioni, timeout e lock",
         "    --offline: senza catalogo, status dry_run_offline",
-        "  postgres-write-ipc <dsn-env> <schema> <object> <INPUT.arrow> [--mode X] [--keys K1,K2] \
+        "  postgres-write-ipc <dsn-env> <schema> <object> <INPUT.arrow> [--accept-loss] [--mode X] [--keys K1,K2] \
          [--update-columns C1,C2] [--dry-run [--offline]]",
         "    wrapper high-level di bulk-write; --mode: create|append|replace|truncate-insert|update|upsert|delete-by-keys (default append)",
         "  execute-ddl <dsn-env> <sql>",

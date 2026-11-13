@@ -144,7 +144,8 @@ enum Encoding {
 /// Gli errori che la scrittura darebbe sullo stesso ingresso prima di
 /// inviarlo al server, con la stessa categoria e la stessa fase, e
 /// `remote_effect: none`: un dry run non ha effetti da annullare.
-pub async fn verify_input(
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_input_with_consent(
     state: &PreparedPostgresWrite,
     operation: &WriteOperation,
     input: &mut dyn BatchStream,
@@ -152,12 +153,37 @@ pub async fn verify_input(
     cancellation: &CancellationToken,
     limits: InputLimits,
     gate: StatementGate,
+    consent: plenora_database_core::loss::LossConsent,
 ) -> Result<VerifiedInput> {
-    verify(state, operation, input, budget, cancellation, limits, gate)
+    let mut evaluation =
+        super::effective::Evaluation::new(state.loss_instances.clone(), operation, consent, budget)
+            .map_err(without_effect)?;
+    let result = async {
+        evaluation.profile(operation)?;
+        evaluation
+            .bind(&state.column_plans)
+            .map_err(without_effect)?;
+        verify(
+            state,
+            operation,
+            input,
+            budget,
+            cancellation,
+            limits,
+            gate,
+            &mut evaluation,
+        )
         .await
-        .map_err(without_effect)
+    }
+    .await;
+    result.map_err(|error| {
+        let mut error = without_effect(error);
+        error.loss_report = Some(Box::new(evaluation.ledger.report().into()));
+        error
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn verify(
     state: &PreparedPostgresWrite,
     operation: &WriteOperation,
@@ -166,6 +192,7 @@ async fn verify(
     cancellation: &CancellationToken,
     limits: InputLimits,
     mut gate: StatementGate,
+    evaluation: &mut super::effective::Evaluation,
 ) -> Result<VerifiedInput> {
     let schema = input.schema();
     let plans = &state.column_plans;
@@ -194,6 +221,7 @@ async fn verify(
                 limits,
                 (total, &policy),
                 gate,
+                evaluation,
             )
             .await;
         }
@@ -245,6 +273,7 @@ async fn verify(
             budget,
         )
         .map_err(|error| resource_write_error(&error, true))?;
+        evaluation.batch(&batch, plans, operation)?;
         let batch = stamp_declared_srid(&batch, plans, budget.limits().nesting_depth)?;
         let rows = resources.rows;
         if rows == 0 {
@@ -288,6 +317,7 @@ async fn verify_row_scoped(
     limits: InputLimits,
     (declared, policy): (u64, &RowDiagnosticsPolicy),
     mut gate: StatementGate,
+    evaluation: &mut super::effective::Evaluation,
 ) -> Result<VerifiedInput> {
     let plans = &state.column_plans;
     let (_, indexes) = statement(operation, &operation.target, schema, plans)?;
@@ -318,6 +348,7 @@ async fn verify_row_scoped(
             limits.max_wkb_cell_bytes,
             budget,
         )?;
+        evaluation.batch(&batch, plans, operation)?;
         resources.commit()?;
         let batch = stamp_declared_srid(&batch, plans, budget.limits().nesting_depth)?;
         let rows = u64::try_from(batch.num_rows())
@@ -385,3 +416,7 @@ fn without_effect(mut error: DatabaseError) -> DatabaseError {
     }
     error
 }
+
+#[cfg(test)]
+#[path = "dry_run_tests.rs"]
+mod tests;

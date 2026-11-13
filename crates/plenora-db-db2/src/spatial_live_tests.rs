@@ -219,6 +219,7 @@ async fn write_batch(
             Box::new(OneBatch::new(batch)),
             budget,
             cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("write spatial Db2")
@@ -423,6 +424,7 @@ async fn live_spatial_write_round_trips_and_invalid_wkb_rolls_back() {
             Box::new(OneBatch::new(invalid)),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("WKB invalido rifiutato");

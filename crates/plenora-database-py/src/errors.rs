@@ -29,6 +29,12 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+create_exception!(
+    plenora_database._native,
+    MappingLossWarning,
+    pyo3::exceptions::PyUserWarning
+);
+
 // Base + sottoclassi. Il modulo dichiarato deve essere `plenora_database._native`
 // per corrispondere al pymodule di lib.rs.
 create_exception!(plenora_database._native, PlenoraError, PyRuntimeError);
@@ -106,6 +112,10 @@ create_exception!(
 
 /// Registra tutte le classi di eccezione nel pymodule.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "MappingLossWarning",
+        m.py().get_type::<MappingLossWarning>(),
+    )?;
     m.add("PlenoraError", m.py().get_type::<PlenoraError>())?;
     m.add(
         "PlenoraInvalidPlanError",
@@ -263,6 +273,13 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
             .and_then(|value| serde_json::to_value(value).ok())
             .and_then(|value| crate::py_convert::json_to_python(py, &value).ok());
         let _ = bound.setattr("details", details_py.as_ref());
+        let loss_py = public
+            .details
+            .as_ref()
+            .and_then(|details| details.loss_report.as_ref())
+            .and_then(|report| serde_json::to_value(report).ok())
+            .and_then(|value| crate::py_convert::json_to_python(py, &value).ok());
+        let _ = bound.setattr("loss_report", loss_py.as_ref());
         let diagnostics_py = public.details.as_ref().and_then(|details| {
             serde_json::to_value(&details.row_diagnostics)
                 .ok()

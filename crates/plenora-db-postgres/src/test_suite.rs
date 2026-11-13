@@ -60,7 +60,16 @@ impl PostgresProvider {
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let budget = prepared.budget.clone();
-            Provider::write(self, secret, prepared, input, &budget, cancellation).await
+            Provider::write(
+                self,
+                secret,
+                prepared,
+                input,
+                &budget,
+                cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
+            )
+            .await
         })
     }
 }
@@ -511,6 +520,7 @@ mod tests {
             Box::new(NoBatchStream { schema }),
             &other_budget,
             &CancellationToken::new(),
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("budget substitution");
@@ -4025,6 +4035,7 @@ mod tests {
             deadline_stream,
             &deadline_budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("write deadline");

@@ -27,6 +27,13 @@
   ],
   "deviations": [
     {
+      "rule": "SURF-007",
+      "surface": "runtime",
+      "observed_behavior": "10.0.0 migrates database.write to operation 2, input/result v2 and WriteOutcome/ExecutionLossReport v3 (risk/evaluation/effective). PG/SS consent defaults to deny and checks values before sending, not plan risk. CLI, sync/async SDK and Rust share this boundary. The pin still declares write@1; the checked local migration is not write@1 conformance. Runtime-tools must adopt the catalog, accept_loss and WriteOutcome v3 separately; consumer adoption is not attested here.",
+      "tracking": "contracts/v2/write-outcome-v3.schema.json",
+      "detectable_before_invocation": true
+    },
+    {
       "rule": "ARROW-STORE-REWRITE-PREVALIDATED",
       "surface": "rust",
       "observed_behavior": "Coordinator decision 2026-11-10: preserve StoreRewrite::rewrites and rewrites_in_unit bool signatures. Rule: callers supply an array already fully validated and an in-range row. Scope: direct Rust calls to these two helpers; operational inputs pass through RewriteGuard::check, enforced by scripts/check_arrow_ingress.py. Hazard: a direct caller violating the precondition can observe invalid data or panic; bool cannot report category and phase. Reentry: fallible signatures in the next major release.",

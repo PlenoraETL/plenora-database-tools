@@ -900,6 +900,7 @@ impl RowRejectionOutcome {
             provider,
             execution_id,
             message: "riga sorgente rifiutata dal database".to_owned(),
+            loss_report: None,
             diagnostics: None,
         }
         .with_row_diagnostics(self.diagnostics)

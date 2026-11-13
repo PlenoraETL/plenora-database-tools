@@ -46,6 +46,12 @@ SKIPPED_LIVE_TESTS = (
 # un altro. Il nome va verificato.
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_b3_replace_rejects_unrepresented_index",
+        "live_b3_matrix_a_to_e_direct_trait_and_staging",
+        "live_b3_warning_code_page_and_second_batch_text",
+        "live_b3_negative_profiles_strict_and_tds",
+        "live_b3_binary_and_surrogate_boundaries",
+        "live_b3_uncertain_commit_no_match_and_schema_change",
         "live_exact_temporal_query_stream_and_duplicate_names",
         "live_submicrosecond_temporal_values_fail_closed",
 
@@ -443,7 +449,10 @@ def validate_live_result(output: str, listing: str) -> list[str]:
 
     declared = live_test_inventory()
     listed = live_inventory.listed_tests(
-        listing, keep=lambda name: name.startswith("live_tests::")
+        listing, keep=lambda name: (
+            live_inventory.leaf(name).startswith("live_")
+            or live_inventory.leaf(name) in SKIPPED_LIVE_TESTS
+        )
     )
     absent = sorted(declared - {live_inventory.leaf(name) for name in listed})
     if absent:
@@ -550,9 +559,14 @@ def main() -> int:
                 "plenora-db-sqlserver",
                 "--lib",
                 "--locked",
+                "--",
+                "--skip",
+                "live_",
             ]
         )
         steps.append("offline_unit_tests")
+        # I moduli live contengono test con e senza #[ignore]: entrambi
+        # devono entrare nella corsa e nella lista compilata sottostante.
         live_output = run_cargo(
             [
                 "test",
@@ -561,7 +575,7 @@ def main() -> int:
                 "live_",
                 "--locked",
                 "--",
-                "--ignored",
+                "--include-ignored",
                 "--test-threads=1",
                 # Dalla dichiarazione, non da una seconda lista scritta a mano:
                 # due elenchi separati sarebbero andati alla deriva, e il gate
@@ -579,7 +593,7 @@ def main() -> int:
                 "--locked",
                 "--",
                 "--list",
-                "--ignored",
+                "--include-ignored",
             ],
             capture=True,
         )

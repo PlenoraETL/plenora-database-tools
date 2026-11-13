@@ -238,6 +238,9 @@ def validate_examples(
                 registry,
                 f"example {root.name}/{entry['file']}",
             )
+            if schema_path.name == "write-outcome-v3.schema.json":
+                from scripts.execution_loss_semantics import validate_outcome
+                validate_outcome(load_json(example_path))
         if not entries:
             raise ValidationError(f"examples index vuoto: {root.name}")
         validated += len(entries)
@@ -592,7 +595,10 @@ def validate_generated_documents() -> int:
             render as render_microbench,
         )
 
+    from scripts.render_loss_registry import SCHEMA, TABLE, render_schema, render_table
     generated = (
+        (SCHEMA, render_schema, "python scripts/render_loss_registry.py"),
+        (TABLE, render_table, "python scripts/render_loss_registry.py"),
         (TARGET, render, "python scripts/render_state.py"),
         (
             MARIADB_EVIDENCE_TARGET,

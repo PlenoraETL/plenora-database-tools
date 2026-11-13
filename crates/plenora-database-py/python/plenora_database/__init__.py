@@ -28,6 +28,7 @@ from ._native import (
     AsyncDatabaseSession,
     DatabaseSession,
     ReadCheckpoint,
+    MappingLossWarning,
     SessionContext,
     version,
 )
@@ -631,6 +632,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict:
         """Esegue un bulk write tramite il provider della sessione.
 
@@ -658,6 +660,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
             mapping_policy,
             keys,
             update_columns,
+            accept_loss,
         )
 
 
@@ -879,6 +882,7 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
+        accept_loss: bool = False,
     ) -> dict:
         """Esegue un bulk write asincrono tramite il provider della sessione.
 
@@ -907,6 +911,7 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
             mapping_policy,
             keys,
             update_columns,
+            accept_loss,
         )
 
     async def _execute_portable_rows(self, ast_json: str) -> list[dict]:
@@ -1191,6 +1196,7 @@ async def _aconnect_postgres(dsn: str, tls_mode: str = "require") -> AsyncSessio
 #: La superficie e indipendente dal prodotto. Gli alias restano esportati
 #: perche rimuoverli romperebbe `isinstance` e annotazioni di tipo esistenti.
 __all__ = [  # noqa: RUF022 - grouped by public API surface
+    "MappingLossWarning",
     "Engine",
     "AsyncEngine",
     "SessionProtocol",

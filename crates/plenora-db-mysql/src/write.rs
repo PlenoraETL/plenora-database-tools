@@ -1340,6 +1340,7 @@ pub fn committed_outcome_for_mode(
     };
     let outcome = WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::Committed,
         execution_id,
         provider: crate::profile::PROVISIONAL_KIND,
@@ -1378,6 +1379,7 @@ pub fn commit_failure(
     }
     let outcome = WriteOutcome {
         schema_version: 2,
+        loss_report: None,
         status: WriteStatus::OutcomeUnknown,
         execution_id,
         provider: crate::profile::PROVISIONAL_KIND,

@@ -920,3 +920,32 @@ fn run_end_schema_is_rejected_before_buffers() {
         }
     }
 }
+
+#[test]
+fn create_native_declaration_keeps_903_text_fallback() {
+    for (declaration, expected) in [
+        ("character varying(3)", "pg_catalog.text"),
+        ("text", "pg_catalog.text"),
+        ("jsonb", "pg_catalog.jsonb"),
+    ] {
+        let field = arrow_schema::Field::new("v", arrow_schema::DataType::Utf8, true)
+            .with_metadata(
+                [
+                    (
+                        plenora_database_core::protocol::POSTGRES_NATIVE_TYPE.to_owned(),
+                        declaration.to_owned(),
+                    ),
+                    (
+                        plenora_database_core::protocol::POSTGRES_NATIVE_DECLARATION.to_owned(),
+                        declaration.to_owned(),
+                    ),
+                ]
+                .into_iter()
+                .collect::<arrow_schema::Metadata>(),
+            );
+        assert_eq!(
+            WriteColumnPlan::compile(&field).unwrap().postgres_type,
+            expected
+        );
+    }
+}

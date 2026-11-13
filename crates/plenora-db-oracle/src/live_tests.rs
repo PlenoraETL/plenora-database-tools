@@ -539,6 +539,7 @@ async fn run_spatial_write(
             Box::new(VecBatchStream::new(vec![batch])),
             budget,
             cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
 }
@@ -627,6 +628,7 @@ async fn live_arrow_scalar_create_and_read_preserves_supported_types() {
             Box::new(VecBatchStream::new(vec![batch])),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("create scalare Arrow Oracle");
@@ -762,6 +764,7 @@ async fn live_array_dml_crosses_batches_and_rolls_back_atomically() {
             Box::new(VecBatchStream::new(vec![invalid])),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect_err("duplicato array DML deve fallire");
@@ -785,6 +788,7 @@ async fn live_array_dml_crosses_batches_and_rolls_back_atomically() {
             Box::new(VecBatchStream::new(vec![valid])),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         )
         .await
         .expect("array DML Oracle");
@@ -2396,6 +2400,7 @@ async fn live_an_abandoned_create_is_recorded_as_a_possible_residue() {
             Box::new(StallingBatchStream(VecBatchStream::new(vec![batch]))),
             &budget,
             &cancellation,
+            plenora_database_core::loss::LossConsent::Accept,
         ),
     )
     .await;
