@@ -8,6 +8,12 @@ riassumono le note di quelle release.
 
 ## 11.0.0 — non pubblicata
 
+- Qualifica giro 3: proxy MySQL raggiunto con host e porta separati sulle
+  superfici SDK/CLI, provati offline col driver reale e TLS verificato;
+  consenso `write` trasportato nel JSON e rapporto letto dall'envelope.
+  Fixture dei target PostgreSQL esistenti validate offline prima delle
+  campagne. Nessun cambio di firma SDK: `mapping_policy` resta obbligatoria.
+
 - Giro 2 della corsa finale: MySQL `double(255,30)` rifiuta anche i valori
   non identici dopo la ricomposizione binaria del server; nessun consenso
   abilita questa perdita non qualificata. Strict anticipa anche il rifiuto

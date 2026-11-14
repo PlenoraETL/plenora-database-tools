@@ -133,7 +133,27 @@ def busta(argv: list[str]) -> dict:
         documento = json.loads(esito.stdout)
     except json.JSONDecodeError:
         return {"exit": esito.returncode, "category": None, "busta": "illeggibile"}
-    errore = documento.get("error") if isinstance(documento, dict) else None
+    invalid = {"exit": esito.returncode, "category": None, "busta": "illeggibile"}
+    if not isinstance(documento, dict):
+        return invalid
+    errore = documento.get("error")
+    if "protocol_version" in documento:
+        if documento["protocol_version"] != 2:
+            return invalid
+        if documento.get("status") == "error":
+            if not isinstance(errore, dict) or esito.returncode == 0:
+                return invalid
+        elif documento.get("status") == "ok":
+            result = documento.get("result")
+            # The only canonical command consumed here is write (including dry run).
+            if (esito.returncode != 0 or errore is not None or not isinstance(result, dict)
+                    or result.get("status") not in {"committed", "dry_run", "dry_run_offline"}):
+                return invalid
+            documento = result
+        else:
+            return invalid
+    if isinstance(errore, dict) and esito.returncode == 0:
+        return invalid
     if not isinstance(errore, dict):
         controlli = documento.get("checks") if isinstance(documento, dict) else None
         controlli = controlli if isinstance(controlli, dict) else {}
@@ -169,7 +189,7 @@ class Postgres:
     def cancella(self, tabella: str) -> None:
         esito = busta([str(self.cli), "database-execute-ddl", "postgres", self.variabile,
                        f"DROP TABLE IF EXISTS public.{tabella}"])
-        if esito["exit"] != 0:
+        if esito["exit"] != 0 or esito.get("busta"):
             raise SystemExit("il fixture PostgreSQL non risponde: il gate non si puo' eseguire")
 
     def scalare(self, sql: str) -> int:
@@ -322,12 +342,16 @@ class Postgres:
             op = json.loads(operazione.read_text(encoding="utf-8"))
             op["mapping_policy"] = "compatible"
             operazione.write_text(json.dumps(op), encoding="utf-8")
-            consentito = busta([str(self.cli), "write", "--input", str(richiesta), "--data", str(ingresso), "--accept-loss"])
+            request = json.loads(richiesta.read_text(encoding="utf-8"))
+            request["accept_loss"] = True
+            richiesta.write_text(json.dumps(request), encoding="utf-8")
+            consentito = busta([str(self.cli), "write", "--input", str(richiesta), "--data", str(ingresso)])
             report = consentito.get("loss_report") or {}
             effective = report.get("effective", [])
             osservato["normalizzazione_consentita"] = (
                 consentito["exit"] == 0 and bool(effective)
-                and all(e["rule_id"] == "pg.geometry.representation" for e in effective)
+                and all(e["rule_id"] == "pg.geometry.representation"
+                        and e.get("committed", 0) > 0 and e.get("uncertain", 0) == 0 for e in effective)
                 and self.srid_difformi(tabella, vettore) == 0
                 and self.coordinate_difformi(tabella, vettore) == 0
                 and self.byte_difformi(tabella, vettore) > 0)
@@ -417,6 +441,8 @@ def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
              limite: str | set[str] | None) -> str:
     """`limite` e' la categoria, o l'insieme delle categorie, dei limiti
     dichiarati che il vettore tocca nell'operazione, o `None`."""
+    if osservato.get("busta"):
+        return "busta-illeggibile"
     limiti = {limite} if isinstance(limite, str) else set(limite or ())
     accettato = osservato["exit"] == 0
     supporto = osservato["category"] in limiti
@@ -454,6 +480,8 @@ def accordo_dry_run(dry_run: dict, scrittura: dict, rls_dichiarata: bool = False
     sui valori: `not_performed` solo dove lo scenario lo attende
     (`rls_dichiarata`), `not_applicable` altrove. Tacerlo, o dichiararlo dove
     RLS non si applica, e' un dry run che non dice che cosa ha deciso."""
+    if dry_run.get("busta") or scrittura.get("busta"):
+        return "busta-illeggibile"
     if scrittura["exit"] == 0:
         if dry_run["exit"] != 0:
             return "dry-run-rifiuta"
@@ -794,7 +822,7 @@ class Scenari:
     def ddl(self, sql: str) -> None:
         esito = busta([str(self.postgres.cli), "database-execute-ddl", "postgres",
                        self.postgres.variabile, sql])
-        if esito["exit"] != 0:
+        if esito["exit"] != 0 or esito.get("busta"):
             raise SystemExit("preparazione di uno scenario del target fallita: il gate non si "
                              "puo' eseguire")
 

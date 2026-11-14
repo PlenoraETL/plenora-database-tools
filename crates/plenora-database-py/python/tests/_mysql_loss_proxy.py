@@ -46,6 +46,19 @@ class MysqlCommitCutter:
         self._acceptor = threading.Thread(target=self._accept, daemon=True)
         self._acceptor.start()
 
+    def route_config(self, config):
+        from dataclasses import replace
+        return replace(config, host="127.0.0.1", port=self.port)
+
+    def route_arguments(self, arguments):
+        arguments = list(arguments)
+        arguments[0] = "127.0.0.1"
+        if len(arguments) > 3 and arguments[3].isdecimal():
+            arguments[3] = str(self.port)
+        else:
+            arguments.insert(3, str(self.port))
+        return arguments
+
     def _accept(self):
         while True:
             try:

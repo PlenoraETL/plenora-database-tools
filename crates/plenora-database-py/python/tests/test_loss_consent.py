@@ -532,7 +532,7 @@ async def test_live_mysql_faults_on_each_surface(surface, fault, tmp_path):
         with warnings.catch_warnings(record=True) as emitted:
             warnings.simplefilter("error", p.MappingLossWarning)
             if surface in ("sync", "async"):
-                config = _network_config("mysql", (f"127.0.0.1:{proxy.port}", database, user, password, ca))
+                config = proxy.route_config(_network_config("mysql", (host, database, user, password, ca)))
                 session = (await p.async_engine_from_url(config)).session() if surface == "async" else p.engine_from_url(config).session()
                 with pytest.raises(p.PlenoraCommitOutcomeUnknownError if fault == "uncertain" else p.PlenoraDataMappingError) as caught:
                     if surface == "async":
@@ -548,8 +548,7 @@ async def test_live_mysql_faults_on_each_surface(surface, fault, tmp_path):
                 report = outcome["loss_report"] if outcome else error.loss_report
             else:
                 spec = _spec("mysql")
-                arguments = list(spec.arguments)
-                arguments[0] = f"127.0.0.1:{proxy.port}"
+                arguments = proxy.route_arguments(spec.arguments)
                 arrow = tmp_path / "input.arrow"
                 data = loss_table("mysql", [1001])
                 with pa.ipc.new_file(arrow, data.schema) as writer:
@@ -570,6 +569,8 @@ async def test_live_mysql_faults_on_each_surface(surface, fault, tmp_path):
                 assert result.returncode == (5 if fault == "uncertain" else 3)
                 assert password not in result.stdout + result.stderr
                 error = json.loads(result.stdout)["error"]
+                assert error["phase"] == ("commit" if fault == "uncertain" else "write"), {
+                    key: error[key] for key in ("category", "phase", "remote_effect", "retry")}
                 assert error["remote_effect"] == ("unknown" if fault == "uncertain" else "rolled_back")
                 assert error["phase"] == ("commit" if fault == "uncertain" else "write")
                 assert error["retry"] == {"kind":"requires_recovery" if fault == "uncertain" else "never"}
@@ -587,8 +588,11 @@ async def test_live_mysql_faults_on_each_surface(surface, fault, tmp_path):
         if session is not None:
             session.close()
         proxy.close()
-        direct.execute_ddl(f"DROP TABLE {database}.{table}")
-        direct.close()
+        try:
+            direct.execute_ddl(f"DROP TABLE {database}.{table}")
+        finally:
+            direct.close()
+        assert not proxy.errors, proxy.errors
 
 
 @pytest.mark.parametrize("abandon", [False, True])

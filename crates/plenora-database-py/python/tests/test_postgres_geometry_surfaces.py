@@ -198,12 +198,8 @@ def test_postgres_existing_target_surface_enumeration():
     assert len(set(itertools.product(EXISTING_MODES, EXISTING_STATES, SURFACES))) == 100
 
 
-@pytest.mark.parametrize("kind", ["scalar", "geometry"])
-def test_live_postgres_existing_target_metadata_matrix(tmp_path, kind):
+def existing_source(kind):
     import pyarrow as pa
-    harness = Harness(tmp_path, postgres_dsn_or_skip())
-    observed = set()
-    name = "db_b_existing"
     schema = pa.schema([
         pa.field("id", pa.int64(), nullable=False, metadata={"plenora.field_id": "1"}),
         pa.field("v", pa.string(), metadata={"plenora.field_id": "2", "application.note": "original"}),
@@ -213,11 +209,22 @@ def test_live_postgres_existing_target_metadata_matrix(tmp_path, kind):
     if kind == "geometry":
         field = fixtures()["fixtures"][0]["fields"][2]
         metadata = {**field["metadata"], "plenora.field_id": "2",
-                    "plenora.geometry.axis_order": "xy", "application.note": "original"}
+                    "plenora.geometry.axis_order": "lon_lat", "application.note": "original"}
         schema = schema.set(1, pa.field("v", pa.binary(), metadata=metadata))
         values = pa.array([bytes.fromhex(field["values"][0])], type=pa.binary())
         native, sql_old = "geometry(Point,4326)", "ST_SetSRID(ST_MakePoint(0,0),4326)"
     original = pa.Table.from_arrays([pa.array([1]), values], schema=schema)
+    return original, native, sql_old
+
+
+@pytest.mark.parametrize("kind", ["scalar", "geometry"])
+def test_live_postgres_existing_target_metadata_matrix(tmp_path, kind):
+    import pyarrow as pa
+    harness = Harness(tmp_path, postgres_dsn_or_skip())
+    observed = set()
+    name = "db_b_existing"
+    original, native, sql_old = existing_source(kind)
+    schema = original.schema
     changed = schema.set(1, schema.field(1).with_metadata({
         **schema.field(1).metadata, b"application.note": b"changed"}))
     with connect_postgres() as admin:
@@ -228,7 +235,8 @@ def test_live_postgres_existing_target_metadata_matrix(tmp_path, kind):
                     admin.execute_ddl(f"DROP TABLE IF EXISTS public.{name}")
                     admin.execute_ddl(f"CREATE TABLE public.{name} (id bigint PRIMARY KEY, v {native})")
                     if state in ("compatible", "incompatible"):
-                        admin.copy_from("public", name, original, mode="append")
+                        seeded = WRITERS["sdk_sync"](harness, {**operation(name, "strict"), "mode": "append"}, original, False)
+                        assert seeded["ok"], normalized(seeded)
                     admin.execute_sql(f"DELETE FROM public.{name}")
                     if mode in ("update", "upsert", "replace", "create") or state == "populated_unregistered":
                         old_id = 0 if mode == "append" else 1
@@ -245,7 +253,7 @@ def test_live_postgres_existing_target_metadata_matrix(tmp_path, kind):
                     result = normalized(WRITERS[surface](harness, op, incoming, False))
                     legacy_populated = kind == "geometry" and state in ("unregistered", "populated_unregistered") and count > 0 and mode in ("append", "update", "upsert")
                     allowed = mode != "create" and state != "incompatible" and not legacy_populated
-                    assert result["ok"] == allowed, (mode, state, surface)
+                    assert result["ok"] == allowed, (mode, state, surface, result)
                     if reference is None:
                         reference = result
                     assert result == reference, (mode, state, surface)
@@ -273,3 +281,51 @@ def test_live_postgres_existing_target_metadata_matrix(tmp_path, kind):
         finally:
             admin.execute_ddl(f"DROP TABLE IF EXISTS public.{name}")
     assert observed == set(itertools.product(EXISTING_MODES, EXISTING_STATES, SURFACES))
+
+
+def test_postgres_existing_sources_pass_real_offline_preflight(tmp_path):
+    harness = Harness(tmp_path, "host=unused.invalid dbname=offline")
+    for kind in ("scalar", "geometry"):
+        source, _, _ = existing_source(kind)
+        for surface in ("rust", "cli"):
+            result = harness.invoke(surface, "preflight", operation("offline", "strict"), source)
+            assert result["ok"], normalized(result)
+
+
+def test_postgres_adapters_bind_public_sdk_signatures(monkeypatch):
+    import asyncio
+    import inspect
+    from . import _postgres_surfaces as adapters
+    source, _, _ = existing_source("scalar")
+    calls = []
+
+    class Session:
+        def copy_from(self, *args, **kwargs):
+            inspect.signature(p.Session.copy_from).bind(self, *args, **kwargs)
+            calls.append((args, kwargs))
+            return {"sentinel": True}
+
+        async def acopy_from(self, *args, **kwargs):
+            inspect.signature(p.AsyncSession.acopy_from).bind(self, *args, **kwargs)
+            calls.append((args, kwargs))
+            return {"sentinel": True}
+
+        def close(self):
+            pass
+
+        async def aclose(self):
+            pass
+
+    async def connect():
+        return Session()
+
+    monkeypatch.setattr(adapters, "connect_postgres", Session)
+    monkeypatch.setattr(adapters, "aconnect_postgres", connect)
+    for mode in EXISTING_MODES:
+        op = {**operation("target", "strict"), "mode": mode,
+              "keys": ["id"] if mode in ("upsert", "update") else [],
+              "update_columns": ["v"] if mode == "update" else []}
+        assert adapters.sync_write(None, op, source, False)["ok"]
+        assert asyncio.run(adapters.async_write(op, source, False))["ok"]
+        assert calls[-2][1] == calls[-1][1]
+        assert calls[-1][1]["mapping_policy"] == "strict"
