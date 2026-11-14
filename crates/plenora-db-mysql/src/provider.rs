@@ -846,7 +846,17 @@ pub async fn execute_mysql_write(
             // lascia l'esito ignoto come per ogni comando mutante.
             if let Err(error) = session.exec_control(&ddl, ErrorPhase::Write, token).await {
                 let error = if let Some(evaluation) = frozen.as_mut() {
-                    evaluation.finish(Err(error)).expect_err("esito di errore")
+                    match evaluation.finish(Err(error)) {
+                        Err(error) => error,
+                        Ok(_) => {
+                            return Err(DatabaseError::new(
+                                ErrorCategory::Internal,
+                                ErrorPhase::Write,
+                                Some(provider.profile.kind()),
+                                "finalizzazione MySQL incoerente con l'esito di errore",
+                            ));
+                        }
+                    }
                 } else {
                     error
                 };

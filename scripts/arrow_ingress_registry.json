@@ -9703,7 +9703,7 @@
     "crates/plenora-db-mysql/src/provider.rs::execute_mysql_write#1": {
       "classification": "ingresso guardato",
       "reason": "Wrapper dei consumer ordinario, diagnostico e Create: ogni fetch passa da validated_batch prima dei codec; catena fissata nei support_sources. P6: rilettura indipendente del consenso pubblico e delle catene schema/guard_input_keys/RewriteGuard/create_buffer; nessuna lettura array nuova prima della validazione. Live non eseguiti.",
-      "review_sha256": "bc92b3c2854fd9fc37fef4125be8220a1efa8ee735dfada96d22545278ec2404",
+      "review_sha256": "08518e8e912fd7869276182c652ac7fb436a763faa785df4e0f80a2ac7345f0b",
       "signature": "pub async fn execute_mysql_write( provider: &MysqlProvider, secret: &SecretString, mut prepared: PreparedWrite, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> Result<WriteOutcome>",
       "required": [
         "guard_input_keys(",
@@ -10360,7 +10360,7 @@
       "reason": "locate e drain usano validated_batch; evaluation.batch precede bind/invio e segue la validazione."
     },
     "crates/plenora-db-mysql/src/provider.rs": {
-      "review_sha256": "cd20efb5f77aa9244d1a8dd0e99a55136d3421102f4ea3b90e4cea50874a9c2c",
+      "review_sha256": "dd9805437bb2998a4252dd2498f157a472e997e15d2d9e2376760ffed107a29d",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/row_diagnostics.rs": {
@@ -10596,7 +10596,7 @@
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/create_buffer.rs": {
-      "review_sha256": "527d0e90371d14b6371b207277fe9a979ef38fd212404d1917d1eb31264b831d",
+      "review_sha256": "7f78c64986d1bc24568be001ca265096dfed7e53d6ca06b1e564cc9b772072ca",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/lib.rs": {

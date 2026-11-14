@@ -783,21 +783,30 @@ pub fn ensure_spatial_support(contract: &FieldContract<'_>) -> Result<()> {
     Ok(())
 }
 
-pub fn projection_function(column: &crate::types::ColumnSpec) -> &'static str {
+pub fn projection_function(column: &crate::types::ColumnSpec) -> Result<&'static str> {
     let encoding = PROPERTY_REGISTRY
         .iter()
         .find(|p| p.check == PhysicalCheck::Representation)
-        .expect("registry representation property");
-    if column
-        .arrow_metadata
-        .as_ref()
-        .and_then(|s| s.field.get(encoding.key))
-        .is_some_and(|s| s == "wkb")
-    {
-        "ST_AsBinary"
-    } else {
-        "ST_AsEWKB"
-    }
+        .ok_or_else(|| {
+            public_error(
+                ErrorCategory::Internal,
+                ErrorPhase::Read,
+                false,
+                "registro geometrico PostgreSQL privo della proprieta di rappresentazione",
+            )
+        })?;
+    Ok(
+        if column
+            .arrow_metadata
+            .as_ref()
+            .and_then(|s| s.field.get(encoding.key))
+            .is_some_and(|s| s == "wkb")
+        {
+            "ST_AsBinary"
+        } else {
+            "ST_AsEWKB"
+        },
+    )
 }
 
 pub fn crs_changes(
@@ -1064,7 +1073,9 @@ pub fn published_srid_conforms(
 ) -> Result<()> {
     if columns
         .get(column)
-        .is_some_and(|spec| crate::geometry_properties::projection_function(spec) == "ST_AsBinary")
+        .map(projection_function)
+        .transpose()?
+        .is_some_and(|function| function == "ST_AsBinary")
     {
         return if inspection.root.srid.is_none() {
             Ok(())

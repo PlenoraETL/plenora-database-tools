@@ -65,7 +65,11 @@ pub async fn catalog(
         .await?
         .into_iter()
         .map(|row| {
-            let mut values = row.unwrap();
+            let mut values = row
+                .unwrap_raw()
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(invalid)?;
             if values.len() != 9 {
                 return Err(invalid());
             }

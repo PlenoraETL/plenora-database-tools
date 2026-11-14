@@ -356,7 +356,7 @@ impl ColumnSpec {
                 format!("{quoted}::pg_catalog.text")
             }
             ColumnKind::Geometry | ColumnKind::Geography => {
-                let function = crate::geometry_properties::projection_function(self);
+                let function = crate::geometry_properties::projection_function(self)?;
                 let cast = if matches!(self.kind, ColumnKind::Geography) {
                     "::geometry"
                 } else {
