@@ -125,7 +125,7 @@ provano la semantica del target. Il controllo e le regressioni sono in
 
 ## Scritture Arrow: rapporto e consenso
 
-La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+La 11.0.0 estende a MySQL il consenso per valore delle
 superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
 Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
 registro generato; l'apertura del percorso non attesta la qualifica live,
