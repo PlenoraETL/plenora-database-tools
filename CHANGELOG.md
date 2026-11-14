@@ -6,7 +6,7 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## 11.0.0 — non pubblicata
+## 11.0.0 — 2026-11-14
 
 - Qualifica giro 3: proxy MySQL raggiunto con host e porta separati sulle
   superfici SDK/CLI, provati offline col driver reale e TLS verificato;
