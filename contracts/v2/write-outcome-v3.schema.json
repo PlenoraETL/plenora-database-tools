@@ -103,6 +103,7 @@
             {
               "$ref": "execution-loss-report-v3.schema.json"
             },
+              {"$ref": "execution-loss-report-v4.schema.json"},
             {
               "$ref": "loss-report.schema.json"
             }

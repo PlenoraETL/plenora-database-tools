@@ -9,10 +9,19 @@ fn strict_rule_outcomes_match_903_baseline() {
     use LossSeverity::{DataLoss, Information, Warning};
     use RuleId::*;
     let baseline = [
+        (MysqlDoubleUnderflow, DataLoss),
+        (MysqlFixedDouble, DataLoss),
+        (MysqlFixedFloat, DataLoss),
+        (MysqlFractionalSeconds, DataLoss),
+        (MysqlNegativeZero, DataLoss),
         (PgAddNullable, Information),
         (PgArrowMismatch, DataLoss),
         (PgCrs, DataLoss),
+        // 11.0.0: rischio di layout; la decisione strict e per valore nel ledger.
+        (PgGeometryRepresentation, Warning),
         (PgJsonb, Warning),
+        // 11.0.0: metadata values are checked before consent and effects.
+        (PgMetadataKeyNotPreserved, Warning),
         (PgMissingColumn, DataLoss),
         (PgNullability, DataLoss),
         (PgNumeric, DataLoss),

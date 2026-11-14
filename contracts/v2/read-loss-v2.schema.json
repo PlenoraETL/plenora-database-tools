@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/read-loss-v2.schema.json",
+  "title": "Plenora read loss snapshot v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "status": {
+      "enum": [
+        "open",
+        "complete",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "position",
+          "field_id",
+          "property",
+          "rule"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "field_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "property": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rule": {
+            "type": "string",
+            "minLength": 1
+          },
+          "subject": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "index",
+              "scope",
+              "field_identity",
+              "property",
+              "key_sha256",
+              "hop",
+              "reason"
+            ],
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "scope": {
+                "enum": [
+                  "schema",
+                  "field"
+                ]
+              },
+              "field_identity": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "property": {
+                "type": "string",
+                "pattern": "^[a-z_]{1,32}$"
+              },
+              "key_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "hop": {
+                "const": "column_comment"
+              },
+              "reason": {
+                "enum": [
+                  "column_limit",
+                  "operation_limit"
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "schema"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "field_identity": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "field_identity": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "contains": {
+        "required": [
+          "subject"
+        ]
+      }
+    }
+  }
+}

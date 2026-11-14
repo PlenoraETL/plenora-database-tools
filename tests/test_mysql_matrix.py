@@ -38,6 +38,27 @@ def cargo_output(names: set[str]) -> str:
 
 
 class MysqlMatrixTests(unittest.TestCase):
+    def test_common_vectors_are_read_from_the_mounted_artifact(self):
+        import ast
+        import copy
+        import json
+        import os
+        root = CHECKER_SOURCE.parent.parent
+        source = root / "crates/plenora-database-py/python/tests/test_loss_consent.py"
+        function = next(node for node in ast.parse(source.read_text(encoding="utf-8")).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "common_mysql_report")
+        namespace = {"Path": pathlib.Path, "os": os, "json": json, "copy": copy,
+                     "__file__": "/suite/tests/test_loss_consent.py"}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
+        fixture = root / "tests/fixtures/mysql_permissive/surfaces.json"
+        report = json.loads(fixture.read_text(encoding="utf-8"))["cases"][0]["outcome"]["loss_report"]
+        report["risk"][0]["field_id"] = 0
+        with patch.dict(os.environ, {"PLENORA_MYSQL_SURFACE_VECTORS": str(fixture)}):
+            namespace["common_mysql_report"](report, "planned")
+            report["evaluation"]["complete"] = True
+            with self.assertRaises(AssertionError):
+                namespace["common_mysql_report"](report, "planned")
+
     def setUp(self) -> None:
         self.entry = MATRIX[0]
         self.probe = {
@@ -46,6 +67,21 @@ class MysqlMatrixTests(unittest.TestCase):
             "local_infile": "OFF",
             "tls_version": "TLSv1.3",
         }
+
+    def test_surface_runner_uses_each_reference_without_missing_tests(self):
+        from scripts import check_sdk_tests as sdk
+        for entry in MATRIX:
+            command = sdk.pytest_command(scope="mysql-surfaces", artifacts=pathlib.Path("/artifacts"),
+                wheel="sample.whl", mysql_matrix=("matrix-network", entry.tls_volume))
+            self.assertIn("matrix-network", command)
+            self.assertIn(f"{entry.tls_volume}:/mysql-tls:ro", command)
+            self.assertIn("PLENORA_TEST_MYSQL_PASSWORD", command)
+            self.assertIn("tests/test_loss_consent.py -k mysql", command[-1])
+        sdk.assert_scope_contract(scope="mysql-surfaces", output="16 passed, 10 deselected",
+                                  summary="16 passed, 10 deselected")
+        for summary in ["5 passed, 1 skipped, 10 deselected", "5 passed, 11 deselected"]:
+            with self.assertRaises(RuntimeError):
+                sdk.assert_scope_contract(scope="mysql-surfaces", output=summary, summary=summary)
 
     # --- immagini fissate -------------------------------------------------
 
@@ -273,6 +309,7 @@ class MysqlMatrixTests(unittest.TestCase):
                 "scripts.check_mysql_matrix.ensure_network",
                 side_effect=RuntimeError("stop after network"),
             ),
+            patch("scripts.check_sdk_tests.build_artifacts", return_value={}),
             patch("scripts.check_mysql_matrix.qualify") as qualify_mock,
             patch("scripts.check_mysql_matrix.quiet"),
         ):

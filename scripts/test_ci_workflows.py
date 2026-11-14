@@ -20,10 +20,7 @@ import importlib
 import importlib.util
 import re
 import tempfile
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -1087,7 +1084,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertIn("scripts/check_db2_reference.py", block)
         self.assertIn("db2:/opt/plenora-wheel/.", block)
         self.assertIn("scripts/name_db2_wheel.py --check", block)
-        self.assertIn("*-1db2-cp310-abi3-linux_x86_64.whl", block)
+        self.assertIn("*-1db2-cp314-abi3-linux_x86_64.whl", block)
         self.assertLess(
             block.index("scripts/check_db2_reference.py 2>&1"),
             block.index("actions/upload-artifact@"),
@@ -1095,14 +1092,14 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         )
 
     def test_abi3_wheels_load_on_every_declared_python_and_platform(self) -> None:
-        """`abi3-py310` e una promessa runtime, non una proprieta del nome."""
+        """`abi3-py314` e una promessa runtime, non una proprieta del nome."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         job = parsed_jobs(workflow)["abi3-runtime"]
         self.assertEqual(job["needs"], ["linux", "windows"])
         matrix = job["strategy"]["matrix"]
         self.assertEqual(
-            matrix["python"], ["3.10", "3.11", "3.12", "3.13", "3.14"]
+            matrix["python"], ["3.14"]
         )
         self.assertEqual(matrix["os"], ["ubuntu-latest", "windows-latest"])
         block = job_text(workflow, "abi3-runtime")
@@ -1838,6 +1835,7 @@ class TheSweepCoversAllOfflineCi(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
             root = Path(temporary)
+            (root / ".python-version").write_bytes((ROOT / ".python-version").read_bytes())
             with patch.object(self.sweep, "ROOT", root), patch.object(self.sweep, "EXCLUDED", {}), \
                  patch.object(self.sweep, "discover", return_value=jobs), \
                  patch.object(self.sweep, "run", return_value=subprocess.CompletedProcess([], 0, "sha", "")), \
@@ -1859,6 +1857,7 @@ class TheSweepCoversAllOfflineCi(unittest.TestCase):
             {"uses": "unknown/prerequisite@commit"}, {"run": "cargo test --locked"},
         ]}}}
         with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
+            (Path(temporary) / ".python-version").write_bytes((ROOT / ".python-version").read_bytes())
             with patch.object(self.sweep, "ROOT", Path(temporary)), patch.object(self.sweep, "EXCLUDED", {}), \
                  patch.object(self.sweep, "discover", return_value=jobs), \
                  patch.object(self.sweep, "run", return_value=subprocess.CompletedProcess([], 0, "sha", "")):

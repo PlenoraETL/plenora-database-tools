@@ -188,7 +188,24 @@ fn compile_rejects_unqualified_operation_shapes_before_the_network() {
     ] {
         let mut operation = append_operation();
         operation.mapping_policy = policy;
-        cases.push((operation, ErrorCategory::Unsupported));
+        assert!(MysqlWritePlan::compile_with_profile(
+            &input,
+            &operation,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE
+        )
+        .is_ok());
+        assert_eq!(
+            MysqlWritePlan::compile_with_profile(
+                &input,
+                &operation,
+                "warehouse",
+                &crate::profile::MARIADB_PROFILE
+            )
+            .unwrap_err()
+            .category,
+            ErrorCategory::Unsupported
+        );
     }
 
     for (operation, expected) in cases {
@@ -1032,6 +1049,7 @@ fn pre_commit_errors_claim_rollback_only_when_it_is_confirmed() {
 #[test]
 fn an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable() {
     let quarantined = DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Protocol,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,
@@ -1986,7 +2004,7 @@ fn server_probe_binds_text_that_production_refuses_before_io() {
         .is_ok());
 }
 
-/// MySQL e MariaDB chiudono ogni politica non stretta prima dei valori limitati.
+/// Solo MySQL apre le policy non strict; i limiti dei valori restano indipendenti.
 #[test]
 fn bounded_types_all_policies_both_products() {
     for profile in [
@@ -2008,7 +2026,7 @@ fn bounded_types_all_policies_both_products() {
                     "warehouse",
                     profile,
                 );
-                if policy == MappingPolicy::Strict {
+                if policy == MappingPolicy::Strict || profile.kind() == ProviderKind::Mysql {
                     assert!(result.is_ok());
                 } else {
                     assert_eq!(result.unwrap_err().category, ErrorCategory::Unsupported);
@@ -2173,4 +2191,259 @@ fn run_end_schema_is_rejected_before_buffers() {
             }
         }
     }
+}
+
+use plenora_database_core::store_rewrite::RewriteGuard;
+use plenora_database_core::write_admission::{arrow_key, AdmissionKey, TargetDimensions};
+use plenora_database_testkit::write_probe::{battery, ProbeSpec};
+use serde_json::{json, Value as Json};
+
+#[path = "../../../tests/support/p1_snapshot.rs"]
+mod snapshot;
+
+fn root() -> &'static std::path::Path {
+    std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+}
+
+fn result<T>(value: plenora_database_core::Result<T>) -> Json {
+    match value {
+        Ok(_) => json!({"ok": true}),
+        Err(error) => json!({"category": error.category, "phase": error.phase,
+            "message": error.message, "remote_effect": error.remote_effect, "retry": error.retry}),
+    }
+}
+
+#[test]
+fn p1_operation_gate_baseline() {
+    let inventory: Json = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/inventory.json"
+    ))
+    .unwrap();
+    let baseline: Json = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/operation_baseline.json"
+    ))
+    .unwrap();
+    let mut observed = Vec::new();
+    for entry in inventory["operation_matrix"].as_array().unwrap() {
+        let mut op = append_operation();
+        op.mode = serde_json::from_value(entry["mode"].clone()).unwrap();
+        op.transaction_profile = serde_json::from_value(entry["profile"].clone()).unwrap();
+        op.mapping_policy = serde_json::from_value(entry["policy"].clone()).unwrap();
+        op.allow_partial = entry["allow_partial"].as_bool().unwrap();
+        if matches!(
+            op.mode,
+            WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+        ) {
+            op.keys = vec!["label".into()];
+        }
+        for profile in [
+            &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+            &crate::profile::MARIADB_PROFILE,
+        ] {
+            let mut fields = vec![Field::new("label", DataType::Int32, false)];
+            if op.mode == WriteMode::Update {
+                fields.push(Field::new("assigned", DataType::Int32, true));
+            }
+            let outcome =
+                MysqlWritePlan::compile_with_profile(&schema(fields), &op, "warehouse", profile);
+            let index = observed.len();
+            if profile.kind() == ProviderKind::Mysql && op.mapping_policy != MappingPolicy::Strict {
+                assert_eq!(
+                    outcome.is_ok(),
+                    op.transaction_profile == TransactionProfile::SingleTransaction
+                        && !op.allow_partial
+                        && op.mode != WriteMode::TruncateInsert,
+                    "{entry}: {outcome:?}"
+                );
+                // La baseline P1 resta immutabile: soltanto il gate MySQL non-strict cambia in P6.
+                observed.push(baseline[index].clone());
+            } else {
+                assert_eq!(
+                    outcome.is_ok(),
+                    entry["baseline"] == "operation_admitted",
+                    "{entry}: {outcome:?}"
+                );
+                observed.push(json!({"case": entry, "provider": profile.product(), "outcome": result(outcome)}));
+            }
+        }
+    }
+    snapshot::check(root(), "operation_baseline", &json!(observed));
+}
+
+#[test]
+fn p1_fixture_baseline() {
+    let mut types = vec![
+        DataType::Boolean,
+        DataType::Int8,
+        DataType::UInt8,
+        DataType::Int16,
+        DataType::UInt16,
+        DataType::Int32,
+        DataType::UInt32,
+        DataType::Int64,
+        DataType::UInt64,
+        DataType::Float32,
+        DataType::Float64,
+        DataType::Date32,
+        DataType::Utf8,
+        DataType::Binary,
+        DataType::Timestamp(TimeUnit::Microsecond, None),
+    ];
+    for precision in 1..=38 {
+        for scale in 0..=precision.min(30) {
+            types.push(DataType::Decimal128(
+                precision,
+                i8::try_from(scale).unwrap(),
+            ));
+        }
+    }
+    let table = crate::write_admission::admission_table(ProviderKind::Mysql).unwrap();
+    let mut observed = Vec::new();
+    for measurement in &table.fixture().misure {
+        let server = table.server(&measurement.server_major).unwrap();
+        for key in &measurement.chiavi {
+            let arrow = types.iter().find(|t| arrow_key(t) == key.arrow).unwrap();
+            let mut spec = ProbeSpec::new(&key.nativo, arrow.clone());
+            spec.dimension = key.dimensione;
+            let battery = battery(&spec).unwrap();
+            let input = schema(vec![Field::new("label", arrow.clone(), true)]);
+            let plan = append_plan(input.fields().iter().map(|f| f.as_ref().clone()).collect());
+            let declaration = key
+                .nativo
+                .split(';')
+                .next()
+                .unwrap()
+                .replace("(n)", &format!("({})", key.dimensione.unwrap_or(0)));
+            let native = declaration
+                .split('(')
+                .next()
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap();
+            assert!(write_native_type_is_qualified(
+                &text_column(native, &declaration),
+                &plan.columns[0].kind
+            ));
+            let facts = crate::write_admission::ColumnFacts {
+                name: "label".into(),
+                data_type: native.into(),
+                column_type: declaration.clone(),
+                character_set: key.nativo.split(';').nth(1).map(str::to_owned),
+                json_valid: false,
+            };
+            let (actual_key, dimensions) = crate::write_admission::admission_key(arrow, &facts);
+            assert_eq!(
+                actual_key,
+                AdmissionKey {
+                    arrow: key.arrow.clone(),
+                    nativo: key.nativo.clone(),
+                    dimensione: key.dimensione
+                }
+            );
+            let rewrites = server.admit(&actual_key, dimensions).unwrap();
+            let emitted = crate::write_admission::admit(
+                ProviderKind::Mysql,
+                "events",
+                &input,
+                &[(0, "label".into())],
+                std::slice::from_ref(&facts),
+                &crate::write_admission::ServerFacts {
+                    major: measurement.server_major.clone(),
+                    version: measurement.server_version.clone(),
+                },
+            )
+            .unwrap();
+            assert_eq!(emitted[0].rewrites, rewrites);
+            // Il selector non emette regole per colonne escluse dalle assegnazioni.
+            assert!(crate::write_admission::admit(
+                ProviderKind::Mysql,
+                "events",
+                &input,
+                &[],
+                std::slice::from_ref(&facts),
+                &crate::write_admission::ServerFacts {
+                    major: measurement.server_major.clone(),
+                    version: measurement.server_version.clone(),
+                },
+            )
+            .unwrap()
+            .is_empty());
+            let key_guards: Vec<_> = [
+                MappingPolicy::Strict,
+                MappingPolicy::Compatible,
+                MappingPolicy::Lossy,
+                MappingPolicy::Native,
+            ]
+            .into_iter()
+            .map(|policy| {
+                let mut operation = append_operation();
+                operation.mapping_policy = policy;
+                operation.keys = vec!["label".into()];
+                RewriteGuard::new(ProviderKind::Mysql, &input, &operation, emitted.clone()).unwrap()
+            })
+            .collect();
+            let create = crate::write_admission::create_facts(
+                "label",
+                &plan.columns[0].kind,
+                ProviderKind::Mysql,
+            )
+            .unwrap();
+            let (create_key, create_dimensions) =
+                crate::write_admission::admission_key(arrow, &create);
+            assert!(server.admit(&create_key, create_dimensions).is_ok());
+            let guard =
+                RewriteGuard::new(ProviderKind::Mysql, &input, &append_operation(), emitted)
+                    .unwrap();
+            let mut rows = Vec::new();
+            for (row, name) in battery.names.iter().enumerate() {
+                let batch = RecordBatch::try_new(input.clone(), vec![battery.values.slice(row, 1)])
+                    .unwrap();
+                let strict = guard.check(&batch);
+                for key_guard in &key_guards {
+                    assert_eq!(key_guard.check(&batch).is_err(), strict.is_err());
+                }
+                if key.riscritti.contains(name)
+                    || (key.per_eccesso.contains(name) && !battery.values.is_null(row))
+                {
+                    assert!(strict.is_err(), "rewrite must stay negative");
+                }
+                let codec = bind_value(battery.values.as_ref(), row, &plan.columns[0].kind);
+                let length = if battery.values.is_null(row) {
+                    Ok(())
+                } else if let Some(text) = battery.values.as_any().downcast_ref::<StringArray>() {
+                    check_text(
+                        text_limit(&text_column(native, &declaration)),
+                        text.value(row),
+                    )
+                } else {
+                    Ok(())
+                };
+                rows.push(
+                    json!({"vector": name, "fixture_refused": key.rifiutati.contains(name),
+                    "per_eccesso": key.per_eccesso.contains(name), "strict": result(strict),
+                    "codec": result(codec), "length": result(length)}),
+                );
+            }
+            observed.push(json!({"major": measurement.server_major, "key": key,
+                "create_key": format!("{create_key:?}"), "rows": rows}));
+            // A non interpola precisione/scala; i limiti dimensionali restano vincolanti.
+            if let Some(n) = key.dimensione {
+                assert!(server
+                    .admit(
+                        &AdmissionKey {
+                            dimensione: Some(0),
+                            ..actual_key.clone()
+                        },
+                        TargetDimensions {
+                            chars: Some(0),
+                            bytes: Some(0)
+                        }
+                    )
+                    .is_err());
+                assert!(n > 0);
+            }
+        }
+    }
+    snapshot::check(root(), "mysql_strict_baseline", &json!(observed));
 }

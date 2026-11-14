@@ -125,10 +125,11 @@ impl RowScopedWriter for FirstRowRejected {
 }
 
 /// Quanto ingresso il dry run ha giudicato.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VerifiedInput {
     pub batches: u64,
     pub rows: u64,
+    pub execution_loss: Option<plenora_database_core::execution_loss::ExecutionLossReport>,
 }
 
 /// La forma in cui la scrittura codificherebbe i valori.
@@ -160,6 +161,7 @@ pub async fn verify_input_with_consent(
             .map_err(without_effect)?;
     let result = async {
         evaluation.profile(operation)?;
+        evaluation.metadata(&state.metadata_plan, &state.input_schema, operation)?;
         evaluation
             .bind(&state.column_plans)
             .map_err(without_effect)?;
@@ -176,11 +178,17 @@ pub async fn verify_input_with_consent(
         .await
     }
     .await;
-    result.map_err(|error| {
-        let mut error = without_effect(error);
-        error.loss_report = Some(Box::new(evaluation.ledger.report().into()));
-        error
-    })
+    result
+        .map(|mut verified| {
+            evaluation.ledger.complete();
+            verified.execution_loss = Some(evaluation.ledger.report());
+            verified
+        })
+        .map_err(|error| {
+            let mut error = without_effect(error);
+            error.loss_report = Some(Box::new(evaluation.ledger.report().into()));
+            error
+        })
 }
 
 #[allow(clippy::too_many_arguments)]

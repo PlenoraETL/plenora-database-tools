@@ -64,10 +64,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -90,7 +87,7 @@ PROBE = Path(__file__).resolve().parent / "sdk_wheel_probe.py"
 BUILD_REQUIREMENTS = ROOT / "requirements-sdk-build.txt"
 TEST_REQUIREMENTS = ROOT / "requirements-sdk-tests.txt"
 RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
-PYTHON_IMAGE = "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
+PYTHON_IMAGE = "python@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144"
 
 # Il repository entra nel container dei test in sola lettura, e la suite gira
 # altrove: `python/tests` e un package, quindi pytest inserirebbe in
@@ -123,6 +120,7 @@ CLI_BUILD_COMMAND = " ".join(
         "--no-default-features",
         "--features",
         ",".join(CLI_FEATURES),
+        "--bins", "--example", "postgres-surfaces",
     ]
 )
 
@@ -201,7 +199,14 @@ _SKIP_REASONS = {
     "sqlserver": SQLSERVER_SKIP, "db2": DB2_SKIP, "oracle": ORACLE_SKIP,
     "age": AGE_SKIP, "bench": BENCH_SKIP,
 }
+MYSQL_SURFACE_TARGETS = ["test_loss_consent.py"]
+_MYSQL_SURFACE_CASES = sdk_counts(MYSQL_SURFACE_TARGETS)
 SCOPE_CONTRACTS = {
+    "mysql-surfaces": ScopeContract(
+        passed=_MYSQL_SURFACE_CASES["mysql"],
+        deselected=sum(_MYSQL_SURFACE_CASES.values()) - _MYSQL_SURFACE_CASES["mysql"],
+        skips={},
+    ),
     "live": ScopeContract(
         passed=_TOTAL - _CASES["db2"] - _CASES["oracle"], deselected=0,
         skips={_SKIP_REASONS[p]: _CASES[p] for p in ("db2", "oracle")},
@@ -655,9 +660,13 @@ def build_artifacts(destination: Path) -> dict[str, object]:
         f"{CLI_BUILD_COMMAND}; "
         f"cp /workspace/target-docker/release/{CLI_BINARY_NAME} "
         f"{ARTIFACT_MOUNT}/; "
+        f"cp /workspace/target-docker/release/examples/postgres-surfaces {ARTIFACT_MOUNT}/; "
         "apt-get update -qq >/dev/null 2>&1; "
-        "apt-get install -y -qq python3 python3-venv >/dev/null 2>&1; "
-        "python3 -m venv /tmp/v; "
+        "apt-get install -y -qq gcc make curl xz-utils libssl-dev zlib1g-dev libbz2-dev libffi-dev libsqlite3-dev liblzma-dev libreadline-dev uuid-dev >/dev/null 2>&1; "
+        "sh /workspace/scripts/install_python.sh /opt/plenora-python; "
+        "export PATH=/opt/plenora-python/bin:$PATH; "
+        "export LD_LIBRARY_PATH=/opt/plenora-python/lib; "
+        "python3.14 -m venv /tmp/v; "
         f"/tmp/v/bin/pip install -q -r /workspace/{BUILD_REQUIREMENTS.name}; "
         "cd /workspace/crates/plenora-database-py; "
         f"/tmp/v/bin/maturin build --release --locked --out {ARTIFACT_MOUNT}; "
@@ -686,6 +695,7 @@ def build_artifacts(destination: Path) -> dict[str, object]:
             "/workspace",
             "-e",
             "CARGO_TARGET_DIR=/workspace/target-docker",
+            "-e", "CARGO_BUILD_JOBS=2",
             RUST_IMAGE,
             "sh",
             "-c",
@@ -702,6 +712,9 @@ def build_artifacts(destination: Path) -> dict[str, object]:
     cli = destination / CLI_BINARY_NAME
     if not cli.exists():
         raise RuntimeError(f"la build non ha esportato il CLI {CLI_BINARY_NAME}")
+    surface_host = destination / "postgres-surfaces"
+    if not surface_host.is_file():
+        raise RuntimeError("la build non ha esportato l'host di qualifica PostgreSQL")
     marker = marker_line(output, BUILD_MARKER)
     fields = marker.split()
     if len(fields) != 2:
@@ -710,6 +723,7 @@ def build_artifacts(destination: Path) -> dict[str, object]:
     return {
         "wheel": wheels[0].name,
         "wheel_sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest(),
+        "postgres_surfaces_sha256": hashlib.sha256(surface_host.read_bytes()).hexdigest(),
         "cli": {
             "binary": CLI_BINARY_NAME,
             "sha256": hashlib.sha256(cli.read_bytes()).hexdigest(),
@@ -871,7 +885,45 @@ def cli_binary_path() -> str:
     return path
 
 
-def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
+def postgres_matrix_evidence(output: str) -> dict:
+    """Require actual assertions for every DB-b cell, not pytest test counts."""
+    import itertools
+    marker = "PLENORA_DB_B_MATRIX "
+    documents = [json.loads(line.split(marker, 1)[1]) for line in output.splitlines() if line.startswith(marker)]
+    if len(documents) != 1:
+        raise RuntimeError("evidenza DB-b assente o duplicata")
+    document = documents[0]
+    source = json.loads((ROOT / "tests/fixtures/postgres_geometry_qualification.json").read_text(encoding="utf-8"))
+    expected = {(f["name"], f["variant"], surface, policy, consent)
+                for f, surface, policy, consent in itertools.product(
+                    source["fixtures"], ("rust", "cli", "sdk_sync", "sdk_async", "runtime"),
+                    ("strict", "compatible", "lossy", "native"), (False, True))}
+    records = document.get("records", [])
+    actual = {tuple(row[:5]) for row in records}
+    if (actual != expected or len(records) != len(expected)
+            or any(len(row) != 6 or row[5] not in {"preserved", "refused"} for row in records)
+            or document.get("properties") != source["properties"]
+            or document.get("asserted") != len(expected) * len(source["properties"])
+            or document.get("expected") != document.get("asserted")
+            or document.get("failed") != [] or document.get("missing") != []
+            or document.get("live") is not True):
+        raise RuntimeError("matrice DB-b incompleta o non verificata")
+    loss_marker = "PLENORA_DB_B_LOSS_MATRIX "
+    losses = [json.loads(line.split(loss_marker, 1)[1]) for line in output.splitlines() if line.startswith(loss_marker)]
+    expected_losses = set(itertools.product(("field", "schema", "aggregate"), (False, True),
+                         ("rust", "cli", "sdk_sync", "sdk_async", "runtime"),
+                         ("strict", "compatible", "lossy", "native"), (False, True)))
+    if len(losses) != 1:
+        raise RuntimeError("evidenza perdite DB-b assente o duplicata")
+    rows = losses[0].get("records", [])
+    if ({tuple(row[:5]) for row in rows} != expected_losses or len(rows) != len(expected_losses)
+            or any(len(row) != 6 or row[5] != ("reported" if row[3] != "strict" and row[4] else "refused") for row in rows)):
+        raise RuntimeError("matrice perdite DB-b incompleta o non verificata")
+    document["metadata_losses"] = losses[0]
+    return document
+
+
+def pytest_command(*, scope: str, artifacts: Path, wheel: str, mysql_matrix=None) -> list[str]:
     """Il `docker run` che esegue la suite nello scope richiesto.
 
     Gli artefatti arrivano dalla directory temporanea dove la build li ha
@@ -898,7 +950,21 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
     environment: list[str] = []
     selection = ["tests"]
 
-    if scope != "offline":
+    if scope == "mysql-surfaces":
+        if mysql_matrix is None:
+            raise RuntimeError("riferimento MySQL mancante per le superfici")
+        network, tls_volume = mysql_matrix
+        command += ["--network", network, "-v", f"{tls_volume}:/mysql-tls:ro"]
+        environment = [
+            "-e", "PLENORA_TEST_MYSQL_HOST=dataflow-mysql",
+            "-e", "PLENORA_TEST_MYSQL_DATABASE",
+            "-e", "PLENORA_TEST_MYSQL_USER",
+            "-e", "PLENORA_TEST_MYSQL_PASSWORD",
+            "-e", "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
+            "-e", f"PLENORA_CLI_BIN={cli_binary_path()}",
+        ]
+        selection = [*("tests/" + target for target in MYSQL_SURFACE_TARGETS), "-k", "mysql"]
+    elif scope != "offline":
         command += compose_network_arguments(
             POSTGRES_CONTAINER,
             MYSQL_CONTAINER,
@@ -923,6 +989,13 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
     elif scope == "stabilization":
         selection = ["tests/test_stabilization.py"]
 
+    if scope != "offline":
+        environment += ["-e", f"PLENORA_MYSQL_SURFACE_VECTORS={REPOSITORY_MOUNT}/tests/fixtures/mysql_permissive/surfaces.json"]
+    environment += [
+        "-e", f"PLENORA_CLI_BIN={cli_binary_path()}",
+        "-e", f"PLENORA_PG_SURFACE_BIN={ARTIFACT_MOUNT}/postgres-surfaces",
+        "-e", f"PLENORA_PG_GEOMETRY_FIXTURES={REPOSITORY_MOUNT}/tests/fixtures/postgres_geometry_qualification.json",
+    ]
     suite = f"{REPOSITORY_MOUNT}/crates/plenora-database-py/python/tests"
     script = (
         "set -e; "
@@ -976,6 +1049,9 @@ def installed_versions(output: str) -> dict[str, str]:
     packages.pop(ARTIFACT_PACKAGE, None)
     validate_installed_pins(packages)
     packages["python"] = marker_line(output, PYTHON_MARKER)
+    expected_python = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    if not packages["python"].startswith(expected_python + "."):
+        raise RuntimeError("interprete della campagna diverso dal minimo dichiarato")
     return packages
 
 
@@ -1315,6 +1391,9 @@ def measure_scopes(
                     counts=counts,
                     summary=summary,
                 )
+                documents[scope]["artifact"]["postgres_surfaces_sha256"] = artifact["postgres_surfaces_sha256"]
+                if scope == "live":
+                    documents[scope]["postgres_surface_matrix"] = postgres_matrix_evidence(output)
         collection.finish()
     return documents
 

@@ -24,6 +24,7 @@ fn column(name: &str) -> ColumnSpec {
         collation: None,
         source: None,
         registered_field_id: None,
+        arrow_metadata: None,
         kind: ColumnKind::Geometry,
     }
 }

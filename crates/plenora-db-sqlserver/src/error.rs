@@ -67,6 +67,7 @@ pub fn driver_error(
     let transport_effect_unknown = code.is_none()
         && (phase == ErrorPhase::Commit || requested_effect == RemoteEffect::Unknown);
     DatabaseError {
+        read_loss: None,
         category,
         phase,
         remote_effect: if transport_effect_unknown {
@@ -149,6 +150,7 @@ fn classify_transport(
 pub fn timeout_error(phase: ErrorPhase, remote_effect: RemoteEffect) -> DatabaseError {
     // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Timeout,
         phase,
         remote_effect,
@@ -188,6 +190,7 @@ pub fn interruption_error(
 pub fn cancellation_error(phase: ErrorPhase, remote_effect: RemoteEffect) -> DatabaseError {
     // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Cancelled,
         phase,
         remote_effect,

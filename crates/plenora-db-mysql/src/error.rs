@@ -56,6 +56,7 @@ pub fn driver_error(
     };
     let ambiguous = has_ambiguous_effect(code, phase);
     DatabaseError {
+        read_loss: None,
         category: verdict.category,
         phase,
         // L'effetto che il codice dichiara vince: e cio che il server dice di
@@ -120,6 +121,7 @@ pub fn timeout_error(
     let product = profile.product();
     // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Timeout,
         phase,
         remote_effect: effect,
@@ -145,6 +147,7 @@ pub fn cancellation_error(
     let product = profile.product();
     // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Cancelled,
         phase,
         remote_effect: effect,

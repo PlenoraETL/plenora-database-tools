@@ -358,6 +358,7 @@ const fn provider_write_error(mut error: DatabaseError) -> DatabaseError {
 
 fn diagnostic_error(category: ErrorCategory, message: &str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,

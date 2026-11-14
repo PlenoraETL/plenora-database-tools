@@ -33,6 +33,9 @@ on:
     - cron: '17 7 * * 1'
   pull_request:
     paths:
+      - ".python-version"
+      - "scripts/install_python.sh"
+      - "scripts/check_python_version.py"
       - "requirements-*.txt"
       - ".github/workflows/sdk-assurance.yml"
       - "Cargo.lock"
@@ -40,6 +43,9 @@ on:
       - "crates/plenora-database-cli/**"
       - "crates/plenora-database-py/**"
       - "crates/plenora-database-core/**"
+      - "crates/plenora-database-engine/**"
+      - "tests/fixtures/postgres_geometry_qualification.json"
+      - "scripts/test_postgres_surface_matrix.py"
       - "crates/plenora-db-mysql/**"
       - "crates/plenora-db-postgres/**"
       - "crates/plenora-db-sqlserver/**"
@@ -79,23 +85,24 @@ jobs:
     name: suite SDK relazionale e AGE
     # Il gate non installa Rust ne Python nel runner: costruisce dentro
     # le immagini Rust e Python fissate dal runner. Qui servono Docker,
-    # che il runner ha, e un Python qualunque per lanciare la campagna.
+    # che il runner ha, e il Python dichiarato per lanciare la campagna.
     runs-on: ubuntu-24.04
-    # La build in release del wheel e del CLI e la parte lunga, e la suite
-    # live ne aggiunge un'altra. Sessanta minuti sono il budget delle altre
-    # due campagne, e questa non ha ragione di averne uno diverso.
-    timeout-minutes: 60
+    # Include la compilazione CPython e la matrice completa delle superfici.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       # Un gate Python installa le proprie dipendenze prima di girare. Senza,
       # basta che uno degli script importi qualcosa che ne dipenda — anche
       # indirettamente, come `render_state` che importa `phase0_validate` —
       # perche il job fallisca all'import invece che su una verifica.
       - name: dipendenze dei gate Python
         run: python3 -m pip install -r requirements-self-tests.txt
+
+      - name: enumerazione e architettura DB-b
+        run: python3 -m unittest discover -s scripts -p test_postgres_surface_matrix.py
 
       # Log e diagnostica vivono **fuori** dal repository: il preflight della
       # campagna pretende un albero pulito, e un file scritto qui dentro
@@ -112,7 +119,7 @@ jobs:
             | tee "$RUNNER_TEMP/sdk-assurance/sdk-assurance.log"
 
       - name: diagnostica
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdk-assurance-results

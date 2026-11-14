@@ -49,6 +49,11 @@ pub trait SecretResolver: Send + Sync {
 }
 
 pub trait BatchStream: Send {
+    /// Snapshot della qualifica dei metadati; None significa non misurato.
+    fn read_loss(&self) -> Option<crate::read_loss::ReadLossReport> {
+        None
+    }
+
     fn schema(&self) -> SchemaRef;
 
     /// Produce il prossimo batch, rispettando il `CancellationToken`.
@@ -225,6 +230,12 @@ impl PreparedWrite {
     ) -> Self {
         self.execution_loss = Some(report);
         self
+    }
+
+    /// Rischio congelato del piano, senza misura dei valori futuri.
+    #[must_use]
+    pub const fn execution_loss(&self) -> Option<&crate::execution_loss::ExecutionLossReport> {
+        self.execution_loss.as_ref()
     }
 
     /// Consuma lo stato preparato se appartiene al driver atteso.

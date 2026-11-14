@@ -1,0 +1,1638 @@
+{
+  "source_sha256": "ce8ad6b8f03c59fb35476bcce9805a9e3af2e9f4bdc3c33011a45cac31e56759",
+  "properties": [
+    "contract_version",
+    "field_id",
+    "types_declaration",
+    "geometry_types",
+    "dimensions",
+    "encoding",
+    "geometry_or_geography",
+    "precision",
+    "srid",
+    "crs_id",
+    "crs_resolution",
+    "crs_definition",
+    "crs_definition_format",
+    "axis_order",
+    "native_metadata"
+  ],
+  "fixtures": [
+    {
+      "name": "axis_lat_lon",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lat_lon",
+            "plenora.geometry.srid": "4326"
+          },
+          "values": [
+            "0101000020e61000003333333333f344400000000000002940",
+            "0101000020e61000003333333333f344400000000000002940",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "axis_lat_lon",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lat_lon",
+            "plenora.geometry.srid": "4326",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "0101000020e61000003333333333f344400000000000002940",
+            "0101000020e61000003333333333f344400000000000002940",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "conflicting_crs",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "declared_unresolved",
+            "plenora.geometry.crs_id": "EPSG:32632",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "plenora.geometry.crs_definition": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]",
+            "plenora.geometry.crs_definition_format": "wkt"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "conflicting_crs",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "declared_unresolved",
+            "plenora.geometry.crs_id": "EPSG:32632",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "plenora.geometry.crs_definition": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]",
+            "plenora.geometry.crs_definition_format": "wkt",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\"}"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "crs_missing",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "wkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "polygon",
+            "plenora.geometry.crs_resolution": "missing"
+          },
+          "values": [
+            "0103000000020000000500000003780b2428fe2840166a4df38ef3444038d6c56d34002940166a4df38ef3444038d6c56d34002940a301bc0512f4444003780b2428fe2840a301bc0512f4444003780b2428fe2840166a4df38ef3444005000000900f7a36abfe2840f90fe9b7aff34440900f7a36abfe2840ddb5847cd0f344401ea7e8482eff2840ddb5847cd0f344401ea7e8482eff2840f90fe9b7aff34440900f7a36abfe2840f90fe9b7aff34440",
+            "0103000000010000000400000003780b2428fe2840166a4df38ef34440900f7a36abfe2840166a4df38ef34440900f7a36abfe2840f90fe9b7aff3444003780b2428fe2840166a4df38ef34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "crs_missing",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "wkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "polygon",
+            "plenora.geometry.crs_resolution": "missing",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":null}"
+          },
+          "values": [
+            "0103000000020000000500000003780b2428fe2840166a4df38ef3444038d6c56d34002940166a4df38ef3444038d6c56d34002940a301bc0512f4444003780b2428fe2840a301bc0512f4444003780b2428fe2840166a4df38ef3444005000000900f7a36abfe2840f90fe9b7aff34440900f7a36abfe2840ddb5847cd0f344401ea7e8482eff2840ddb5847cd0f344401ea7e8482eff2840f90fe9b7aff34440900f7a36abfe2840f90fe9b7aff34440",
+            "0103000000010000000400000003780b2428fe2840166a4df38ef34440900f7a36abfe2840166a4df38ef34440900f7a36abfe2840f90fe9b7aff3444003780b2428fe2840166a4df38ef34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "crs_unresolved",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "declared_unresolved",
+            "plenora.geometry.crs_id": "LOCAL:survey",
+            "plenora.geometry.axis_order": "unknown",
+            "plenora.geometry.srid": "4326",
+            "plenora.geometry.crs_definition": "LOCAL_CS[\"survey\",UNIT[\"metre\",1]]",
+            "plenora.geometry.crs_definition_format": "wkt"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "crs_unresolved",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "declared_unresolved",
+            "plenora.geometry.crs_id": "LOCAL:survey",
+            "plenora.geometry.axis_order": "unknown",
+            "plenora.geometry.srid": "4326",
+            "plenora.geometry.crs_definition": "LOCAL_CS[\"survey\",UNIT[\"metre\",1]]",
+            "plenora.geometry.crs_definition_format": "wkt",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\"}"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dimensions_unknown",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "unknown",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dimensions_unknown",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "unknown",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "geography_semantics",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geography",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "geography_semantics",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geography",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "ARROW:extension:metadata": "{\"edges\":\"spherical\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "int64_beyond_2_53",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "101"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "valore",
+          "type": "int64",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "907"
+          },
+          "values": [
+            -9223372036854775808,
+            9007199254740993,
+            9223372036854775807
+          ]
+        }
+      ]
+    },
+    {
+      "name": "int64_beyond_2_53",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "101"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "valore",
+          "type": "int64",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "907"
+          },
+          "values": [
+            -9223372036854775808,
+            9007199254740993,
+            9223372036854775807
+          ]
+        }
+      ]
+    },
+    {
+      "name": "multipolygon_xyzm_srid",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xyzm",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "multipolygon",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326"
+          },
+          "values": [
+            "01060000e0e61000000100000001030000c0010000000400000000000000000028400000000000804440000000000000f03f00000000000000400000000000002a400000000000804440000000000000084000000000000010400000000000002a4000000000000045400000000000001440000000000000184000000000000028400000000000804440000000000000f03f0000000000000040",
+            "01060000e0e61000000100000001030000c0010000000400000000000000000028400000000000804440000000000000f03f00000000000000400000000000002a400000000000804440000000000000084000000000000010400000000000002a4000000000000045400000000000001440000000000000184000000000000028400000000000804440000000000000f03f0000000000000040",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "multipolygon_xyzm_srid",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xyzm",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "multipolygon",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "01060000e0e61000000100000001030000c0010000000400000000000000000028400000000000804440000000000000f03f00000000000000400000000000002a400000000000804440000000000000084000000000000010400000000000002a4000000000000045400000000000001440000000000000184000000000000028400000000000804440000000000000f03f0000000000000040",
+            "01060000e0e61000000100000001030000c0010000000400000000000000000028400000000000804440000000000000f03f00000000000000400000000000002a400000000000804440000000000000084000000000000010400000000000002a4000000000000045400000000000001440000000000000184000000000000028400000000000804440000000000000f03f0000000000000040",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "point_z",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xyz",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326"
+          },
+          "values": [
+            "01010000a0e610000000000000000029403333333333f344400000000000001d40",
+            "01010000a0e610000000000000000029403333333333f344400000000000001d40",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "point_z",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xyz",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "01010000a0e610000000000000000029403333333333f344400000000000001d40",
+            "01010000a0e610000000000000000029403333333333f344400000000000001d40",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "point_zm",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xyzm",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326"
+          },
+          "values": [
+            "01010000e0e610000000000000000029403333333333f344400000000000001d400000000000000cc0",
+            "01010000e0e610000000000000000029403333333333f344400000000000001d400000000000000cc0",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "point_zm",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xyzm",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "01010000e0e610000000000000000029403333333333f344400000000000001d400000000000000cc0",
+            "01010000e0e610000000000000000029403333333333f344400000000000001d400000000000000cc0",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "polygon_xy_projected",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "wkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "polygon",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:32632",
+            "plenora.geometry.axis_order": "easting_northing",
+            "plenora.geometry.srid": "32632"
+          },
+          "values": [
+            "010300000002000000050000000000000080841e410000000004bd51410000000020851e410000000004bd51410000000020851e41000000000ebd51410000000080841e41000000000ebd51410000000080841e410000000004bd51410500000000000000a8841e410000008006bd514100000000a8841e410000000009bd514100000000d0841e410000000009bd514100000000d0841e410000008006bd514100000000a8841e410000008006bd5141",
+            "010300000001000000040000000000000080841e410000000004bd514100000000a8841e410000000004bd514100000000a8841e410000008006bd51410000000080841e410000000004bd5141",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "polygon_xy_projected",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "wkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "polygon",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:32632",
+            "plenora.geometry.axis_order": "easting_northing",
+            "plenora.geometry.srid": "32632",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:32632\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "010300000002000000050000000000000080841e410000000004bd51410000000020851e410000000004bd51410000000020851e41000000000ebd51410000000080841e41000000000ebd51410000000080841e410000000004bd51410500000000000000a8841e410000008006bd514100000000a8841e410000000009bd514100000000d0841e410000000009bd514100000000d0841e410000008006bd514100000000a8841e410000008006bd5141",
+            "010300000001000000040000000000000080841e410000000004bd514100000000a8841e410000000004bd514100000000a8841e410000008006bd51410000000080841e410000000004bd5141",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "types_mixed",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "g1",
+            "g2",
+            "g3",
+            "g4",
+            "g5",
+            "g6",
+            "g7"
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point,linestring,polygon,multipoint,multilinestring,multipolygon,geometrycollection",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326"
+          },
+          "values": [
+            "0101000020e6100000900f7a36abfe2840f90fe9b7aff34440",
+            "0102000020e61000000300000003780b2428fe2840166a4df38ef34440900f7a36abfe2840ddb5847cd0f34440ab3e575bb1ff2840f90fe9b7aff34440",
+            "0103000020e6100000020000000500000003780b2428fe2840166a4df38ef3444038d6c56d34002940166a4df38ef3444038d6c56d34002940a301bc0512f4444003780b2428fe2840a301bc0512f4444003780b2428fe2840166a4df38ef3444005000000900f7a36abfe2840f90fe9b7aff34440900f7a36abfe2840ddb5847cd0f344401ea7e8482eff2840ddb5847cd0f344401ea7e8482eff2840f90fe9b7aff34440900f7a36abfe2840f90fe9b7aff34440",
+            "0104000020e610000002000000010100000003780b2428fe2840166a4df38ef3444001010000001ea7e8482eff2840c05b2041f1f34440",
+            "0105000020e61000000200000001020000000200000003780b2428fe2840166a4df38ef34440900f7a36abfe2840f90fe9b7aff344400102000000020000001ea7e8482eff2840ddb5847cd0f34440ab3e575bb1ff2840c05b2041f1f34440",
+            "0106000020e6100000020000000103000000020000000500000003780b2428fe2840166a4df38ef3444038d6c56d34002940166a4df38ef3444038d6c56d34002940a301bc0512f4444003780b2428fe2840a301bc0512f4444003780b2428fe2840166a4df38ef3444005000000900f7a36abfe2840f90fe9b7aff34440900f7a36abfe2840ddb5847cd0f344401ea7e8482eff2840ddb5847cd0f344401ea7e8482eff2840f90fe9b7aff34440900f7a36abfe2840f90fe9b7aff3444001030000000100000004000000c66d3480b700294087a757ca32f444405305a3923a01294087a757ca32f444405305a3923a0129406a4df38e53f44440c66d3480b700294087a757ca32f44440",
+            "0107000020e610000002000000010100000003780b2428fe2840166a4df38ef3444001020000000200000003780b2428fe2840166a4df38ef34440900f7a36abfe2840f90fe9b7aff34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "types_mixed",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "g1",
+            "g2",
+            "g3",
+            "g4",
+            "g5",
+            "g6",
+            "g7"
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point,linestring,polygon,multipoint,multilinestring,multipolygon,geometrycollection",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "0101000020e6100000900f7a36abfe2840f90fe9b7aff34440",
+            "0102000020e61000000300000003780b2428fe2840166a4df38ef34440900f7a36abfe2840ddb5847cd0f34440ab3e575bb1ff2840f90fe9b7aff34440",
+            "0103000020e6100000020000000500000003780b2428fe2840166a4df38ef3444038d6c56d34002940166a4df38ef3444038d6c56d34002940a301bc0512f4444003780b2428fe2840a301bc0512f4444003780b2428fe2840166a4df38ef3444005000000900f7a36abfe2840f90fe9b7aff34440900f7a36abfe2840ddb5847cd0f344401ea7e8482eff2840ddb5847cd0f344401ea7e8482eff2840f90fe9b7aff34440900f7a36abfe2840f90fe9b7aff34440",
+            "0104000020e610000002000000010100000003780b2428fe2840166a4df38ef3444001010000001ea7e8482eff2840c05b2041f1f34440",
+            "0105000020e61000000200000001020000000200000003780b2428fe2840166a4df38ef34440900f7a36abfe2840f90fe9b7aff344400102000000020000001ea7e8482eff2840ddb5847cd0f34440ab3e575bb1ff2840c05b2041f1f34440",
+            "0106000020e6100000020000000103000000020000000500000003780b2428fe2840166a4df38ef3444038d6c56d34002940166a4df38ef3444038d6c56d34002940a301bc0512f4444003780b2428fe2840a301bc0512f4444003780b2428fe2840166a4df38ef3444005000000900f7a36abfe2840f90fe9b7aff34440900f7a36abfe2840ddb5847cd0f344401ea7e8482eff2840ddb5847cd0f344401ea7e8482eff2840f90fe9b7aff34440900f7a36abfe2840f90fe9b7aff3444001030000000100000004000000c66d3480b700294087a757ca32f444405305a3923a01294087a757ca32f444405305a3923a0129406a4df38e53f44440c66d3480b700294087a757ca32f44440",
+            "0107000020e610000002000000010100000003780b2428fe2840166a4df38ef3444001020000000200000003780b2428fe2840166a4df38ef34440900f7a36abfe2840f90fe9b7aff34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "uint64_ordering",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "101"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "valore",
+          "type": "uint64",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "907"
+          },
+          "values": [
+            18446744073709551615,
+            0,
+            9223372036854775808
+          ]
+        }
+      ]
+    },
+    {
+      "name": "uint64_ordering",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "101"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "valore",
+          "type": "uint64",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "907"
+          },
+          "values": [
+            18446744073709551615,
+            0,
+            9223372036854775808
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unknown_key",
+      "variant": "canonical_only",
+      "schema": {
+        "plenora.contract.version": "1",
+        "qualifica.unknown.schema": "opaque-schema-v1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "plenora.geometry.crs_definition": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]",
+            "plenora.geometry.crs_definition_format": "wkt",
+            "qualifica.unknown.field": "opaque-field-v1",
+            "plenora.geometry.native.qualifica": "opaque-native-v1",
+            "plenora.postgres.native_type": "geometry",
+            "plenora.postgres.native_declaration": "geometry(Point,4326)",
+            "plenora.postgres.type_kind": "b"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unknown_key",
+      "variant": "geoarrow_extension",
+      "schema": {
+        "plenora.contract.version": "1",
+        "qualifica.unknown.schema": "opaque-schema-v1"
+      },
+      "fields": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": false,
+          "metadata": {
+            "plenora.field_id": "1"
+          },
+          "values": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "nome",
+          "type": "string",
+          "nullable": true,
+          "metadata": {
+            "plenora.field_id": "2"
+          },
+          "values": [
+            "SENTINELLA-DATI-7f3a",
+            "p2",
+            null
+          ]
+        },
+        {
+          "name": "geom",
+          "type": "binary",
+          "nullable": true,
+          "metadata": {
+            "ARROW:extension:name": "geoarrow.wkb",
+            "plenora.field_id": "3",
+            "plenora.geometry.encoding": "ewkb",
+            "plenora.geometry.dimensions": "xy",
+            "plenora.geometry.spatial_semantics": "geometry",
+            "plenora.geometry.precision": "float64",
+            "plenora.geometry.types_declaration": "exact",
+            "plenora.geometry.types": "point",
+            "plenora.geometry.crs_resolution": "resolved",
+            "plenora.geometry.crs_id": "EPSG:4326",
+            "plenora.geometry.axis_order": "lon_lat",
+            "plenora.geometry.srid": "4326",
+            "plenora.geometry.crs_definition": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]",
+            "plenora.geometry.crs_definition_format": "wkt",
+            "qualifica.unknown.field": "opaque-field-v1",
+            "plenora.geometry.native.qualifica": "opaque-native-v1",
+            "plenora.postgres.native_type": "geometry",
+            "plenora.postgres.native_declaration": "geometry(Point,4326)",
+            "plenora.postgres.type_kind": "b",
+            "ARROW:extension:metadata": "{\"edges\":\"planar\",\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\"}"
+          },
+          "values": [
+            "0101000020e610000000000000000029403333333333f34440",
+            "0101000020e610000000000000000029403333333333f34440",
+            null
+          ]
+        }
+      ]
+    }
+  ]
+}

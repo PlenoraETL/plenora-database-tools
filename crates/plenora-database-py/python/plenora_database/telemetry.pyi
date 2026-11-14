@@ -1,5 +1,5 @@
 from typing import Any
-from typing_extensions import Self
+from typing import Self
 
 class InstrumentedEngine:
     def __init__(self, engine: Any, tracer: Any, meter: Any = None) -> None: ...

@@ -31,12 +31,11 @@ use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirecti
 use plenora_database_core::provider::{BatchStream, ParameterBag, Provider, SecretString};
 use plenora_database_core::{CancellationToken, DatabaseError, ReadCheckpoint};
 use plenora_db_postgres::PostgresProvider;
-use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyStopIteration};
+use pyo3::exceptions::{PyStopAsyncIteration, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 // Re-export interno perche `family_arrow_reader` continua ad accedere via
 // `crate::arrow_reader::default_budget`.
@@ -44,6 +43,7 @@ pub(crate) use crate::budget::session_budget as default_budget;
 
 fn internal_error(message: impl Into<String>) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: plenora_database_core::ErrorCategory::Internal,
         phase: plenora_database_core::ErrorPhase::Read,
         remote_effect: plenora_database_core::RemoteEffect::None,
@@ -58,7 +58,7 @@ fn internal_error(message: impl Into<String>) -> DatabaseError {
 
 /// Serializza un `RecordBatch` in un buffer Arrow IPC stream
 /// self-contained (schema + batch + EOS marker).
-fn batch_to_ipc_bytes(
+pub(crate) fn batch_to_ipc_bytes(
     batch: &plenora_database_core::arrow::RecordBatch,
 ) -> Result<Vec<u8>, DatabaseError> {
     let schema = batch.schema();
@@ -73,6 +73,18 @@ fn batch_to_ipc_bytes(
             .finish()
             .map_err(|_| internal_error("arrow-ipc writer finish"))?;
     }
+    Ok(buf)
+}
+
+pub(crate) fn schema_to_ipc_bytes(
+    schema: &plenora_database_core::arrow::Schema,
+) -> Result<Vec<u8>, DatabaseError> {
+    let mut buf = Vec::with_capacity(512);
+    let mut writer = StreamWriter::try_new(&mut buf, schema)
+        .map_err(|_| internal_error("arrow-ipc schema writer"))?;
+    writer
+        .finish()
+        .map_err(|_| internal_error("arrow-ipc schema finish"))?;
     Ok(buf)
 }
 
@@ -91,50 +103,72 @@ fn batch_to_ipc_bytes(
 /// il loop asyncio.
 #[pyclass(module = "plenora_database._native")]
 pub struct BatchReader {
-    inner: std::sync::Mutex<Box<dyn BatchStream>>,
-    cancellation: CancellationToken,
+    reader: crate::stream_reader::Reader,
 }
 
 impl BatchReader {
     pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self {
         Self {
-            inner: std::sync::Mutex::new(inner),
-            cancellation,
+            reader: crate::stream_reader::Reader::new(inner, cancellation),
         }
+    }
+}
+impl Drop for BatchReader {
+    fn drop(&mut self) {
+        self.reader.close();
     }
 }
 
 fn reader_poisoned() -> PyErr {
-    PyRuntimeError::new_err("BatchReader non piu utilizzabile dopo un errore interno")
+    to_py_err(internal_error("stato del reader Arrow non disponibile"))
 }
 
 #[pymethods]
 impl BatchReader {
+    fn close(&self, py: Python<'_>) {
+        self.reader.close();
+        py.detach(|| runtime().block_on(self.reader.released()));
+    }
+
+    fn _record_arrow_failure(&self, py: Python<'_>) -> Py<PyAny> {
+        to_py_err(self.reader.mapping_failure())
+            .value(py)
+            .clone()
+            .into_any()
+            .unbind()
+    }
+
+    fn _record_arrow_cancellation(&self, py: Python<'_>) -> Py<PyAny> {
+        to_py_err(self.reader.interruption())
+            .value(py)
+            .clone()
+            .into_any()
+            .unbind()
+    }
+
+    #[getter]
+    fn stream_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        self.reader.state.snapshot(py)
+    }
+
+    #[getter]
+    fn read_loss<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.reader
+            .state
+            .snapshot(py)?
+            .get_item("read_loss")?
+            .ok_or_else(reader_poisoned)
+    }
+
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        // Il mutex si prende e si rilascia senza il GIL, e l'errore si
-        // traduce in Python solo dopo: tradurlo tenendo il mutex chiedeva il
-        // GIL mentre un altro thread, con il GIL, aspettava il mutex.
-        let outcome = py.detach(|| {
-            let Ok(mut inner) = self.inner.lock() else {
-                return Err(None);
-            };
-            runtime()
-                .block_on(async {
-                    plenora_database_core::arrow_validation::validated_batch(
-                        inner.next_batch(&self.cancellation),
-                        plenora_database_core::ErrorPhase::Read,
-                    )
-                    .await
-                })
-                .map_err(Some)
-        });
-        let batch_opt = outcome.map_err(|error| error.map_or_else(reader_poisoned, to_py_err))?;
-        let batch = batch_opt.ok_or_else(|| PyStopIteration::new_err(()))?;
-        let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
+        let bytes = py
+            .detach(|| runtime().block_on(self.reader.next()))
+            .map_err(to_py_err)?;
+        let bytes = bytes.ok_or_else(|| PyStopIteration::new_err(()))?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -142,18 +176,7 @@ impl BatchReader {
     /// solo header + EOS marker vuoto). Utile per costruire un
     /// RecordBatchReader Python-side prima di iterare i batch.
     fn schema_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        // Il mutex si attende senza il GIL: chi lo tiene puo averne bisogno.
-        let schema = py
-            .detach(|| self.inner.lock().map(|inner| inner.schema()).ok())
-            .ok_or_else(reader_poisoned)?;
-        let mut buf = Vec::with_capacity(512);
-        {
-            let mut writer = StreamWriter::try_new(&mut buf, &schema)
-                .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema writer"))?;
-            writer
-                .finish()
-                .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema finish"))?;
-        }
+        let buf = self.reader.schema_bytes().map_err(to_py_err)?;
         Ok(PyBytes::new(py, &buf))
     }
 
@@ -271,6 +294,7 @@ pub(crate) fn open_reader(
     parameters: ParameterBag,
     cancellation: CancellationToken,
 ) -> Result<BatchReader, DatabaseError> {
+    let cancellation = cancellation.child_token();
     let stream_cancellation = cancellation.clone();
     let stream = runtime().block_on(async move {
         provider
@@ -288,12 +312,6 @@ pub(crate) fn open_reader(
 
 // ============================ Async BatchReader ============================
 
-pub(crate) type SharedStream = Arc<Mutex<Option<Box<dyn BatchStream>>>>;
-
-fn wrap(stream: Box<dyn BatchStream>) -> SharedStream {
-    Arc::new(Mutex::new(Some(stream)))
-}
-
 /// Iterator async sopra `BatchStream`. Ritornato da
 /// `await AsyncSession.aread(ref, ...)`.
 ///
@@ -302,66 +320,90 @@ fn wrap(stream: Box<dyn BatchStream>) -> SharedStream {
 /// risolve in `bytes` Arrow IPC stream self-contained.
 #[pyclass(module = "plenora_database._native")]
 pub struct AsyncBatchReader {
-    inner: SharedStream,
-    cancellation: CancellationToken,
+    reader: crate::stream_reader::Reader,
 }
 
 impl AsyncBatchReader {
     pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self {
         Self {
-            inner: wrap(inner),
-            cancellation,
+            reader: crate::stream_reader::Reader::new(inner, cancellation),
         }
+    }
+}
+impl Drop for AsyncBatchReader {
+    fn drop(&mut self) {
+        self.reader.close();
     }
 }
 
 #[pymethods]
 impl AsyncBatchReader {
+    fn close(&self) {
+        self.reader.close();
+    }
+
+    fn aclose<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.reader.close();
+        let reader = self.reader.clone();
+        future_into_py(py, async move {
+            reader.released().await;
+            Ok(())
+        })
+    }
+
+    fn _record_arrow_failure(&self, py: Python<'_>) -> Py<PyAny> {
+        to_py_err(self.reader.mapping_failure())
+            .value(py)
+            .clone()
+            .into_any()
+            .unbind()
+    }
+
+    fn _record_arrow_cancellation(&self, py: Python<'_>) -> Py<PyAny> {
+        to_py_err(self.reader.interruption())
+            .value(py)
+            .clone()
+            .into_any()
+            .unbind()
+    }
+
+    #[getter]
+    fn stream_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        self.reader.state.snapshot(py)
+    }
+
+    #[getter]
+    fn read_loss<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.reader
+            .state
+            .snapshot(py)?
+            .get_item("read_loss")?
+            .ok_or_else(reader_poisoned)
+    }
+
     fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&self.inner);
-        let cancellation = self.cancellation.clone();
+        let mut flight = self.reader.flight();
         future_into_py(py, async move {
-            let mut guard = inner.lock().await;
-            let stream = guard
-                .as_mut()
-                .ok_or_else(|| PyRuntimeError::new_err("AsyncBatchReader esaurito"))?;
-            let batch_opt = plenora_database_core::arrow_validation::validated_batch(
-                stream.next_batch(&cancellation),
-                plenora_database_core::ErrorPhase::Read,
-            )
-            .await
-            .map_err(to_py_err)?;
-            match batch_opt {
-                Some(batch) => {
-                    let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
-                    Python::attach(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
-                }
-                None => Err(PyStopAsyncIteration::new_err(())),
-            }
+            let result = flight.reader.next().await;
+            flight.finish();
+            let bytes = result
+                .map_err(to_py_err)?
+                .ok_or_else(|| PyStopAsyncIteration::new_err(()))?;
+            Python::attach(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
         })
     }
 
     fn schema_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&self.inner);
+        let mut flight = self.reader.flight();
         future_into_py(py, async move {
-            let guard = inner.lock().await;
-            let stream = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("AsyncBatchReader chiuso"))?;
-            let schema = stream.schema();
-            let mut buf = Vec::with_capacity(512);
-            {
-                let mut writer = StreamWriter::try_new(&mut buf, &schema)
-                    .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema writer"))?;
-                writer
-                    .finish()
-                    .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema finish"))?;
-            }
-            Python::attach(|py| Ok(PyBytes::new(py, &buf).into_any().unbind()))
+            let result = flight.reader.schema_bytes();
+            flight.finish();
+            let bytes = result.map_err(to_py_err)?;
+            Python::attach(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
         })
     }
 
@@ -378,6 +420,7 @@ pub(crate) async fn open_reader_async(
     parameters: ParameterBag,
     cancellation: CancellationToken,
 ) -> Result<AsyncBatchReader, DatabaseError> {
+    let cancellation = cancellation.child_token();
     let stream = provider
         .read(
             &secret,

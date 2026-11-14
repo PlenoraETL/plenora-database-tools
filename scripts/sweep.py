@@ -176,6 +176,12 @@ def local_outputs(value: str, env: dict) -> str:
                   lambda match: (root / match[0]).as_posix(), value)
 
 
+def python_input(inputs: dict) -> str:
+    if "python-version-file" in inputs:
+        return (ROOT / inputs["python-version-file"]).read_text(encoding="utf-8").strip()
+    return str(inputs.get("python-version", ""))
+
+
 def action(step: dict, env: dict) -> subprocess.CompletedProcess | None:
     """Adatta solo action note; un nuovo prerequisito non passa inosservato."""
     name = step["uses"].split("@", 1)[0]
@@ -186,7 +192,7 @@ def action(step: dict, env: dict) -> subprocess.CompletedProcess | None:
         elif inputs.get("ref") or inputs.get("path"):
             raise ValueError("checkout locale con ref/path non supportato")
     elif name == "actions/setup-python":
-        wanted = str(inputs.get("python-version", ""))
+        wanted = python_input(inputs)
         actual = f"{sys.version_info.major}.{sys.version_info.minor}"
         if wanted != actual:
             # I gate non matriciali girano con l'interprete disponibile e lo
@@ -264,6 +270,10 @@ def execute(step: dict, env: dict, defaults: dict) -> subprocess.CompletedProces
 
 
 def main() -> int:
+    wanted = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if actual != wanted:
+        raise ValueError(f"sweep requires Python {wanted}; current interpreter is {actual}")
     jobs = discover()
     plan = build_plan(jobs)
     errors = coverage_errors(jobs, plan)
@@ -331,7 +341,7 @@ def main() -> int:
                         continue
                     step = expand(original, cell)
                     if step.get("uses", "").startswith("actions/setup-python@"):
-                        wanted = str(step.get("with", {}).get("python-version", ""))
+                        wanted = python_input(step.get("with", {}))
                         actual = f"{sys.version_info.major}.{sys.version_info.minor}"
                         if wanted != actual:
                             record(step_label, "non eseguito qui", f"Python CI {wanted}; i gate seguenti usano Python locale {actual}")

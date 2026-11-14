@@ -257,6 +257,7 @@ async fn execute_bulk_write(
                 "server": "not_performed",
             },
             "loss_report": loss_report,
+            "execution_loss": decided.execution_loss,
         }))?;
         return Ok(());
     }

@@ -1,0 +1,522 @@
+{
+  "schema_version": 1,
+  "base": "71b1271f6c4dfe020ac92316eb7aca2feff69266",
+  "gate": "closed",
+  "rules": [
+    {
+      "id": "mysql.fixed_float",
+      "provider": "mysql",
+      "arrow": "float32",
+      "targets": [
+        {
+          "native": "float(7,3)",
+          "rewrite": {
+            "classe": "ogni"
+          }
+        },
+        {
+          "native": "float(10,2)",
+          "rewrite": {
+            "classe": "ogni"
+          }
+        },
+        {
+          "native": "float(12,0)",
+          "rewrite": {
+            "classe": "ogni"
+          }
+        }
+      ],
+      "predicate": "non_null",
+      "basis": "conservative",
+      "action": "hard_reject",
+      "transform": null,
+      "qualification": "not_measured",
+      "aliases": [],
+      "proofs": {
+        "8.0": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "zero_one_tenth_hard_reject_with_accept",
+            "no_false_exact_loss"
+          ]
+        },
+        "8.4": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "zero_one_tenth_hard_reject_with_accept",
+            "no_false_exact_loss"
+          ]
+        },
+        "9.7": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "zero_one_tenth_hard_reject_with_accept",
+            "no_false_exact_loss"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mysql.fixed_double",
+      "provider": "mysql",
+      "arrow": "float64",
+      "targets": [
+        {
+          "native": "double(10,2)",
+          "rewrite": {
+            "classe": "ogni"
+          }
+        },
+        {
+          "native": "double(16,4)",
+          "rewrite": {
+            "classe": "ogni"
+          }
+        },
+        {
+          "native": "double(22,0)",
+          "rewrite": {
+            "classe": "ogni"
+          }
+        }
+      ],
+      "predicate": "non_null",
+      "basis": "conservative",
+      "action": "hard_reject",
+      "transform": null,
+      "qualification": "not_measured",
+      "aliases": [],
+      "proofs": {
+        "8.0": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "zero_one_tenth_hard_reject_with_accept",
+            "no_false_exact_loss"
+          ]
+        },
+        "8.4": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "zero_one_tenth_hard_reject_with_accept",
+            "no_false_exact_loss"
+          ]
+        },
+        "9.7": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "zero_one_tenth_hard_reject_with_accept",
+            "no_false_exact_loss"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mysql.double_underflow",
+      "provider": "mysql",
+      "arrow": "float64",
+      "targets": [
+        {
+          "native": "double(255,30)",
+          "rewrite": {
+            "classe": "underflow",
+            "min_abs": "1e-10"
+          }
+        }
+      ],
+      "predicate": "finite_nonzero_abs_below_min",
+      "basis": "conservative",
+      "action": "hard_reject",
+      "transform": null,
+      "qualification": "not_measured",
+      "aliases": [],
+      "proofs": {
+        "8.0": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "next_down_threshold_next_up_both_signs",
+            "subnormal_normal_extrema_nan_infinity",
+            "hard_reject_with_accept"
+          ]
+        },
+        "8.4": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "next_down_threshold_next_up_both_signs",
+            "subnormal_normal_extrema_nan_infinity",
+            "hard_reject_with_accept"
+          ]
+        },
+        "9.7": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "next_down_threshold_next_up_both_signs",
+            "subnormal_normal_extrema_nan_infinity",
+            "hard_reject_with_accept"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mysql.negative_zero",
+      "provider": "mysql",
+      "arrow": "float64",
+      "targets": [
+        {
+          "native": "double(255,30)",
+          "rewrite": {
+            "classe": "zero_negativo"
+          }
+        }
+      ],
+      "predicate": "zero_with_negative_sign",
+      "basis": "exact",
+      "action": "would_change",
+      "transform": "positive_zero",
+      "qualification": "not_measured",
+      "aliases": [],
+      "proofs": {
+        "8.0": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "positive_and_negative_zero_bits",
+            "explicit_positive_zero_bind",
+            "idempotent_stage_target"
+          ]
+        },
+        "8.4": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "positive_and_negative_zero_bits",
+            "explicit_positive_zero_bind",
+            "idempotent_stage_target"
+          ]
+        },
+        "9.7": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "positive_and_negative_zero_bits",
+            "explicit_positive_zero_bind",
+            "idempotent_stage_target"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mysql.fractional_seconds",
+      "provider": "mysql",
+      "arrow": "timestamp[us]",
+      "targets": [
+        {
+          "native": "datetime",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 0
+          }
+        },
+        {
+          "native": "datetime(1)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 1
+          }
+        },
+        {
+          "native": "datetime(2)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 2
+          }
+        },
+        {
+          "native": "datetime(3)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 3
+          }
+        },
+        {
+          "native": "datetime(4)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 4
+          }
+        },
+        {
+          "native": "datetime(5)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 5
+          }
+        },
+        {
+          "native": "timestamp",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 0
+          }
+        },
+        {
+          "native": "timestamp(1)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 1
+          }
+        },
+        {
+          "native": "timestamp(2)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 2
+          }
+        },
+        {
+          "native": "timestamp(3)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 3
+          }
+        },
+        {
+          "native": "timestamp(4)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 4
+          }
+        },
+        {
+          "native": "timestamp(5)",
+          "rewrite": {
+            "classe": "frazione_secondi",
+            "cifre": 5
+          }
+        }
+      ],
+      "predicate": "microseconds_rem_euclid_quantum",
+      "basis": "exact",
+      "action": "would_change",
+      "transform": "qualified_rounding_with_checked_carry",
+      "qualification": "not_measured",
+      "aliases": [],
+      "proofs": {
+        "8.0": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "quantum_minus_one_quantum_plus_one",
+            "half_quantum_plus_minus_microsecond",
+            "pre_epoch_euclidean",
+            "second_day_year_carry",
+            "timestamp_range_overflow",
+            "hostile_time_truncate_fractional"
+          ]
+        },
+        "8.4": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "quantum_minus_one_quantum_plus_one",
+            "half_quantum_plus_minus_microsecond",
+            "pre_epoch_euclidean",
+            "second_day_year_carry",
+            "timestamp_range_overflow",
+            "hostile_time_truncate_fractional"
+          ]
+        },
+        "9.7": {
+          "baseline": "write::tests::p1_fixture_baseline",
+          "planned": [
+            "predicate_boundaries",
+            "null_and_empty",
+            "deny_and_accept",
+            "stage_target_identity",
+            "warnings_and_rollback",
+            "quantum_minus_one_quantum_plus_one",
+            "half_quantum_plus_minus_microsecond",
+            "pre_epoch_euclidean",
+            "second_day_year_carry",
+            "timestamp_range_overflow",
+            "hostile_time_truncate_fractional"
+          ]
+        }
+      }
+    }
+  ],
+  "modes": [
+    "append",
+    "create",
+    "replace",
+    "update",
+    "upsert",
+    "delete_by_keys",
+    "truncate_insert"
+  ],
+  "profiles": [
+    "single_transaction",
+    "chunk_committed",
+    "best_effort_ddl"
+  ],
+  "policies": [
+    "strict",
+    "compatible",
+    "lossy",
+    "native"
+  ],
+  "consents": [
+    "absent",
+    "false",
+    "true"
+  ],
+  "paths": [
+    "single_chunk",
+    "multiple_batches",
+    "update_accumulated",
+    "append_diagnostics",
+    "upsert_insert",
+    "upsert_update",
+    "upsert_noop"
+  ],
+  "guards": [
+    "admission_full_key_major_dimensions",
+    "codec_range_format",
+    "length_and_trailing_spaces",
+    "charset_representability",
+    "key_exactness_and_collation",
+    "spatial_wkb_xy_srid_type",
+    "session_profile",
+    "warning_completeness"
+  ],
+  "baseline_tests": [
+    "write::tests::p1_fixture_baseline",
+    "write::tests::p1_operation_gate_baseline",
+    "write::tests::qualified_profile_pure_guards"
+  ],
+  "planned_cases": [
+    "exact",
+    "loss_first_batch",
+    "loss_last_batch",
+    "null",
+    "empty",
+    "excluded_assignment",
+    "no_match",
+    "closed_conservative",
+    "hard_reject",
+    "commit_lost",
+    "rollback_lost",
+    "stream_error",
+    "cancel",
+    "drop_future",
+    "ddl_residue"
+  ],
+  "predicates": {
+    "non_null": {
+      "expression": "not is_null",
+      "basis": "conservative",
+      "action": "hard_reject",
+      "null": "exact"
+    },
+    "finite_nonzero_abs_below_min": {
+      "expression": "is_finite(x) and x != 0 and abs(x) < min_abs",
+      "basis": "conservative",
+      "action": "hard_reject",
+      "null": "exact"
+    },
+    "zero_with_negative_sign": {
+      "expression": "x == 0 and sign_bit(x)",
+      "basis": "exact",
+      "action": "would_change",
+      "null": "exact"
+    },
+    "microseconds_rem_euclid_quantum": {
+      "expression": "microseconds.rem_euclid(10**(6-cifre)) != 0",
+      "basis": "exact",
+      "action": "would_change",
+      "null": "exact"
+    }
+  },
+  "selector_contexts": {
+    "planner": [
+      "create",
+      "existing"
+    ],
+    "role": [
+      "key",
+      "assignment",
+      "update_excluded"
+    ],
+    "policy": [
+      "strict",
+      "compatible",
+      "lossy",
+      "native"
+    ]
+  }
+}

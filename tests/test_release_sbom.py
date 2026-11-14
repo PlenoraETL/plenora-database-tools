@@ -32,7 +32,7 @@ checksum = "''' + 'a' * 64 + '''"
         (self.root / 'Cargo.lock').write_text(lock)
         (self.root / 'fuzz/Cargo.lock').write_text(lock)
         (self.root / 'requirements-sdk-tests.txt').write_text('-c requirements-transitive.txt\nPyArrow==25.0.1\n')
-        (self.root / 'requirements-transitive.txt').write_text('tomli==2.4.1; python_version < "3.11"\n')
+        (self.root / 'requirements-transitive.txt').write_text('sample-marker==2.4.1; python_version >= "3.14"\n')
         self.dist = self.root / 'dist'
         self.dist.mkdir()
         self.wheel()
@@ -46,7 +46,7 @@ checksum = "''' + 'a' * 64 + '''"
         result = sbom.render(self.root, self.dist, self.native)
         sbom.validate(self.root, self.dist, result)
         components = {c['name']: c for c in result['components']}
-        self.assertEqual(set(components), {'app', 'driver', 'rustls', 'pyarrow', 'tomli', 'sdk.whl'})
+        self.assertEqual(set(components), {'app', 'driver', 'rustls', 'pyarrow', 'sample-marker', 'sdk.whl'})
         self.assertNotIn('hashes', components['driver'])
         self.assertEqual(components['rustls']['hashes'][0]['content'], 'a' * 64)
         edges = {d['ref']: d['dependsOn'] for d in result['dependencies']}
@@ -213,11 +213,11 @@ checksum = "''' + 'a' * 64 + '''"
             with self.subTest(directive=directive):
                 path.write_text(directive + '\n--constraint pins/constraints.txt\n')
                 inventory = sbom.python_inventory(self.root)
-                self.assertEqual({c['name'] for c in inventory.values()}, {'nested-package', 'constraint-package', 'tomli'})
+                self.assertEqual({c['name'] for c in inventory.values()}, {'nested-package', 'constraint-package', 'sample-marker'})
                 nested = inventory['pkg:pypi/nested-package@1.2.3']
                 self.assertIn(sbom.property_value('requirement', 'pins/nested.txt: nested-package==1.2.3'), nested['properties'])
-                tomli = inventory['pkg:pypi/tomli@2.4.1']
-                self.assertEqual(sum(p['name'] == 'plenora:requirement' for p in tomli['properties']), 1)
+                sample_marker = inventory['pkg:pypi/sample-marker@2.4.1']
+                self.assertEqual(sum(p['name'] == 'plenora:requirement' for p in sample_marker['properties']), 1)
 
     def test_invalid_requirement_includes_fail_closed(self):
         path = self.root / 'requirements-sdk-tests.txt'

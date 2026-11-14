@@ -15,6 +15,7 @@ pub mod ddl_residue;
 pub mod error;
 pub mod ewkb;
 pub mod execution_loss;
+pub mod execution_loss_context;
 pub mod facade;
 pub mod field_contract;
 pub mod fingerprint;
@@ -28,6 +29,7 @@ pub mod limits;
 pub mod loss;
 pub mod loss_ledger;
 pub mod loss_registry;
+pub mod metadata_subject;
 pub mod metrics_recorder;
 pub mod native_query_policy;
 pub mod operand_admission;
@@ -124,3 +126,5 @@ pub mod arrow {
     pub use arrow_schema as schema;
     pub use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 }
+
+pub mod read_loss;

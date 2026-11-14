@@ -100,6 +100,8 @@ class MysqlCollectionTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for name in ("validate_inventory", "verify_candidate_unit", "ensure_network", "discard", "generate_tls", "start", "wait_ready", "verify_hardening", "quiet"):
                 stack.enter_context(patch.object(matrix, name))
+            stack.enter_context(patch("scripts.check_sdk_tests.build_artifacts", return_value={"wheel": "test.whl"}))
+            surfaces = stack.enter_context(patch.object(matrix, "run", side_effect=RuntimeError("surface payload")))
             stack.enter_context(patch.object(matrix, "probe_server", return_value={}))
             stack.enter_context(patch.object(matrix, "EXPECTED_UNIT_TESTS", set()))
             stack.enter_context(patch.object(matrix, "EXPECTED_LIVE_DEFAULT_TESTS", {"live_tests::default"}))
@@ -108,8 +110,10 @@ class MysqlCollectionTests(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stdout(output))
             self.assertEqual(matrix.main(), 1)
         self.assertEqual(calls, [(e.exact_version, f) for e in matrix.MATRIX for f in ("default", "reference")])
+        self.assertEqual(surfaces.call_count, len(matrix.MATRIX))
         ledger = json.loads(output.getvalue().splitlines()[-1])
         for entry in matrix.MATRIX:
+            self.assertTrue(any(r["version"] == entry.exact_version and r["stage"] == "mysql-surfaces" and r["outcome"] == "failed" for r in ledger["collection"]))
             self.assertTrue(any(r["version"] == entry.exact_version and r["test"] == "live_tests::default" and r["outcome"] == "failed" for r in ledger["collection"]))
         self.assertNotIn("redact this", output.getvalue())
 

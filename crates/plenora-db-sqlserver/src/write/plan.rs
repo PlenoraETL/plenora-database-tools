@@ -348,6 +348,7 @@ impl WritePlan {
                     .then(|| temporal_scale(&column.native_declaration));
                 }
                 instances.push(RuleInstance {
+                    subject: None,
                     field_id,
                     rule_id,
                     parameters,

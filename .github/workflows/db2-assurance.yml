@@ -8,6 +8,9 @@ on:
     branches: [main]
   pull_request:
     paths:
+      - ".python-version"
+      - "scripts/install_python.sh"
+      - "scripts/check_python_version.py"
       - "requirements-*.txt"
       - ".github/workflows/db2-assurance.yml"
       - ".github/scripts/verify_wheel.py"
@@ -51,7 +54,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - name: dipendenze dei gate Python
         run: python3 -m pip install -r requirements-self-tests.txt
       - name: self-test del gate
@@ -107,7 +110,7 @@ jobs:
           rust-toolchain: '1.98.1'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - name: caricamento e profilo della feature DB2
         shell: bash
         env:

@@ -16,7 +16,7 @@
 //!    GIST, esegue portable ST_Intersects, verifica risultato + tempi
 //!    entro budget ragionevole.
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -52,11 +52,10 @@ use plenora_db_postgres::PostgresProvider;
 use std::sync::Arc;
 use std::time::Duration;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -84,7 +83,7 @@ fn ctx_tenant(tenant_id: &str) -> SessionContext {
 //   - Il valore letto da current_setting nella tx è quello atteso
 //   - Il DB vede N righe totali, ognuna con il proprio tenant
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn pfm_h1_multi_tenant_isolated_via_session_context() {
     let provider =
@@ -222,7 +221,7 @@ async fn pfm_h1_multi_tenant_isolated_via_session_context() {
 // Scenario reale PFM: primo endpoint "POST /building" — crea record e ritorna
 // l'ID assegnato dal DB. Il PFM userà portable AST per essere db-agnostic.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pfm_h2_portable_insert_returning_then_read_back() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -337,7 +336,7 @@ async fn pfm_h2_portable_insert_returning_then_read_back() {
 // riceve ConcurrentModification e RIPROVA leggendo la versione aggiornata.
 // Verifica che il retry pattern funzioni end-to-end.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pfm_h3_optimistic_conflict_with_retry_pattern() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -486,7 +485,7 @@ async fn pfm_h3_optimistic_conflict_with_retry_pattern() {
 // query passi via SQL con index scan (verifica indiretta: tempo <100ms) e
 // il conteggio sia coerente.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pfm_h4_spatial_portable_query_uses_index() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);

@@ -64,6 +64,7 @@ pub(crate) fn open_family_reader(
         prepare_resumable_read(provider.kind(), resumable, operation, checkpoint)?;
     let provider_arc = Arc::clone(provider);
     let secret_owned = secret.clone();
+    let cancellation = cancellation.child_token();
     let stream_cancellation = cancellation.clone();
     let stream = runtime().block_on(async move {
         provider_arc

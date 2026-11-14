@@ -3,7 +3,7 @@
 //! Il consumer deve poter interrogare `probe_capabilities` per sapere se il target
 //! offre supporto spaziale prima di tentare query. Verifica:
 //!
-//!   1. Positive path — `dataflow-postgres` (con PostGIS): capability doc
+//!   1. Positive path — `PLENORA_TEST_POSTGRES_DSN` (con PostGIS): capability doc
 //!      espone `spatial.geometry = true`, `spatial.geography = true`,
 //!      `spatial.spatial_index = true`, `extension_versions.postgis`
 //!      valorizzato.
@@ -41,11 +41,10 @@ use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory};
 use plenora_db_postgres::PostgresProvider;
 
-const DSN_MAIN: &str = "host=dataflow-postgres user=dataflow \
-                        password=dataflow_test_2026 dbname=dataflow_test";
+mod common;
 
 fn secret_main() -> SecretString {
-    SecretString::new(DSN_MAIN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -72,7 +71,7 @@ fn secret_bare() -> Option<SecretString> {
 // il capability document deve dirmi che spatial è disponibile. Se un giorno
 // PostGIS viene rimosso dal container per errore, questo test fallisce.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN con PostGIS"]
 #[tokio::test]
 async fn preflight_pf1_capability_positive_reports_postgis_present() {
     let provider = provider();

@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "boundaries": [
+    {
+      "id": "postgres_read_sync",
+      "owner": "src/arrow_reader.rs",
+      "entry": "open_reader",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "family_read_sync",
+      "owner": "src/family_arrow_reader.rs",
+      "entry": "open_family_reader",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "postgres_read_async",
+      "owner": "src/arrow_reader.rs",
+      "entry": "open_reader_async",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "family_read_async",
+      "owner": "src/async_session_family.rs",
+      "entry": "aread",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "next_sync",
+      "owner": "src/arrow_reader.rs",
+      "entry": "__next__",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "next_async",
+      "owner": "src/arrow_reader.rs",
+      "entry": "__anext__",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "schema_sync",
+      "owner": "src/arrow_reader.rs",
+      "entry": "schema_bytes",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "schema_async",
+      "owner": "src/arrow_reader.rs",
+      "entry": "schema_bytes",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "capsule_export",
+      "owner": "python/plenora_database/_arrow_io.py",
+      "entry": "c_stream_from_reader",
+      "kind": "c_stream",
+      "proof": "test_stream_channel.py::test_c_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "lazy_callback",
+      "owner": "python/plenora_database/_arrow_io.py",
+      "entry": "_record_batch_reader",
+      "kind": "c_stream",
+      "proof": "test_stream_channel.py::test_c_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "table_materialize",
+      "owner": "python/plenora_database/_arrow_io.py",
+      "entry": "table_from_reader",
+      "kind": "c_stream",
+      "proof": "test_stream_channel.py::test_c_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "capsule_import",
+      "owner": "python/plenora_database/arrow_stream.py",
+      "entry": "ArrowStreamReader",
+      "kind": "c_stream",
+      "proof": "test_stream_channel.py::test_c_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "imported_reader",
+      "owner": "python/plenora_database/arrow_stream.py",
+      "entry": "ArrowStreamReader",
+      "kind": "c_stream",
+      "proof": "test_stream_channel.py::test_c_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "write_source",
+      "owner": "python/plenora_database/_arrow_io.py",
+      "entry": "_source_to_ipc",
+      "kind": "c_stream",
+      "proof": "test_stream_channel.py::test_c_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "async_batch_decode",
+      "owner": "python/plenora_database/arrow_stream.py",
+      "entry": "__anext__",
+      "kind": "async",
+      "proof": "test_stream_channel.py::test_async_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "async_schema_decode",
+      "owner": "python/plenora_database/arrow_stream.py",
+      "entry": "read_all",
+      "kind": "async",
+      "proof": "test_stream_channel.py::test_async_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "async_table",
+      "owner": "python/plenora_database/arrow_stream.py",
+      "entry": "read_all",
+      "kind": "async",
+      "proof": "test_stream_channel.py::test_async_boundaries",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "close_sync",
+      "owner": "src/arrow_reader.rs",
+      "entry": "close",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "close_async",
+      "owner": "src/arrow_reader.rs",
+      "entry": "close",
+      "kind": "native",
+      "proof": "src/stream_reader_tests.rs::actual_python_sync_and_async_consumers_receive_structured_lazy_errors",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "session_query",
+      "owner": "src/session.rs",
+      "entry": "query_rows",
+      "kind": "eager",
+      "proof": "src/errors_tests.rs::prepared_error_exposes_loss_report_without_changing_remote_axes",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "family_query",
+      "owner": "src/session_family.rs",
+      "entry": "query_rows",
+      "kind": "eager",
+      "proof": "src/errors_tests.rs::prepared_error_exposes_loss_report_without_changing_remote_axes",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "transaction_query",
+      "owner": "src/transaction.rs",
+      "entry": "query_rows",
+      "kind": "eager",
+      "proof": "src/errors_tests.rs::prepared_error_exposes_loss_report_without_changing_remote_axes",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "async_transaction_query",
+      "owner": "src/async_transaction.rs",
+      "entry": "query_rows",
+      "kind": "eager",
+      "proof": "src/errors_tests.rs::prepared_error_exposes_loss_report_without_changing_remote_axes",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "async_session_query",
+      "owner": "src/async_session.rs",
+      "entry": "query",
+      "kind": "eager",
+      "proof": "src/errors_tests.rs::prepared_error_exposes_loss_report_without_changing_remote_axes",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "async_family_query",
+      "owner": "src/async_session_family.rs",
+      "entry": "query",
+      "kind": "eager",
+      "proof": "src/errors_tests.rs::prepared_error_exposes_loss_report_without_changing_remote_axes",
+      "proof_kind": "delegation_and_common_error_codec"
+    },
+    {
+      "id": "release_capsule",
+      "owner": "python/plenora_database/_arrow_io.py",
+      "entry": "__del__",
+      "kind": "c_stream",
+      "proof": "test_stream_channel.py::test_releasing_unstarted_capsule_closes_source",
+      "proof_kind": "server_double_and_consumer"
+    },
+    {
+      "id": "cancel_decoder",
+      "owner": "python/plenora_database/arrow_stream.py",
+      "entry": "_await_source",
+      "kind": "async",
+      "proof": "test_stream_channel.py::test_cancel_during_decoder_releases_source_without_blocking_loop",
+      "proof_kind": "server_double_and_consumer"
+    }
+  ],
+  "conditions": [
+    "server_error",
+    "disconnect",
+    "cancel",
+    "deadline",
+    "interrupt"
+  ],
+  "eager_note": "Session/query and transaction APIs materialize canonical rows and translate DatabaseError directly; they expose no capsule or RecordBatchReader. Engine session wrappers delegate to these same native routes.",
+  "callback_positions": [
+    "schema",
+    0,
+    1,
+    2
+  ],
+  "position_scope": "schema/first/middle/last callback failure before EOF in the C and async matrix; successful EOF, release and cancelled await are separate lifecycle tests. Open failures happen before a source/capsule exists. Eager query/transaction paths expose no C stream."
+}

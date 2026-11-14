@@ -1,4 +1,20 @@
 {
+  "plenora-database-cli/examples/postgres-surfaces.rs": {
+    "consent": 1,
+    "direct": 0,
+    "overrides": 0,
+    "prepare": 1,
+    "prepared": 0,
+    "write": 1
+  },
+  "plenora-database-cli/examples/postgres_surfaces/host.rs": {
+    "consent": 0,
+    "direct": 0,
+    "overrides": 0,
+    "prepare": 0,
+    "prepared": 0,
+    "write": 1
+  },
   "plenora-database-cli/src/inspect_dataset_tests.rs": {
     "consent": 0,
     "direct": 0,
@@ -339,9 +355,9 @@
     "consent": 0,
     "direct": 0,
     "overrides": 0,
-    "prepare": 32,
+    "prepare": 34,
     "prepared": 0,
-    "write": 23
+    "write": 25
   },
   "plenora-db-mysql/src/mariadb_evidence.rs": {
     "consent": 0,
@@ -432,6 +448,14 @@
     "write": 1
   },
   "plenora-db-postgres/src/effective_loss_live_tests.rs": {
+    "consent": 0,
+    "direct": 0,
+    "overrides": 0,
+    "prepare": 2,
+    "prepared": 0,
+    "write": 2
+  },
+  "plenora-db-postgres/src/geometry_qualification_live_tests.rs": {
     "consent": 0,
     "direct": 0,
     "overrides": 0,

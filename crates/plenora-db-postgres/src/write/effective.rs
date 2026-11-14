@@ -3,54 +3,100 @@ use super::canonical::{self, LeafClass, SessionLeaf, SessionShape};
 use super::plan::WriteColumnPlan;
 use arrow_array::{Array, ListArray, RecordBatch, StringArray};
 use plenora_database_core::execution_loss::Basis;
+use plenora_database_core::execution_loss_context::ExecutionLossContext;
 use plenora_database_core::loss::{LossConsent, MappingPolicy};
-use plenora_database_core::loss_ledger::{Classification, LossLedger};
-use plenora_database_core::loss_registry::{compile_instances, RuleId, RuleInstance};
+use plenora_database_core::loss_ledger::Classification;
+use plenora_database_core::loss_registry::{RuleId, RuleInstance};
 use plenora_database_core::plan::{ProviderKind, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 
-pub(super) struct Evaluation {
-    pub ledger: LossLedger,
-    pub confirmed: plenora_database_core::execution_loss::ExecutionLossReport,
+pub struct Evaluation {
+    context: ExecutionLossContext,
     rules: Vec<RuleInstance>,
-    consent: LossConsent,
-    policy: MappingPolicy,
-    sequence: u64,
-    tracked: Vec<bool>,
+
     changes: bool,
-    budget: plenora_database_core::resource::ResourceBudget,
-    lease: Option<plenora_database_core::resource::ResourceLease>,
 }
 
+impl std::ops::Deref for Evaluation {
+    type Target = ExecutionLossContext;
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+impl std::ops::DerefMut for Evaluation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.context
+    }
+}
 impl Evaluation {
+    pub fn into_context(self) -> ExecutionLossContext {
+        self.context
+    }
+
     pub fn new(
         rules: Vec<RuleInstance>,
         operation: &WriteOperation,
         consent: LossConsent,
         budget: &plenora_database_core::resource::ResourceBudget,
     ) -> Result<Self> {
-        let (rules, report) =
-            compile_instances(ProviderKind::Postgres, operation.mapping_policy, rules)?;
-        Ok(Self {
-            confirmed: report.clone(),
-            ledger: LossLedger::new(
-                report,
-                usize::try_from(budget.limits().output_bytes).unwrap_or(usize::MAX),
-                usize::try_from(budget.limits().memory_bytes / 128).unwrap_or(usize::MAX),
-            )?,
-            rules,
+        let (context, rules) = ExecutionLossContext::new(
+            ProviderKind::Postgres,
+            operation.mapping_policy,
             consent,
-            policy: operation.mapping_policy,
-            sequence: 0,
-            tracked: Vec::new(),
+            rules,
+            budget,
+        )?;
+        Ok(Self {
+            context,
+            rules,
             changes: false,
-            budget: budget.clone(),
-            lease: None,
         })
     }
 
+    pub fn metadata(
+        &mut self,
+        plan: &crate::geometry_properties::SchemaPlan,
+        schema: &arrow_schema::Schema,
+        operation: &WriteOperation,
+    ) -> Result<()> {
+        if operation.mode == WriteMode::DeleteByKeys {
+            return Ok(());
+        }
+        self.context.begin_metadata_batch(plan.columns.len())?;
+        for rule in self.rules.iter().filter(|r| r.subject.is_some()) {
+            let subject = rule.subject.as_ref().ok_or_else(invalid)?;
+            let position = rule.field_id as usize;
+            let column = plan.columns.get(position).ok_or_else(invalid)?;
+            let (original, retained) = match subject.scope {
+                plenora_database_core::metadata_subject::MetadataScope::Schema => {
+                    (schema.metadata(), &column.schema)
+                }
+                plenora_database_core::metadata_subject::MetadataScope::Field => {
+                    (schema.field(position).metadata(), &column.field)
+                }
+            };
+            let key = original
+                .keys()
+                .find(|key| crate::column_metadata::digest(key.as_bytes()) == subject.key_sha256)
+                .ok_or_else(invalid)?;
+            let classification = plenora_database_core::loss_registry::classify_metadata(
+                rule.rule_id,
+                original.get(key).map(String::as_str),
+                retained.get(key).map(String::as_str),
+            )?;
+            self.context.track(position, position as u64, position)?;
+            self.context.observe_metadata(
+                position as u64,
+                rule.field_id,
+                subject.index,
+                classification,
+            )?;
+        }
+        Ok(())
+    }
+
     // Le istanze usano i typmod del target fissato dal lock, come i codec.
-    pub fn bind(&mut self, plans: &[WriteColumnPlan]) -> Result<()> {
+    pub(super) fn bind(&mut self, plans: &[WriteColumnPlan]) -> Result<()> {
         use plenora_database_core::loss_registry::ValueShape;
         for rule in &mut self.rules {
             let plan = plans.get(rule.field_id as usize).ok_or_else(invalid)?;
@@ -104,30 +150,14 @@ impl Evaluation {
         Ok(())
     }
 
-    pub fn batch(
+    pub(super) fn batch(
         &mut self,
         batch: &RecordBatch,
         plans: &[WriteColumnPlan],
         operation: &WriteOperation,
     ) -> Result<bool> {
-        self.lease = None;
-        let bytes = (batch.num_rows() as u64)
-            .checked_mul(self.rules.len() as u64)
-            .and_then(|n| n.checked_mul(192))
-            .ok_or_else(invalid)?;
-        // Nessuna cella del ledger: nessuna lease, ma i codec e i controlli
-        // canonici devono comunque validare le righe anche senza regole.
-        self.lease = (bytes > 0)
-            .then(|| {
-                self.budget.try_lease(
-                    plenora_database_core::resource::ResourceKind::MemoryBytes,
-                    bytes,
-                )
-            })
-            .transpose()?;
-        self.sequence = self.sequence.checked_add(1).ok_or_else(invalid)?;
-        self.ledger.begin_batch(self.sequence)?;
-        self.tracked = vec![false; batch.num_rows()];
+        self.context
+            .begin_batch(batch.num_rows(), self.rules.len())?;
         let mut changes = false;
         for row in 0..batch.num_rows() {
             for (index, plan) in plans.iter().enumerate() {
@@ -144,15 +174,23 @@ impl Evaluation {
                 let array = batch.column(index).as_ref();
                 canonical::check(plan, array, row)?;
                 drop(super::prepared_codec::arrow_value(array, plan, row)?);
-                for rule in self.rules.iter().filter(|r| r.field_id as usize == index) {
+                for rule in self
+                    .rules
+                    .iter()
+                    .filter(|r| r.field_id as usize == index && r.subject.is_none())
+                {
                     let classification = classify(rule.rule_id, plan, array, row)?;
                     if classification == Classification::HardReject {
                         return Err(invalid());
                     }
-                    self.tracked[row] = true;
-                    self.ledger
-                        .observe(row as u64, rule.field_id, rule.rule_id, classification)?;
-                    classification.authorize(self.policy, self.consent, key)?;
+                    self.context.track(row, row as u64, index)?;
+                    self.context.observe(
+                        row as u64,
+                        rule.field_id,
+                        rule.rule_id,
+                        classification,
+                        key,
+                    )?;
                     changes |= matches!(classification, Classification::WouldChange(_));
                 }
             }
@@ -162,12 +200,7 @@ impl Evaluation {
     }
 
     pub fn prepare_commit(&mut self) -> Result<()> {
-        let mut preview = self.ledger.clone();
-        preview.commit()?;
-        let report = preview.report();
-        report.validate()?;
-        self.confirmed = report;
-        Ok(())
+        self.context.prepare_commit(false)
     }
 
     pub fn profile(&self, operation: &WriteOperation) -> Result<()> {
@@ -179,23 +212,14 @@ impl Evaluation {
     }
 
     pub fn sent(&mut self, row: usize) -> Result<()> {
-        if self.tracked[row] {
-            self.ledger.sent(row as u64)?;
-        }
-        Ok(())
+        self.context.sent(row)
     }
+
     pub fn applied(&mut self, row: usize, count: u64) -> Result<()> {
         if count > 1 {
             return Err(invalid());
         }
-        if self.tracked[row] {
-            if count == 1 {
-                self.ledger.applied(row as u64)?;
-            } else {
-                self.ledger.discard(row as u64)?;
-            }
-        }
-        Ok(())
+        self.context.attributed(row, |_| count == 1)
     }
 }
 
@@ -283,6 +307,13 @@ pub(super) fn classify(
         }
     }
     match rule {
+        RuleId::PgGeometryRepresentation => {
+            let array = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(invalid)?;
+            plan.classify_representation(array.value(row))
+        }
         RuleId::PgNullability | RuleId::PgAddNullable => Ok(verdict(false, Basis::Exact)),
         RuleId::PgArrowMismatch | RuleId::PgMissingColumn | RuleId::PgSrid | RuleId::PgCrs => {
             Ok(verdict(true, Basis::Conservative))

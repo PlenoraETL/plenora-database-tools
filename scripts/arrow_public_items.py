@@ -9,10 +9,7 @@ import json
 import os
 import re
 import sys
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / 'scripts/arrow_public_items.json'

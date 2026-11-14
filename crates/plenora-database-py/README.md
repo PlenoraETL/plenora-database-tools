@@ -18,8 +18,8 @@ transazioni.
 
 ## Install
 
-Richiede Python **3.10+**. Il wheel è `abi3-py310` → un unico wheel
-copre 3.10 / 3.11 / 3.12 / 3.13 / 3.14 per la stessa piattaforma.
+Richiede Python **3.14+**. Il wheel è `abi3-py314` → un unico wheel
+copre il minimo dichiarato e le versioni successive per la stessa piattaforma.
 
 ### Da wheel pre-costruito (produzione)
 
@@ -28,7 +28,7 @@ Scaricare l'asset appropriato dalla
 quindi installare il file locale:
 
 ```bash
-pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
+pip install ./plenora_database-<version>-cp314-abi3-<platform>.whl
 ```
 
 Gli asset standard ufficiali sono pubblicati nelle release GitHub per Linux
@@ -36,7 +36,7 @@ x86_64 e Windows x86_64. Db2 usa invece l'asset Linux x86_64 con build tag
 `1db2`, installabile esplicitamente:
 
 ```bash
-pip install ./plenora_database-<version>-1db2-cp310-abi3-linux_x86_64.whl
+pip install ./plenora_database-<version>-1db2-cp314-abi3-linux_x86_64.whl
 ```
 
 Il runtime Db2 richiede unixODBC e il client IBM Db2 12.1 sul sistema. Il
@@ -722,6 +722,18 @@ Mode:
 Transaction profile: `single_transaction` (default) / `chunk_committed` /
 `staged_swap` / `best_effort_ddl`.
 Mapping policy obbligatoria: `compatible` / `strict` / `lossy` / `native`.
+La [migrazione 11.0.0](../../docs/cli-write.md#compatibilita-1100) descrive
+anche i nuovi rifiuti geometrici PostgreSQL e i rapporti metadata: il consenso
+non elimina i vincoli del contratto e una perdita metadata può riguardare
+anche una tabella vuota. Per gli errori durante la lettura lazy vedere
+[stato degli stream Arrow](#stato-degli-stream-arrow-1100).
+La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
+Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
+registro generato; l'apertura del percorso non attesta la qualifica live,
+che richiede la matrice sul ref finale. I reader 10.0.0 non comprendono gli
+ID MySQL: aggiornare producer e reader insieme alla major 11.
+
 La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
 PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
 `compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
@@ -730,7 +742,7 @@ anche se la regola ha severità Warning. Il default nega: Rust puro usa
 `LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
 SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
 Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
-vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+vincolanti. Il consenso non apre MariaDB, Db2 o Oracle. I profili `chunk_committed`
 e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
 il consenso non rende disponibile un profilo non qualificato.
 
@@ -739,16 +751,17 @@ consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anch
 con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
 altera i valori e dichiara le trasformazioni nel rapporto.
 
-Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
-ExecutionLossReport v3:
+Nei writer migrati, WriteOutcome v3 contiene in `loss_report`
+ExecutionLossReport v3 per i valori o v4 quando include soggetti metadata:
 `risk` descrive il piano; `evaluation` registra i valori controllati e quelli
 che cambierebbero; `effective` distingue `committed` da `uncertain`.
 Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
 confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
 non diventa un commit. `basis: conservative` conta valori trattati come perdita,
-non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+non alterazioni provate. Il conteggio dei valori è per cella sorgente e regola: sommare
 regole diverse non dà il numero di celle uniche. NULL e input vuoto non
-richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+richiedono consenso per il solo rischio dei valori; una perdita di metadata
+può invece richiederlo anche su una tabella vuota.
 Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
 Il perimetro è il mapping Arrow qualificato, non il confronto universale con
 trigger, default, funzioni o SQL nativo.
@@ -1128,3 +1141,30 @@ L'inventario dichiarativo delle firme e delle prove e in
 [`arrow_ingress_registry.json`](../../scripts/arrow_ingress_registry.json).
 Distingue le prove dinamiche dei confini comuni dalle deleghe verificate
 staticamente; queste ultime non costituiscono una prova live dei provider.
+
+### Stato degli stream Arrow (11.0.0)
+
+`ArrowStreamReader(source)` e `AsyncArrowStreamReader(source)` mantengono il
+canale strutturato della sorgente nativa durante il consumo lazy. Le eccezioni
+espongono `category`, `phase`, `remote_effect`, `retry`, `provider`, `details`
+e `read_loss`: non interpretare il testo di `ArrowInvalid`.
+
+`source.stream_state` conserva il primo errore anche dopo `close()`, insieme
+allo stato `open`, `complete`, `failed` o `interrupted`. EOF ed errore rilasciano
+lo stream. Per una chiusura anticipata usare `close()` sul reader sync e
+`await aclose()` sul reader async (anche gli adapter supportano i context
+manager corrispondenti). La chiusura async non bloccante `source.close()`
+richiede il rilascio; `await source.aclose()` ne attende il completamento.
+
+Un consumer C esterno puo esporre soltanto `ArrowInvalid`: conservare la
+sorgente e consultarne `stream_state`, oppure associare il reader importato con
+`ArrowStreamReader(source, reader=imported)`. Non esiste un registro globale
+di indirizzi delle capsule. Uno stream esterno non associato allo SDK non puo
+attribuirsi assi attendibili mediante il testo dell'errore.
+
+La cancellazione dell'adapter async viene tradotta nell'errore strutturato
+salvato sulla sorgente; annullando direttamente l'awaitable nativo il protocollo
+asyncio puo consegnare `CancelledError`, mentre lo stato nativo conserva la
+cancellazione. Il decoding Python avviene fuori dal loop: il worker eventualmente
+gia avviato puo finire, ma la cancellazione chiude la sorgente e non pubblica
+il suo risultato come un nuovo batch.

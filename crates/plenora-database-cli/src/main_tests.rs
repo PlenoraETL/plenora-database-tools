@@ -308,6 +308,7 @@ fn test_batch(schema: SchemaRef) -> RecordBatch {
 #[test]
 fn crs_error_envelope_matches_protocol_v2() {
     let envelope = CliError::Fatal(DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Crs,
         phase: ErrorPhase::Validate,
         remote_effect: RemoteEffect::None,
@@ -346,6 +347,7 @@ fn crs_error_envelope_matches_protocol_v2() {
 #[test]
 fn delayed_retry_is_explicit_and_keeps_the_delay() {
     let envelope = CliError::Fatal(DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Transient,
         phase: ErrorPhase::Connect,
         remote_effect: RemoteEffect::None,

@@ -10,7 +10,7 @@
 //! `TruncateInsert` conserva `TRUNCATE`, che su PostgreSQL e transazionale:
 //! anche li un fallimento a meta stream deve lasciare il target come era.
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
@@ -31,14 +31,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 const TARGET: &str = "_replace_target";
 const PARENT: &str = "_replace_parent";
 const AUDIT: &str = "_replace_audit";
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -371,7 +370,7 @@ fn memory_stream(rows: &[(i64, &str, i64)]) -> Box<dyn BatchStream> {
 /// indici, vincoli, trigger, default, grant e sequence. Se fosse ancora
 /// staging + rename, l'`oid` cambierebbe e con lui tutto cio che pende dalla
 /// tabella.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_replace_preserves_object_identity_indexes_constraints_and_triggers() {
     let _fixture = reset_fixture().await;
@@ -405,7 +404,7 @@ async fn pg_replace_preserves_object_identity_indexes_constraints_and_triggers()
 }
 
 /// Il target di Replace deve esistere: non e un `Create` mascherato.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_replace_on_a_missing_target_is_not_found() {
     let _fixture = reset_fixture().await;
@@ -428,7 +427,7 @@ async fn pg_replace_on_a_missing_target_is_not_found() {
 /// tabella. Le altre scrivono in un target che ha gia i propri indici, e
 /// `CREATE INDEX` viene emesso senza `IF NOT EXISTS`: onorare il flag
 /// fallirebbe alla seconda esecuzione, ignorarlo in silenzio e peggio.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_create_spatial_index_is_rejected_for_every_mode_but_create() {
     let _fixture = reset_fixture().await;
@@ -468,7 +467,7 @@ async fn pg_create_spatial_index_is_rejected_for_every_mode_but_create() {
 /// Replace non ha semantica di chiave: dichiararne una descrive una tabella
 /// che Replace non costruisce. Accettarla e ignorarla lascerebbe credere che
 /// il target venga creato o riconciliato su quelle chiavi.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_replace_rejects_keys_and_update_columns() {
     let _fixture = reset_fixture().await;
@@ -512,7 +511,7 @@ async fn pg_replace_rejects_keys_and_update_columns() {
 /// Un errore a meta stream arriva quando il DELETE e gia passato e parte
 /// delle righe nuove e gia scritta: il rollback deve riportare esattamente le
 /// righe di prima, non un target vuoto.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_replace_restores_the_previous_rows_when_the_stream_fails() {
     let _fixture = reset_fixture().await;
@@ -536,7 +535,7 @@ async fn pg_replace_restores_the_previous_rows_when_the_stream_fails() {
 
 /// La cancellazione arriva dopo il DELETE: il target dentro la transazione e
 /// gia vuoto, e solo il rollback lo riporta allo stato precedente.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_replace_restores_the_previous_rows_on_cancellation_after_the_delete() {
     let _fixture = reset_fixture().await;
@@ -559,7 +558,7 @@ async fn pg_replace_restores_the_previous_rows_on_cancellation_after_the_delete(
 
 /// `TruncateInsert` resta su `TRUNCATE` perche PostgreSQL lo esegue dentro la
 /// transazione: la prova e che un fallimento successivo lo annulli.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_truncate_insert_restores_the_previous_rows_when_the_stream_fails() {
     let _fixture = reset_fixture().await;
@@ -585,7 +584,7 @@ async fn pg_truncate_insert_restores_the_previous_rows_when_the_stream_fails() {
 
 /// `TruncateInsert` che va a buon fine sostituisce le righe e lascia intatto
 /// il resto: e la controprova del test di rollback.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_truncate_insert_replaces_the_rows_and_keeps_the_metadata() {
     let _fixture = reset_fixture().await;
@@ -615,7 +614,7 @@ async fn pg_truncate_insert_replaces_the_rows_and_keeps_the_metadata() {
 /// silenzio dallo schema Arrow dichiarato, e il consumer scoprirebbe la
 /// differenza solo rileggendo. MySQL invece la rifiuta con l'errore 1171, ma
 /// al server, a scrittura gia avviata.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn pg_create_rejects_a_nullable_or_repeated_primary_key() {
     let target = "_create_pk_target";

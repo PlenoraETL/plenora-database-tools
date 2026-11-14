@@ -5,6 +5,56 @@ use plenora_database_core::plan::{ObjectRef, TransactionProfile};
 use plenora_database_core::resource::ResourceLimits;
 use std::sync::Arc;
 
+#[path = "../../../../tests/support/p1_snapshot.rs"]
+mod p1_snapshot;
+
+#[test]
+fn p1_adapter_report_baseline() {
+    let mut observed = Vec::new();
+    for consent in [LossConsent::Deny, LossConsent::Accept] {
+        for outcome in ["rollback", "commit", "uncertain", "no_match"] {
+            let (mut e, p, b) = setup(consent);
+            let result = e.batch(&b, &p);
+            let error = result.as_ref().err().map(|e| serde_json::json!({"category": e.category, "phase": e.phase, "message": e.message}));
+            if result.is_ok() {
+                e.sent(0).unwrap();
+                e.applied(
+                    0,
+                    if outcome == "no_match" {
+                        MutationCounts::default()
+                    } else {
+                        MutationCounts {
+                            confirmed: 1,
+                            inserted: 1,
+                            ..MutationCounts::default()
+                        }
+                    },
+                    &p,
+                )
+                .unwrap();
+                e.prepare_commit().unwrap();
+            }
+            let preview = e.confirmed.clone();
+            if result.is_err() || outcome == "rollback" {
+                e.ledger.rollback();
+            } else if outcome == "uncertain" {
+                e.ledger.uncertain().unwrap();
+            } else {
+                e.ledger.commit().unwrap();
+            }
+            observed.push(
+                serde_json::json!({"consent": format!("{consent:?}"), "outcome": outcome,
+                "error": error, "preview": preview, "report": e.ledger.report()}),
+            );
+        }
+    }
+    p1_snapshot::check(
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")),
+        "sqlserver_baseline",
+        &serde_json::json!(observed),
+    );
+}
+
 fn column(native: &str, declaration: &str) -> WriteColumnPlan {
     WriteColumnPlan {
         input_index: 0,

@@ -12,10 +12,7 @@ import re
 import unittest
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 

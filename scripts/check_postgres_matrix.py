@@ -66,6 +66,7 @@ TARGETS = [
 
 
 from scripts.campaign_collection import Collection, observe, complete_command
+from scripts import check_postgres_reference as reference, live_inventory
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,43 +159,52 @@ def wait_until_ready(container: str) -> None:
     raise RuntimeError(f"timeout healthcheck {container}")
 
 
-def cargo_test(container: str) -> None:
+def cargo_test(container: str) -> dict[str, object]:
     dsn = (
         f"host={container} port=5432 user=plenora_matrix "
         f"password={PASSWORD} dbname=plenora_matrix"
     )
-    run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            NETWORK,
-            "-e",
-            # Il gate pretende che le prove live **misurino**. Quindici di esse
-            # saltavano in silenzio quando la DSN mancava, dichiarandosi passate: con
-            # questo segnale acceso una DSN assente e un fallimento, e arriva qui
-            # invece che in produzione.
-            f"PLENORA_TEST_POSTGRES_DSN={dsn}",
-            "-e",
-            "PLENORA_REQUIRE_LIVE_POSTGRES=1",
-            "-v",
-            f"{ROOT}:/workspace",
-            "-v",
-            f"{CACHE}:/usr/local/cargo/registry",
-            "-w",
-            "/workspace",
-            IMAGE,
-            "cargo",
-            "test",
-            "-p",
-            "plenora-db-postgres",
-            "--lib",
-            "--",
-            "--show-output",
-        ],
-        capture=True,
-    )
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        NETWORK,
+        "-e",
+        # Il gate pretende che le prove live **misurino**. Quindici di esse
+        # saltavano in silenzio quando la DSN mancava, dichiarandosi passate: con
+        # questo segnale acceso una DSN assente e un fallimento, e arriva qui
+        # invece che in produzione.
+        f"PLENORA_TEST_POSTGRES_DSN={dsn}",
+        "-e",
+        "PLENORA_REQUIRE_LIVE_POSTGRES=1",
+        "-e",
+        "CARGO_BUILD_JOBS=2",
+        "-v",
+        f"{ROOT}:/workspace",
+        "-v",
+        f"{CACHE}:/usr/local/cargo/registry",
+        "-w",
+        "/workspace",
+        IMAGE,
+        "cargo",
+        "test",
+        "-p",
+        "plenora-db-postgres",
+        "--",
+        "--include-ignored",
+        "--show-output",
+        "--test-threads=1",
+    ]
+    listing = run(command[:command.index("--")] + ["--", "--list", "--include-ignored"], capture=True)
+    output = run(command, capture=True)
+    executed = reference.validate_live_inventory(output, listing)
+    reference.validate_live_row_diagnostics(output)
+    return {
+        "executed_live_tests": [name for name in executed
+                                if live_inventory.leaf(name) not in reference.NON_QUALIFYING_LIVE_TESTS],
+        "declared_not_qualifying": dict(reference.NON_QUALIFYING_LIVE_TESTS),
+    }
 
 
 def inspect_versions(container: str) -> dict[str, str]:
@@ -248,7 +258,7 @@ def test_target(postgres: str, postgis: str, tag: str, digest: str) -> dict[str,
     )
     try:
         wait_until_ready(container)
-        cargo_test(container)
+        evidence = cargo_test(container)
         versions = inspect_versions(container)
         if versions["postgres"].split(".", maxsplit=1)[0] != postgres:
             raise RuntimeError(
@@ -259,6 +269,7 @@ def test_target(postgres: str, postgis: str, tag: str, digest: str) -> dict[str,
                 f"versione PostGIS inattesa per {image}: {versions['postgis']}"
             )
         return {
+            **evidence,
             "declared_postgres": postgres,
             "declared_postgis": postgis,
             "image": image,

@@ -710,6 +710,7 @@ fn a_read_cause_outside_the_contract_pattern_is_refused() {
 
 fn conversion_error() -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::DataMapping,
         phase: ErrorPhase::Read,
         remote_effect: RemoteEffect::None,
@@ -807,6 +808,7 @@ fn a_read_rejection_carries_the_declared_axes() {
 
     let error = into_read_rejection(
         DatabaseError {
+            read_loss: None,
             category: ErrorCategory::DataMapping,
             phase: ErrorPhase::Prepare,
             remote_effect: RemoteEffect::Unknown,
@@ -841,6 +843,7 @@ fn a_read_rejection_carries_the_declared_axes() {
     write_shaped.scope = DiagnosticScope::Write;
     assert!(into_read_rejection(
         DatabaseError {
+            read_loss: None,
             category: ErrorCategory::DataMapping,
             phase: ErrorPhase::Read,
             remote_effect: RemoteEffect::None,

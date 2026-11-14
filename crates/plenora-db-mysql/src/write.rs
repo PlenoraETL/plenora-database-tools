@@ -317,7 +317,7 @@ impl MysqlWritePlan {
     ) -> Result<Self> {
         let product = profile.product();
         plenora_database_core::field_contract::validate_schema_contract(schema.as_ref())?;
-        validate_operation(operation, database)?;
+        validate_operation(operation, database, profile.kind())?;
         if schema.fields().is_empty() {
             return Err(prepare_error(
                 ErrorCategory::Schema,
@@ -601,6 +601,67 @@ impl MysqlWritePlan {
         format!(
             "SELECT COUNT(*) FROM {} AS t JOIN {staging_quoted} AS s ON {on_clause}",
             self.quoted_target
+        )
+    }
+
+    pub(crate) fn render_metadata_lock(&self) -> String {
+        format!("SELECT 1 FROM {} LIMIT 0", self.quoted_target)
+    }
+
+    /// La selezione seriale usa esclusivamente chiavi gia tipizzate.
+    pub(crate) fn serial_keys(&self) -> &[String] {
+        if self.mode == WriteMode::Update {
+            &self.update_key_columns
+        } else {
+            &self.upsert_keys_quoted
+        }
+    }
+    pub(crate) fn render_serial_match(&self, staging: &str) -> String {
+        let predicate = self
+            .serial_keys()
+            .iter()
+            .map(|k| format!("t.{k}=s.{k}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        format!(
+            "SELECT 1 FROM {} AS t JOIN {staging} AS s ON {predicate} FOR UPDATE",
+            self.quoted_target
+        )
+    }
+    pub(crate) fn render_serial_key_insert(&self, staging: &str) -> String {
+        format!(
+            "INSERT INTO {staging} ({}) VALUES ({})",
+            self.serial_keys().join(","),
+            vec!["?"; self.serial_keys().len()].join(",")
+        )
+    }
+    pub(crate) fn render_serial_apply(&self, staging: &str, matched: bool) -> String {
+        if !matched {
+            let mut insert = self.clone();
+            insert.mode = WriteMode::Append;
+            return insert.render_apply_staging(staging);
+        }
+        if self.mode == WriteMode::Update {
+            return self.render_update_from_staging(staging);
+        }
+        let predicate = self
+            .serial_keys()
+            .iter()
+            .map(|k| format!("t.{k}=s.{k}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let updates = if self.upsert_update_columns.is_empty() {
+            vec![format!("t.{0}=t.{0}", self.upsert_keys_quoted[0])]
+        } else {
+            self.upsert_update_columns
+                .iter()
+                .map(|c| format!("t.{c}=s.{c}"))
+                .collect()
+        };
+        format!(
+            "UPDATE {} AS t JOIN {staging} AS s ON {predicate} SET {}",
+            self.quoted_target,
+            updates.join(",")
         )
     }
 
@@ -1157,8 +1218,8 @@ impl MysqlWritePlan {
                 )));
             }
         }
-        // `Strict` e la politica richiesta: `validate_operation` rifiuta ogni
-        // altra prima del preflight.
+        // Il confronto strutturale non decide la policy: il chiamante associa
+        // quella richiesta e aggiunge il rischio della regola A.
         Ok(LossReport {
             schema_version: 2,
             policy: MappingPolicy::Strict,
@@ -1540,7 +1601,7 @@ pub fn stamp_ddl_residue(
     }
 }
 
-fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<Value> {
+pub(crate) fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<Value> {
     macro_rules! primitive {
         ($array:ty, $value:expr) => {{
             let values = array
@@ -1949,7 +2010,7 @@ pub(crate) fn repeated_key_error(kind: plenora_database_core::plan::ProviderKind
     )
 }
 
-fn mapping_error(message: impl Into<String>) -> DatabaseError {
+pub(crate) fn mapping_error(message: impl Into<String>) -> DatabaseError {
     prepare_error(ErrorCategory::DataMapping, message)
 }
 
@@ -1963,7 +2024,11 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
     error
 }
 
-fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
+fn validate_operation(
+    operation: &WriteOperation,
+    database: &str,
+    provider: plenora_database_core::plan::ProviderKind,
+) -> Result<()> {
     plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     // `Replace` e qualificata come DELETE FROM + bulk insert nella stessa
     // transazione InnoDB: nessun DDL, quindi nessuna perdita di indici, FK,
@@ -1998,7 +2063,9 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
         return Err(unsupported("write richiede il profilo SingleTransaction"));
     }
-    if operation.mapping_policy != MappingPolicy::Strict {
+    if operation.mapping_policy != MappingPolicy::Strict
+        && provider != plenora_database_core::plan::ProviderKind::Mysql
+    {
         return Err(unsupported(
             "write richiede MappingPolicy::Strict finche il loss preflight non e qualificato",
         ));

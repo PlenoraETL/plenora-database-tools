@@ -1,0 +1,345 @@
+{
+  "majors": [
+    "8.0",
+    "8.4",
+    "9.7"
+  ],
+  "cases": [
+    {
+      "name": "planned",
+      "accept_loss": false,
+      "outcome": {
+        "schema_version": 3,
+        "status": "rolled_back",
+        "execution_id": "p6-surface",
+        "provider": "mysql",
+        "rows": {
+          "received": 1,
+          "confirmed": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        "loss_report": {
+          "schema_version": 3,
+          "policy": "compatible",
+          "risk": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "severity": "data_loss",
+              "reason": "precisione temporale MySQL inferiore alla sorgente",
+              "source_type": "Timestamp(µs)",
+              "target_type": "datetime(3)"
+            }
+          ],
+          "evaluation": {
+            "complete": false,
+            "entries": []
+          },
+          "effective": []
+        }
+      }
+    },
+    {
+      "name": "exact",
+      "accept_loss": false,
+      "outcome": {
+        "schema_version": 3,
+        "status": "committed",
+        "execution_id": "p6-surface",
+        "provider": "mysql",
+        "rows": {
+          "received": 1,
+          "confirmed": 1,
+          "inserted": 1,
+          "updated": 0,
+          "deleted": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        "loss_report": {
+          "schema_version": 3,
+          "policy": "compatible",
+          "risk": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "severity": "data_loss",
+              "reason": "precisione temporale MySQL inferiore alla sorgente",
+              "source_type": "Timestamp(µs)",
+              "target_type": "datetime(3)"
+            }
+          ],
+          "evaluation": {
+            "complete": true,
+            "entries": [
+              {
+                "field_id": 1,
+                "rule_id": "mysql.fractional_seconds",
+                "basis": "exact",
+                "checked": 1,
+                "would_change": 0
+              }
+            ]
+          },
+          "effective": []
+        }
+      }
+    },
+    {
+      "name": "denied",
+      "accept_loss": false,
+      "outcome": {
+        "schema_version": 3,
+        "status": "rolled_back",
+        "execution_id": "p6-surface",
+        "provider": "mysql",
+        "rows": {
+          "received": 1,
+          "confirmed": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        "loss_report": {
+          "schema_version": 3,
+          "policy": "compatible",
+          "risk": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "severity": "data_loss",
+              "reason": "precisione temporale MySQL inferiore alla sorgente",
+              "source_type": "Timestamp(µs)",
+              "target_type": "datetime(3)"
+            }
+          ],
+          "evaluation": {
+            "complete": false,
+            "entries": [
+              {
+                "field_id": 1,
+                "rule_id": "mysql.fractional_seconds",
+                "basis": "exact",
+                "checked": 1,
+                "would_change": 1
+              }
+            ]
+          },
+          "effective": []
+        }
+      }
+    },
+    {
+      "name": "committed",
+      "accept_loss": true,
+      "outcome": {
+        "schema_version": 3,
+        "status": "committed",
+        "execution_id": "p6-surface",
+        "provider": "mysql",
+        "rows": {
+          "received": 1,
+          "confirmed": 1,
+          "inserted": 1,
+          "updated": 0,
+          "deleted": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        "loss_report": {
+          "schema_version": 3,
+          "policy": "compatible",
+          "risk": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "severity": "data_loss",
+              "reason": "precisione temporale MySQL inferiore alla sorgente",
+              "source_type": "Timestamp(µs)",
+              "target_type": "datetime(3)"
+            }
+          ],
+          "evaluation": {
+            "complete": true,
+            "entries": [
+              {
+                "field_id": 1,
+                "rule_id": "mysql.fractional_seconds",
+                "basis": "exact",
+                "checked": 1,
+                "would_change": 1
+              }
+            ]
+          },
+          "effective": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "basis": "exact",
+              "committed": 1,
+              "uncertain": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "closed",
+      "accept_loss": true,
+      "outcome": {
+        "schema_version": 3,
+        "status": "rolled_back",
+        "execution_id": "p6-surface",
+        "provider": "mysql",
+        "rows": {
+          "received": 1,
+          "confirmed": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        "loss_report": {
+          "schema_version": 3,
+          "policy": "compatible",
+          "risk": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fixed_float",
+              "category": "native_type",
+              "severity": "data_loss",
+              "reason": "float MySQL a scala fissa non qualificato per la conversione",
+              "source_type": "Float32",
+              "target_type": "float(7,3)"
+            }
+          ],
+          "evaluation": {
+            "complete": false,
+            "entries": []
+          },
+          "effective": []
+        }
+      }
+    },
+    {
+      "name": "rollback",
+      "accept_loss": true,
+      "outcome": {
+        "schema_version": 3,
+        "status": "rolled_back",
+        "execution_id": "p6-surface",
+        "provider": "mysql",
+        "rows": {
+          "received": 1,
+          "confirmed": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        "loss_report": {
+          "schema_version": 3,
+          "policy": "compatible",
+          "risk": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "severity": "data_loss",
+              "reason": "precisione temporale MySQL inferiore alla sorgente",
+              "source_type": "Timestamp(µs)",
+              "target_type": "datetime(3)"
+            }
+          ],
+          "evaluation": {
+            "complete": false,
+            "entries": [
+              {
+                "field_id": 1,
+                "rule_id": "mysql.fractional_seconds",
+                "basis": "exact",
+                "checked": 1,
+                "would_change": 1
+              }
+            ]
+          },
+          "effective": []
+        }
+      }
+    },
+    {
+      "name": "uncertain",
+      "accept_loss": true,
+      "outcome": {
+        "schema_version": 3,
+        "status": "outcome_unknown",
+        "execution_id": "p6-surface",
+        "provider": "mysql",
+        "rows": {
+          "received": 1,
+          "confirmed": 0,
+          "inserted": null,
+          "updated": null,
+          "deleted": null,
+          "failed": 0,
+          "skipped": 0
+        },
+        "loss_report": {
+          "schema_version": 3,
+          "policy": "compatible",
+          "risk": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "severity": "data_loss",
+              "reason": "precisione temporale MySQL inferiore alla sorgente",
+              "source_type": "Timestamp(µs)",
+              "target_type": "datetime(3)"
+            }
+          ],
+          "evaluation": {
+            "complete": true,
+            "entries": [
+              {
+                "field_id": 1,
+                "rule_id": "mysql.fractional_seconds",
+                "basis": "exact",
+                "checked": 1,
+                "would_change": 1
+              }
+            ]
+          },
+          "effective": [
+            {
+              "field_id": 1,
+              "rule_id": "mysql.fractional_seconds",
+              "category": "precision",
+              "basis": "exact",
+              "committed": 0,
+              "uncertain": 1
+            }
+          ]
+        },
+        "recovery": {
+          "last_certain_phase": "commit_requested",
+          "automatic_retry_allowed": false,
+          "verification_action": "Verificare il target prima di ripetere."
+        }
+      }
+    }
+  ]
+}

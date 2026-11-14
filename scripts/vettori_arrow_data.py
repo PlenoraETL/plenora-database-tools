@@ -133,21 +133,48 @@ def busta(argv: list[str]) -> dict:
         documento = json.loads(esito.stdout)
     except json.JSONDecodeError:
         return {"exit": esito.returncode, "category": None, "busta": "illeggibile"}
-    errore = documento.get("error") if isinstance(documento, dict) else None
+    invalid = {"exit": esito.returncode, "category": None, "busta": "illeggibile"}
+    if not isinstance(documento, dict):
+        return invalid
+    errore = documento.get("error")
+    if "protocol_version" in documento:
+        if documento["protocol_version"] != 2:
+            return invalid
+        if documento.get("status") == "error":
+            if not isinstance(errore, dict) or esito.returncode == 0:
+                return invalid
+        elif documento.get("status") == "ok":
+            result = documento.get("result")
+            # The only canonical command consumed here is write (including dry run).
+            if (esito.returncode != 0 or errore is not None or not isinstance(result, dict)
+                    or result.get("status") not in {"committed", "dry_run", "dry_run_offline"}):
+                return invalid
+            documento = result
+        else:
+            return invalid
+    if isinstance(errore, dict) and esito.returncode == 0:
+        return invalid
     if not isinstance(errore, dict):
         controlli = documento.get("checks") if isinstance(documento, dict) else None
         controlli = controlli if isinstance(controlli, dict) else {}
         status = documento.get("status") if isinstance(documento, dict) else None
-        return {"exit": esito.returncode, "category": None, "code": None,
+        result = {"exit": esito.returncode, "category": None, "code": None,
                 "phase": None, "retry": None,
                 "remote_effect": {"dry_run": "none", "dry_run_offline": "none",
                                   "committed": "committed"}.get(status),
                 "catalog": controlli.get("catalog"),
                 "row_security": controlli.get("row_security")}
+        if isinstance(documento, dict) and "loss_report" in documento:
+            result["loss_report"] = documento["loss_report"]
+        return result
     retry = errore.get("retry")
-    return {"exit": esito.returncode, "category": errore.get("category"),
+    result = {"exit": esito.returncode, "category": errore.get("category"),
             "phase": errore.get("phase"), "remote_effect": errore.get("remote_effect"),
             "retry": retry.get("kind") if isinstance(retry, dict) else None}
+    report = (errore.get("details") or {}).get("loss_report")
+    if report is not None:
+        result["loss_report"] = report
+    return result
 
 
 class Postgres:
@@ -162,7 +189,7 @@ class Postgres:
     def cancella(self, tabella: str) -> None:
         esito = busta([str(self.cli), "database-execute-ddl", "postgres", self.variabile,
                        f"DROP TABLE IF EXISTS public.{tabella}"])
-        if esito["exit"] != 0:
+        if esito["exit"] != 0 or esito.get("busta"):
             raise SystemExit("il fixture PostgreSQL non risponde: il gate non si puo' eseguire")
 
     def scalare(self, sql: str) -> int:
@@ -238,6 +265,23 @@ class Postgres:
                     difformi += 1
         return difformi
 
+    def byte_difformi(self, tabella: str, vettore: dict) -> int:
+        count = 0
+        rows = sorted(vettore["rows"], key=lambda row: row["id"])
+        for field in vettore["fields"]:
+            md = field.get("metadata") or {}
+            if md.get("ARROW:extension:name") != "geoarrow.wkb":
+                continue
+            function = "ST_AsEWKB" if md.get("plenora.geometry.encoding") == "ewkb" else "ST_AsBinary"
+            column = '"' + field["name"].replace('"', '""') + '"'
+            text = self.testo(f"SELECT string_agg(coalesce(encode({function}({column}::geometry, 'NDR'), 'hex'), 'NULL'), ',' ORDER BY id) FROM public.{tabella}")
+            actual = (text or "").split(",") if rows else []
+            expected = [row.get(field["name"]) or "NULL" for row in rows]
+            if len(actual) != len(expected):
+                raise RuntimeError("conteggio della rilettura binaria incoerente")
+            count += sum(a.lower() != b.lower() for a, b in zip(actual, expected))
+        return count
+
     def testo(self, sql: str) -> str | None:
         argv = [str(self.cli), "database-execute-scalar", "postgres", self.variabile, sql]
         esito = subprocess.run(argv, capture_output=True, text=True, timeout=120)
@@ -292,6 +336,27 @@ class Postgres:
             # assi sono scambiati anche se le ordinate rilette sono quelle
             # scritte (GEO-001).
             osservato["assi_scambiati"] = int("unsupported" in self.limiti_degli_assi(vettore))
+        if vettore["expect"] == "valid" and rifiuto_rappresentazione(osservato):
+            # Preserve the Strict verdict; prove the declared loss on the same
+            # input through a consented write and independent server readback.
+            op = json.loads(operazione.read_text(encoding="utf-8"))
+            op["mapping_policy"] = "compatible"
+            operazione.write_text(json.dumps(op), encoding="utf-8")
+            request = json.loads(richiesta.read_text(encoding="utf-8"))
+            request["accept_loss"] = True
+            richiesta.write_text(json.dumps(request), encoding="utf-8")
+            consentito = busta([str(self.cli), "write", "--input", str(richiesta), "--data", str(ingresso)])
+            report = consentito.get("loss_report") or {}
+            effective = report.get("effective", [])
+            osservato["normalizzazione_consentita"] = (
+                consentito["exit"] == 0 and bool(effective)
+                and all(e["rule_id"] == "pg.geometry.representation"
+                        and e.get("committed", 0) > 0 and e.get("uncertain", 0) == 0 for e in effective)
+                and self.srid_difformi(tabella, vettore) == 0
+                and self.coordinate_difformi(tabella, vettore) == 0
+                and self.byte_difformi(tabella, vettore) > 0)
+            op["mapping_policy"] = "strict"
+            operazione.write_text(json.dumps(op), encoding="utf-8")
         self.cancella(tabella)
         return osservato
 
@@ -363,10 +428,21 @@ def rej_003(operazione: str, osservato: dict, di_valore: bool) -> bool:
             and osservato.get("remote_effect") == "none")
 
 
+def rifiuto_rappresentazione(observed: dict) -> bool:
+    report = observed.get("loss_report") or {}
+    changed = [e for e in report.get("evaluation", {}).get("entries", []) if e.get("would_change", 0)]
+    return (observed.get("category") == "data_mapping"
+            and report.get("policy") == "strict" and not report.get("effective")
+            and bool(changed) and all(e["rule_id"] == "pg.geometry.representation" for e in changed)
+            and rej_003("write-postgres", observed, True))
+
+
 def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
              limite: str | set[str] | None) -> str:
     """`limite` e' la categoria, o l'insieme delle categorie, dei limiti
     dichiarati che il vettore tocca nell'operazione, o `None`."""
+    if osservato.get("busta"):
+        return "busta-illeggibile"
     limiti = {limite} if isinstance(limite, str) else set(limite or ())
     accettato = osservato["exit"] == 0
     supporto = osservato["category"] in limiti
@@ -375,6 +451,9 @@ def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
             difforme = (osservato.get("srid_difformi") or osservato.get("coordinate_difformi")
                         or osservato.get("assi_scambiati"))
             return "accettazione-difforme" if difforme else "conforme"
+        if (operazione == "write-postgres" and rifiuto_rappresentazione(osservato)
+                and osservato.get("normalizzazione_consentita") is True):
+            return "rifiuto-di-supporto"
         if not supporto:
             return "rifiuto-indebito"
         return "rifiuto-di-supporto" if rej_003(operazione, osservato, False) else "assi-del-rifiuto"
@@ -401,6 +480,8 @@ def accordo_dry_run(dry_run: dict, scrittura: dict, rls_dichiarata: bool = False
     sui valori: `not_performed` solo dove lo scenario lo attende
     (`rls_dichiarata`), `not_applicable` altrove. Tacerlo, o dichiararlo dove
     RLS non si applica, e' un dry run che non dice che cosa ha deciso."""
+    if dry_run.get("busta") or scrittura.get("busta"):
+        return "busta-illeggibile"
     if scrittura["exit"] == 0:
         if dry_run["exit"] != 0:
             return "dry-run-rifiuta"
@@ -741,7 +822,7 @@ class Scenari:
     def ddl(self, sql: str) -> None:
         esito = busta([str(self.postgres.cli), "database-execute-ddl", "postgres",
                        self.postgres.variabile, sql])
-        if esito["exit"] != 0:
+        if esito["exit"] != 0 or esito.get("busta"):
             raise SystemExit("preparazione di uno scenario del target fallita: il gate non si "
                              "puo' eseguire")
 

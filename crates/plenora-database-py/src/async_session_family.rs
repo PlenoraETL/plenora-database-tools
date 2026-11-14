@@ -411,7 +411,7 @@ impl AsyncDatabaseSession {
         let catalog = catalog.map(str::to_owned);
         let checkpoint = checkpoint.map(|value| value.inner().clone());
         let resumable = self.capabilities.reads.resumable;
-        let cancel = self.cancellation();
+        let cancel = self.cancellation().child_token();
         future_into_py(py, async move {
             let operation = make_qualified_read_operation(
                 catalog.as_deref(),

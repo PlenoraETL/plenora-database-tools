@@ -246,6 +246,7 @@ fn deliberate() -> RefusalContract {
 
 fn refused() -> plenora_database_core::DatabaseError {
     plenora_database_core::DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Unsupported,
         phase: ErrorPhase::Prepare,
         remote_effect: RemoteEffect::None,

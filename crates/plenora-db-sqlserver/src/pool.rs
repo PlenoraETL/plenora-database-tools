@@ -212,6 +212,7 @@ fn pool_error_with_retry(
     message: impl Into<String>,
 ) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category,
         phase: ErrorPhase::Connect,
         remote_effect: RemoteEffect::None,

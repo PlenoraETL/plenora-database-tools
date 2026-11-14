@@ -36,6 +36,98 @@ DI_SCHEMA = {"expect": "invalid", "category": "schema"}
 
 
 class Verdetti(unittest.TestCase):
+    def test_real_cli_envelope_and_raw_outcome_have_identical_report(self):
+        import json
+        from subprocess import CompletedProcess
+        from unittest.mock import patch
+        report = {"effective": [{"rule_id": "pg.geometry.representation", "committed": 1, "uncertain": 0}]}
+        outcome = {"status": "committed", "loss_report": report}
+        normalized = []
+        for document in (outcome, {"status": "ok", "protocol_version": 2,
+                                  "command": "write", "result": outcome}):
+            with patch.object(runner.subprocess, "run", return_value=CompletedProcess([], 0, json.dumps(document), "")):
+                result = runner.busta(["cli"])
+                self.assertEqual(result["loss_report"], report)
+                self.assertEqual(result["remote_effect"], "committed")
+                normalized.append(result)
+        self.assertEqual(*normalized)
+
+    def test_raw_inspection_is_not_a_canonical_envelope_and_bad_envelopes_fail(self):
+        import json
+        from subprocess import CompletedProcess
+        from unittest.mock import patch
+        documents = [("inspect-dataset", {"status": "ok", "fields": []}, "conforme"),
+                     ("write-postgres", {"status": "ok", "protocol_version": 2}, "busta-illeggibile"),
+                     ("write-postgres", {"status": "ok", "protocol_version": 99, "result": {}}, "busta-illeggibile"),
+                     ("write-postgres", [], "busta-illeggibile"),
+                     ("write-postgres", {"protocol_version": 2, "status": "error", "error": None}, "busta-illeggibile"),
+                     ("write-postgres", {"protocol_version": 2, "status": "error", "error": {}}, "busta-illeggibile"),
+                     ("write-postgres", {"protocol_version": 99, "status": "committed"}, "busta-illeggibile"),
+                     ("write-postgres", {"protocol_version": 2, "status": "ok", "result": {}}, "busta-illeggibile"),
+                     ("write-postgres", {"protocol_version": 2, "status": "other", "result": {}}, "busta-illeggibile")]
+        for operation, document, expected in documents:
+            with patch.object(runner.subprocess, "run", return_value=CompletedProcess([], 0, json.dumps(document), "")):
+                self.assertEqual(self.verdetto(VALIDO, runner.busta(["cli"]), operazione=operation), expected)
+        valid_dry = {"exit": 0, "category": None, "catalog": "performed", "row_security": "not_applicable"}
+        malformed = {**valid_dry, "busta": "illeggibile"}
+        for dry, write in ((malformed, valid_dry), (valid_dry, malformed)):
+            self.assertEqual(runner.accordo_dry_run(dry, write), "busta-illeggibile")
+
+
+    def test_normalization_requires_strict_axes_report_and_readback(self):
+        import copy
+        good = rifiuto("data_mapping", "write", "rolled_back", tabella_rimasta=False,
+            loss_report={"policy": "strict", "effective": [], "evaluation": {"entries": [
+                {"rule_id": "pg.geometry.representation", "would_change": 1}]}},
+            normalizzazione_consentita=True)
+        self.assertEqual(self.verdetto(VALIDO, good), "rifiuto-di-supporto")
+        for key, value in [("category", "schema"), ("phase", "read"), ("exit", 5),
+                           ("remote_effect", "unknown"), ("retry", "after"),
+                           ("tabella_rimasta", True), ("normalizzazione_consentita", False)]:
+            self.assertNotEqual(self.verdetto(VALIDO, {**good, key: value}), "rifiuto-di-supporto")
+        for report in ({}, {"policy": "compatible"}, {"effective": [{"committed": 1}]},
+                       {"evaluation": {"entries": []}},
+                       {"evaluation": {"entries": [{"rule_id": "other", "would_change": 1}]}},
+                       {"evaluation": {"entries": [{"rule_id": "pg.geometry.representation", "would_change": 0}]}}):
+            changed = copy.deepcopy(good)
+            changed["loss_report"] = {**changed["loss_report"], **report} if report else {}
+            self.assertNotEqual(self.verdetto(VALIDO, changed), "rifiuto-di-supporto")
+
+    def test_normalization_runs_independent_readback_checks(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        strict = rifiuto("data_mapping", "write", "rolled_back", loss_report={
+            "policy": "strict", "effective": [], "evaluation": {"entries": [
+                {"rule_id": "pg.geometry.representation", "would_change": 1}]}})
+        success = {"exit": 0, "category": None, "loss_report": {"effective": [
+            {"rule_id": "pg.geometry.representation", "committed": 1, "uncertain": 0}]}}
+        for srid, coordinate, binary, allowed in [(0, 0, 1, True), (1, 0, 1, False),
+                                                (0, 1, 1, False), (0, 0, 0, False)]:
+            with TemporaryDirectory() as directory:
+                pg = runner.Postgres.__new__(runner.Postgres)
+                pg.lavoro = Path(directory)
+                pg.cli, pg.variabile = Path("cli"), "DSN"
+                calls = []
+                def cli(argv):
+                    import json
+                    self.assertNotIn("--accept-loss", argv)
+                    request = json.loads(Path(argv[argv.index("--input") + 1]).read_text(encoding="utf-8"))
+                    op = json.loads(Path(request["operation_path"]).read_text(encoding="utf-8"))
+                    calls.append(op["mapping_policy"])
+                    if op["mapping_policy"] == "strict":
+                        self.assertNotIn("accept_loss", request)
+                        return strict.copy()
+                    self.assertIs(request["accept_loss"], True)
+                    return success
+                with patch.object(pg, "cancella"), patch.object(pg, "esiste", return_value=False), \
+                     patch.object(pg, "srid_difformi", return_value=srid), \
+                     patch.object(pg, "coordinate_difformi", return_value=coordinate), \
+                     patch.object(pg, "byte_difformi", return_value=binary), \
+                     patch.object(runner, "busta", side_effect=cli):
+                    result = pg.scrivi("fixture", Path("input"), VALIDO)
+                    self.assertEqual(result["normalizzazione_consentita"], allowed)
+                    self.assertEqual(calls, ["strict", "compatible"])
+
     def test_pg14_view_keeps_rls_under_the_restricted_owner(self) -> None:
         sql = next(row[1] for row in runner.SCENARI if row[0] == "regola-r-vista-rls-delete")
         old = runner.prepara_vista_rls(sql, 140_000)

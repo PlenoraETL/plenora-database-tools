@@ -60,6 +60,7 @@ impl Row {
     pub fn try_new(columns: Arc<[String]>, values: Vec<ParameterValue>) -> crate::Result<Self> {
         if columns.len() != values.len() {
             return Err(crate::DatabaseError {
+                read_loss: None,
                 category: crate::ErrorCategory::DataMapping,
                 phase: crate::ErrorPhase::Read,
                 remote_effect: crate::RemoteEffect::None,

@@ -34,13 +34,14 @@ const POSTGIS_SCHEMA_SQL: &str = "SELECT pg_catalog.quote_ident(n.nspname) \
 
 /// I nomi di `PostGIS` che lo SQL della libreria usa e che [`qualify`]
 /// qualifica: un elenco chiuso, controllato dalla prova della regola Q.
-const POSTGIS_NAMES: [&str; 6] = [
+const POSTGIS_NAMES: [&str; 7] = [
     "spatial_ref_sys",
     "postgis_typmod_srid",
     "postgis_typmod_dims",
     "postgis_typmod_type",
     "ST_GeomFromEWKB",
     "ST_AsEWKB",
+    "ST_AsBinary",
 ];
 
 /// Il prefisso con cui qualificare i nomi di `PostGIS` (`"public".`), vuoto

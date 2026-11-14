@@ -15,7 +15,7 @@ Scaricare il wheel adatto dalla
 e installare il file locale:
 
 ```bash
-python -m pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
+python -m pip install ./plenora_database-<version>-cp314-abi3-<platform>.whl
 ```
 
 Gli asset ufficiali sono distribuiti tramite GitHub Releases, insieme a SBOM e

@@ -187,6 +187,7 @@ fn pool_error(
     message: &'static str,
 ) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category,
         phase: ErrorPhase::Connect,
         remote_effect: RemoteEffect::None,

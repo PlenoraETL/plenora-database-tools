@@ -1717,7 +1717,13 @@ def _mapped_annotation_type(annotation: Any) -> Any:
 
 
 def _apply_annotation_types(namespace: Mapping[str, Any]) -> None:
-    annotations = namespace.get("__annotations__", {})
+    import annotationlib
+
+    annotate = annotationlib.get_annotate_from_class_namespace(namespace)
+    annotations = (
+        annotationlib.call_annotate_function(annotate, annotationlib.Format.FORWARDREF)
+        if annotate is not None else namespace.get("__annotations__", {})
+    )
     if not isinstance(annotations, Mapping):
         return
     for name, annotation in annotations.items():

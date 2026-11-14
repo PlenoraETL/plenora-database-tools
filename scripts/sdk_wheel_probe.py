@@ -135,6 +135,10 @@ def main() -> int:
     native = module_origin(NATIVE)
     assert_installed(NATIVE, native, directories)
     assert_standard_wheel_excludes_db2_runtime()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.check_python_version import installed_wheel_errors
+    if errors := installed_wheel_errors():
+        raise RuntimeError("; ".join(errors))
     digest = hashlib.sha256(native.read_bytes()).hexdigest()
     print(f"{ORIGIN_MARKER}{package.parent} {native} {digest}")
     return 0

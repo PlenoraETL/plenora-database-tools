@@ -11,6 +11,10 @@ license-file.workspace = true
 name = "plenora-database"
 path = "src/main.rs"
 
+[[example]]
+name = "postgres-surfaces"
+required-features = ["postgres"]
+
 [features]
 # Il default resta minimale; gli altri provider sono feature esplicite per non
 # imporre dipendenze e superfici non richieste al binario Postgres.

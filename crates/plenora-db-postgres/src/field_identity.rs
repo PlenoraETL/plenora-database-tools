@@ -2,17 +2,17 @@
 use crate::error::{classify_error, public_error};
 use arrow_schema::SchemaRef;
 use plenora_database_core::plan::{WriteMode, WriteOperation};
-use plenora_database_core::protocol::{canonical_field_id, FIELD_ID};
+#[cfg(test)]
+use plenora_database_core::protocol::canonical_field_id;
 use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use tokio_postgres::{Client, Transaction};
 
-const PREFIX: &str = "plenora.field_id.v1:";
-
-const COLUMN_COMMENT: &str = "SELECT pg_catalog.col_description(a.attrelid, a.attnum) \
+const COLUMN_COMMENTS: &str =
+    "SELECT a.attname::pg_catalog.text, pg_catalog.col_description(a.attrelid, a.attnum) \
      FROM pg_catalog.pg_attribute a \
-     WHERE a.attrelid = $1::pg_catalog.text::pg_catalog.regclass AND a.attname = $2 \
-     AND a.attnum > 0 AND NOT a.attisdropped";
+     WHERE a.attrelid = $1::pg_catalog.text::pg_catalog.regclass \
+     AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum";
 
 /// La prima riga e riservata; il resto del commento resta byte per byte.
 /// Un'intestazione riservata corrotta non diventa un nuovo id di provenienza.
@@ -31,13 +31,11 @@ const COLUMN_COMMENT: &str = "SELECT pg_catalog.col_description(a.attrelid, a.at
 /// rifiuta `007` prima che arrivi alla registrazione. Rientra quando nessun
 /// commento registrato dalle versioni precedenti puo piu essere letto.
 pub fn registered_id(comment: Option<&str>) -> Result<Option<String>> {
-    let Some(value) = comment.and_then(|text| text.strip_prefix(PREFIX)) else {
-        return Ok(None);
-    };
-    let (id, _) = value.split_once('\n').ok_or_else(invalid_comment)?;
-    canonical_field_id(id).ok_or_else(invalid_comment).map(Some)
+    crate::column_metadata::decode(comment)?;
+    crate::column_metadata::split_identity(comment).map(|(id, _)| id)
 }
 
+#[cfg(test)]
 fn invalid_comment() -> plenora_database_core::DatabaseError {
     public_error(
         ErrorCategory::DataMapping,
@@ -47,6 +45,7 @@ fn invalid_comment() -> plenora_database_core::DatabaseError {
     )
 }
 
+#[cfg(test)]
 fn registration(comment: Option<&str>, incoming: &str) -> Result<Option<String>> {
     if let Some(existing) = registered_id(comment)? {
         if Some(existing) != canonical_field_id(incoming) {
@@ -63,56 +62,76 @@ fn registration(comment: Option<&str>, incoming: &str) -> Result<Option<String>>
     // Si registra la forma canonica, quella che la lettura pubblica.
     let incoming = canonical_field_id(incoming).ok_or_else(invalid_comment)?;
     Ok(Some(format!(
-        "{PREFIX}{incoming}\n{}",
+        "{}{incoming}\n{}",
+        crate::column_metadata::ID_PREFIX,
         comment.unwrap_or("")
     )))
+}
+
+/// Plans every final comment before DDL. The executor already holds the table lock;
+/// dry run uses the same routine without claiming a locked snapshot.
+pub async fn prepare<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    plan: &crate::geometry_properties::SchemaPlan,
+) -> Result<Vec<crate::geometry_properties::Registration>> {
+    if operation.mode == WriteMode::DeleteByKeys {
+        return Ok(Vec::new());
+    }
+    let target = quoted_target(&renderer(), operation)?;
+    let comments: Vec<(String, Option<String>)> = if operation.mode == WriteMode::Create {
+        Vec::new()
+    } else {
+        client
+            .query(COLUMN_COMMENTS, &[&target])
+            .await
+            .map_err(|error| classify_error(ErrorPhase::Write, &error))?
+            .iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect()
+    };
+    for field in schema.fields() {
+        if let Some((_, comment)) = comments.iter().find(|(name, _)| name == field.name()) {
+            check_legacy_adoption(client, operation, field, &target, comment.as_deref()).await?;
+        }
+    }
+    plan.registrations(schema, &comments)
 }
 
 pub async fn register(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
-    schema: &SchemaRef,
+    registrations: &[crate::geometry_properties::Registration],
+    evaluation: &mut crate::write::effective::Evaluation,
 ) -> Result<()> {
-    if operation.mode == WriteMode::DeleteByKeys
-        || !schema
-            .fields()
-            .iter()
-            .any(|field| field.metadata().contains_key(FIELD_ID))
-    {
-        return Ok(());
-    }
     let renderer = renderer();
     let target = quoted_target(&renderer, operation)?;
-    // Serializza registrazione e confronto anche fra append concorrenti.
-    transaction
-        .batch_execute(&format!("LOCK TABLE {target} IN SHARE ROW EXCLUSIVE MODE"))
-        .await
-        .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-    for field in schema.fields() {
-        let Some(incoming) = field.metadata().get(FIELD_ID) else {
-            continue;
-        };
-        let row = transaction
-            .query_one(COLUMN_COMMENT, &[&target, field.name()])
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-        let comment: Option<String> = row.get(0);
-        if let Some(updated) = registration(comment.as_deref(), incoming)? {
-            // COMMENT non accetta bind: il server quota il valore con le proprie
-            // regole, incluse le impostazioni sulle stringhe e i backslash.
+    for registration in registrations {
+        if let Some(updated) = &registration.comment {
+            // COMMENT cannot bind: quote the value on the server, identifiers in the renderer.
             let literal: String = transaction
                 .query_one(
                     "SELECT pg_catalog.quote_literal($1::pg_catalog.text)",
-                    &[&updated],
+                    &[updated],
                 )
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?
                 .get(0);
-            let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?)?;
+            let column =
+                renderer.quote_identifier(&Identifier::new(registration.column.clone())?)?;
+            if let Some(position) = registration.input_position {
+                evaluation.sent(position)?;
+            }
             transaction
                 .batch_execute(&format!("COMMENT ON COLUMN {target}.{column} IS {literal}"))
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+        } else if let Some(position) = registration.input_position {
+            evaluation.sent(position)?;
+        }
+        if let Some(position) = registration.input_position {
+            evaluation.applied(position, 1)?;
         }
     }
     Ok(())
@@ -135,13 +154,9 @@ pub async fn check(
     schema: &SchemaRef,
     may_lock: bool,
     owner: bool,
+    plan: &crate::geometry_properties::SchemaPlan,
 ) -> Result<()> {
-    if operation.mode == WriteMode::DeleteByKeys
-        || !schema
-            .fields()
-            .iter()
-            .any(|field| field.metadata().contains_key(FIELD_ID))
-    {
+    if operation.mode == WriteMode::DeleteByKeys {
         return Ok(());
     }
     let denied = || {
@@ -155,25 +170,44 @@ pub async fn check(
     if !may_lock {
         return Err(denied());
     }
-    let target = quoted_target(&renderer(), operation)?;
-    for field in schema.fields() {
-        let Some(incoming) = field.metadata().get(FIELD_ID) else {
-            continue;
-        };
-        // Create fabbrica la tabella: nessuna colonna ha ancora un commento.
-        // Una colonna che l'evoluzione dello schema aggiungerebbe, neppure.
-        let comment: Option<String> = if operation.mode == WriteMode::Create {
-            None
-        } else {
-            client
-                .query_opt(COLUMN_COMMENT, &[&target, field.name()])
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error))?
-                .and_then(|row| row.get(0))
-        };
-        if registration(comment.as_deref(), incoming)?.is_some() && !owner {
-            return Err(denied());
-        }
+    let registrations = prepare(client, operation, schema, plan).await?;
+    if !owner && registrations.iter().any(|r| r.comment.is_some()) {
+        return Err(denied());
+    }
+
+    Ok(())
+}
+
+async fn check_legacy_adoption<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+    field: &arrow_schema::Field,
+    target: &str,
+    comment: Option<&str>,
+) -> Result<()> {
+    if !crate::field_contract::FieldContract::parse(field)?
+        .canonical
+        .spatial
+        || crate::column_metadata::decode(comment)?.is_some()
+        || matches!(
+            operation.mode,
+            WriteMode::Create | WriteMode::Replace | WriteMode::TruncateInsert
+        )
+    {
+        return Ok(());
+    }
+    let populated: bool = client
+        .query_one(&format!("SELECT EXISTS (SELECT 1 FROM {target})"), &[])
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Write, &error))?
+        .get(0);
+    if populated {
+        return Err(public_error(
+            ErrorCategory::Conflict,
+            ErrorPhase::Write,
+            false,
+            "registrazione geometrica di un target legacy popolato non attestabile",
+        ));
     }
     Ok(())
 }

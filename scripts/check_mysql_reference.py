@@ -412,9 +412,9 @@ def run_live_cli_probe() -> None:
 def run_static_checks() -> int:
     """I controlli del gate che non richiedono ne container ne toolchain Rust.
 
-    Sono tre: la matrice dichiarata deve coincidere con cio che il compose
-    avvia, l'inventario dichiarato con la sorgente Rust, e le due suite Python
-    che presidiano gate e matrice devono passare. Girano in secondi su ogni PR
+    La matrice dichiarata deve coincidere con cio che il compose avvia,
+    l'inventario dichiarato con la sorgente Rust e quello permissivo con i
+    fixture; i self-test dei gate devono passare. Girano in secondi su ogni PR
     perche intercettano subito la classe di errore che altrimenti si scopre
     mezz'ora dopo, in mezzo a una campagna live.
     """
@@ -422,6 +422,8 @@ def run_static_checks() -> int:
     validate_compose_pins_the_baseline()
     validate_inventory()
     run([sys.executable, str(ROOT / "scripts" / "test_check_mysql_reference.py")])
+    run([sys.executable, str(ROOT / "scripts" / "mysql_permissive_inventory.py")])
+    run([sys.executable, "-m", "unittest", "tests.test_mysql_permissive_inventory"])
     run([sys.executable, "-m", "unittest", "tests.test_mysql_matrix"])
     print(
         json.dumps(

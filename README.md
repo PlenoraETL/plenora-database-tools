@@ -126,7 +126,7 @@ Scaricare il wheel adatto dalla
 e installare il file locale:
 
 ```bash
-python -m pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
+python -m pip install ./plenora_database-<version>-cp314-abi3-<platform>.whl
 ```
 
 Gli asset ufficiali sono distribuiti soltanto tramite GitHub Releases. Il
@@ -426,6 +426,13 @@ artefatti sono descritti in [`docs/RELEASE.md`](docs/RELEASE.md).
 
 ## Scritture Arrow: rapporto e consenso
 
+La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
+Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
+registro generato; l'apertura del percorso non attesta la qualifica live,
+che richiede la matrice sul ref finale. I reader 10.0.0 non comprendono gli
+ID MySQL: aggiornare producer e reader insieme alla major 11.
+
 La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
 PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
 `compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
@@ -434,7 +441,7 @@ anche se la regola ha severità Warning. Il default nega: Rust puro usa
 `LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
 SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
 Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
-vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+vincolanti. Il consenso non apre MariaDB, Db2 o Oracle. I profili `chunk_committed`
 e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
 il consenso non rende disponibile un profilo non qualificato.
 
@@ -443,16 +450,17 @@ consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anch
 con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
 altera i valori e dichiara le trasformazioni nel rapporto.
 
-Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
-ExecutionLossReport v3:
+Nei writer migrati, WriteOutcome v3 contiene in `loss_report`
+ExecutionLossReport v3 per i valori o v4 quando include soggetti metadata:
 `risk` descrive il piano; `evaluation` registra i valori controllati e quelli
 che cambierebbero; `effective` distingue `committed` da `uncertain`.
 Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
 confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
 non diventa un commit. `basis: conservative` conta valori trattati come perdita,
-non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+non alterazioni provate. Il conteggio dei valori è per cella sorgente e regola: sommare
 regole diverse non dà il numero di celle uniche. NULL e input vuoto non
-richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+richiedono consenso per il solo rischio dei valori; una perdita di metadata
+può invece richiederlo anche su una tabella vuota.
 Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
 Il perimetro è il mapping Arrow qualificato, non il confronto universale con
 trigger, default, funzioni o SQL nativo.
@@ -464,3 +472,6 @@ il [README Python](crates/plenora-database-py/README.md#bulk-write-arrow)
 e la [guida operativa](docs/operativo.md#scritture-arrow-rapporto-e-consenso).
 Il binding `database.write@2` richiede adozione anche in runtime-tools:
 catalogo, `accept_loss` e WriteOutcome v3; vedere [runtime](docs/runtime.md).
+
+Il minimo Python della release 11.0.0 e 3.14, dichiarato in `.python-version`;
+il gate `scripts/check_python_version.py` verifica packaging, CI e campagne.

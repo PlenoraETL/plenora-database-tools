@@ -228,6 +228,7 @@ pub enum RuntimeBody {
 /// Byte e checksum di un artefatto consegnato al sink dell'host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeliveredArtifact {
+    pub read_loss: Option<plenora_database_core::read_loss::ReadLossReport>,
     pub byte_count: u64,
     pub checksum_algorithm: &'static str,
     pub checksum: String,
@@ -619,8 +620,9 @@ impl<'a> RuntimeBinding<'a> {
         let delivered =
             match write_arrow_stream(&mut sink, stream.as_mut(), &token, &mut written).await {
                 Ok(delivered) => delivered,
-                Err(error) => {
+                Err(mut error) => {
                     sink.abort();
+                    error.read_loss = stream.read_loss().map(Box::new);
                     return Err(after_sink_bytes(error, written));
                 }
             };
@@ -1019,6 +1021,7 @@ async fn write_arrow_stream(
     let byte_count = *counted.bytes;
     let checksum = hex(&counted.digest.finalize());
     Ok(DeliveredArtifact {
+        read_loss: stream.read_loss(),
         byte_count,
         checksum_algorithm: "sha256",
         checksum,
@@ -1073,6 +1076,7 @@ fn after_sink_bytes(error: DatabaseError, written: u64) -> DatabaseError {
 /// conserva, e un retry automatico non sopravvive a un effetto ignoto.
 fn redact_host_error(error: &DatabaseError, message: &'static str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: error.category,
         phase: error.phase,
         remote_effect: error.remote_effect,

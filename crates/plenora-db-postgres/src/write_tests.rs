@@ -655,18 +655,20 @@ fn a_geometry_read_without_typmod_can_be_written_back() {
         collation: None,
         source: None,
         registered_field_id: None,
+        arrow_metadata: None,
         kind: crate::types::ColumnKind::Geometry,
     };
     let field = column.arrow_field();
     assert_eq!(field.metadata()["plenora.geometry.dimensions"], "unknown");
-    let plan = WriteColumnPlan::compile(&field).expect("riscrittura del letto");
+    let error = WriteColumnPlan::compile(&field).expect_err("unknown con SRID");
+    assert_eq!(error.category, ErrorCategory::Crs);
+    assert_eq!(error.phase, ErrorPhase::Validate);
+    assert_eq!(error.remote_effect, RemoteEffect::None);
+    assert_eq!(error.retry, RetryDisposition::Never);
+    column.spatial_srid = None;
+    column.spatial_crs_id = None;
+    let plan = WriteColumnPlan::compile(&column.arrow_field()).expect("unknown senza SRID");
     assert_eq!(plan.postgres_type, "geometry");
-    let mut point_z = vec![1_u8];
-    point_z.extend_from_slice(&0xa000_0001_u32.to_le_bytes());
-    point_z.extend_from_slice(&4326_u32.to_le_bytes());
-    point_z.extend_from_slice(&[0_u8; 24]);
-    check_value(&plan, &point_z, 1).expect("dimensione non dichiarata");
-    column.spatial_dimensions = Some("XY".to_owned());
 }
 
 /// Uno SRID annidato in un EWKB la cui radice porta lo SRID giusto: lo

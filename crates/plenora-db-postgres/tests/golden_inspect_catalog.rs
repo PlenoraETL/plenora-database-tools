@@ -8,7 +8,7 @@
 //!   - DatabaseListObjects { schema }
 //!   - DatabaseDescribeObject { schema, object }
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -33,11 +33,10 @@ use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::CancellationToken;
 use plenora_db_postgres::PostgresProvider;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn public_ref(object: &str) -> ObjectRef {
@@ -52,7 +51,7 @@ fn public_ref(object: &str) -> ObjectRef {
 //  H7c.1 — list_catalogs
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7c_list_catalogs_reports_current_database() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -62,12 +61,17 @@ async fn h7c_list_catalogs_reports_current_database() {
         .await
         .expect("inspect");
     assert_eq!(out.operation, "database.list_catalogs");
+    let configured: tokio_postgres::Config = std::env::var("PLENORA_TEST_POSTGRES_DSN")
+        .expect("live PostgreSQL DSN required")
+        .parse()
+        .expect("valid live PostgreSQL configuration");
+    let database = configured.get_dbname().expect("explicit live database");
     let catalogs = out.document["catalogs"].as_array().expect("catalogs array");
     assert!(
         catalogs
             .iter()
-            .any(|c| c["name"] == "dataflow_test" || c.as_str() == Some("dataflow_test")),
-        "dataflow_test non trovato: {catalogs:?}"
+            .any(|c| c["name"] == database || c.as_str() == Some(database)),
+        "configured database absent"
     );
 }
 
@@ -79,7 +83,7 @@ async fn h7c_list_catalogs_reports_current_database() {
 /// schema Postgres (pg_catalog / information_schema / pg_toast / pg_temp_* /
 /// pg_toast_temp_*). Il consumer che ha bisogno anche dei system schema deve
 /// interrogare pg_namespace direttamente.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7c_list_schemas_excludes_system_schemas() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -119,7 +123,7 @@ async fn h7c_list_schemas_excludes_system_schemas() {
 //  se PostGIS è installato)
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7c_list_objects_returns_relations_of_the_schema() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -148,7 +152,7 @@ async fn h7c_list_objects_returns_relations_of_the_schema() {
 //  H7c.4 — describe_object su spatial_ref_sys (tabella nota PostGIS)
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7c_describe_object_returns_columns_and_schema_token() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -183,7 +187,7 @@ async fn h7c_describe_object_returns_columns_and_schema_token() {
 //  (verifica catalog/schema.rs decoder tipi)
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7c_describe_object_handles_multiple_column_types() {
     use plenora_database_core::provider::Provider as _;

@@ -4,10 +4,17 @@ Generato da `loss_registry.rs` con `scripts/render_loss_registry.py`.
 
 | ID | Applicabilità | Categoria | Severità | Predicato | Modalità | Alias PostgreSQL |
 | --- | --- | --- | --- | --- | --- | --- |
+| mysql.double_underflow | Mysql | Precision | DataLoss | Underflow | HardReject | None |
+| mysql.fixed_double | Mysql | NativeType | DataLoss | Conservative | HardReject | None |
+| mysql.fixed_float | Mysql | NativeType | DataLoss | Conservative | HardReject | None |
+| mysql.fractional_seconds | Mysql | Precision | DataLoss | FractionalSeconds | Exact | None |
+| mysql.negative_zero | Mysql | Precision | DataLoss | NegativeZero | Exact | None |
 | pg.add_nullable | Postgres | NativeType | Information | NoChange | NoChange | None |
 | pg.arrow_mismatch | Postgres | NativeType | DataLoss | Conservative | Conservative | None |
 | pg.crs | Postgres | Crs | DataLoss | Conservative | Conservative | None |
+| pg.geometry.representation | Postgres | Encoding | Warning | PgGeometry | Mixed | None |
 | pg.jsonb | Postgres | NativeType | Warning | PgJson | Mixed | None |
+| pg.metadata.key_not_preserved | Postgres | NativeType | Warning | MetadataKey | Exact | None |
 | pg.missing_column | Postgres | NativeType | DataLoss | Conservative | Conservative | None |
 | pg.nullability | Postgres | Nullability | DataLoss | NoChange | NoChange | None |
 | pg.numeric | Postgres | Precision | DataLoss | PgNumeric | Mixed | None |

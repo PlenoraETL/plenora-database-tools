@@ -14,7 +14,7 @@
 //! I test usano il pattern "cast a text" dove il decoder binario non è
 //! implementato: documenta al consumer PFM cosa aspettarsi al bordo SDK.
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -39,11 +39,10 @@ use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory};
 use plenora_db_postgres::PostgresProvider;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -93,7 +92,7 @@ fn bool_of(v: Option<&ParameterValue>) -> bool {
 //
 // Il nome enum include il nome test per evitare conflitti in parallel run.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn extras_x1_enum_type_roundtrip_via_text() {
     let provider = provider();
@@ -196,7 +195,7 @@ async fn extras_x1_enum_type_roundtrip_via_text() {
 //   - INSERT diretto sul generated → errore atteso
 //   - UPDATE del generated → errore atteso
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn extras_x2_generated_column_stored_computed_and_write_rejected() {
     let provider = provider();
@@ -308,7 +307,7 @@ async fn extras_x2_generated_column_stored_computed_and_write_rejected() {
 // domain modeling per intervalli (booking, versioning temporale).  Il read
 // diretto binario non è implementato nel decoder attuale: cast a text.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn extras_x3_range_types_int4_and_tstz_via_text() {
     let provider = provider();
@@ -357,7 +356,7 @@ async fn extras_x3_range_types_int4_and_tstz_via_text() {
 // PFM audit log include IP address (inet). Il decoder binario dei tipi rete
 // non è implementato: cast a text è il pattern canonico.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn extras_x4_network_family_inet_cidr_macaddr_via_text() {
     let provider = provider();
@@ -412,7 +411,7 @@ async fn extras_x4_network_family_inet_cidr_macaddr_via_text() {
 // usato in interop con sistemi legacy. Cast a text per lettura, e verifica
 // il matching tsvector @@ tsquery lato server.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn extras_x5_fulltext_family_tsvector_tsquery_xml_via_text() {
     let provider = provider();
@@ -472,7 +471,7 @@ async fn extras_x5_fulltext_family_tsvector_tsquery_xml_via_text() {
 // Il tipo `money` dipende da lc_monetary (config sessione). Consigliato
 // castarlo a numeric per calcoli e a text per display.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn extras_x6_money_via_numeric_and_text_cast() {
     let provider = provider();
@@ -532,7 +531,7 @@ async fn extras_x6_money_via_numeric_and_text_cast() {
 // workaround "cast dell'intero ROW a text" funzioni, e che il campo estratto
 // via `(comp).field` sia consumabile con i decoder base.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn extras_x7_composite_type_via_row_text_and_field_extract() {
     let provider = provider();

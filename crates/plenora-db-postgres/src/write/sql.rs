@@ -238,43 +238,9 @@ pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
 }
 
 fn pg_type_unqualified(contract: &FieldContract<'_>) -> Result<String> {
+    crate::geometry_properties::validate_dimensions(contract)?;
     if contract.is_geometry() || contract.is_geography() {
-        let base = if contract.is_geography() {
-            "geography"
-        } else {
-            "geometry"
-        };
-        // Piu tipi dichiarati (ARROW-VOCABULARY §3) chiedono una colonna
-        // generica: il controllo per valore sta in
-        // `plenora_database_core::geometry_value`.
-        let geometry_type = contract
-            .geometry_type
-            .filter(|types| !types.contains(','))
-            .unwrap_or("Geometry");
-        if !geometry_type
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-        {
-            return Err(DatabaseError::invalid_plan("geometry type non valido"));
-        }
-        // Dimensioni non note in lettura (colonna senza typmod): la colonna
-        // si ricrea generica, perche un typmod imporrebbe XY.
-        if contract.dimensions == Some("unknown") {
-            return Ok(base.to_owned());
-        }
-        let dimensions = match contract.dimensions {
-            None | Some("xy") => "",
-            Some("xyz") => "Z",
-            Some("xym") => "M",
-            Some("xyzm") => "ZM",
-            Some(_) => {
-                return Err(DatabaseError::invalid_plan(
-                    "dimensioni geometry non valide o ambigue",
-                ));
-            }
-        };
-        let srid = contract.target_srid.unwrap_or(0);
-        return Ok(format!("{base}({geometry_type}{dimensions},{srid})"));
+        return crate::geometry_properties::PhysicalGeometry::declaration(contract.field);
     }
     Ok(match contract.field.data_type() {
         DataType::Boolean => "boolean".to_owned(),

@@ -30,6 +30,8 @@ mod session;
 mod session_context_py;
 mod session_family;
 mod session_tx;
+mod stream_reader;
+mod stream_state;
 mod transaction;
 mod write;
 

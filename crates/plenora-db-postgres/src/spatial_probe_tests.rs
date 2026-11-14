@@ -263,6 +263,7 @@ fn a_read_filter_probe_is_compared_with_the_column_typmod() {
         collation: None,
         source: None,
         registered_field_id: None,
+        arrow_metadata: None,
         kind: crate::types::ColumnKind::Geometry,
     }];
     let accepted = verify_read_filter(

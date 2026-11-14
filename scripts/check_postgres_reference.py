@@ -116,6 +116,7 @@ def cargo(
         "-v", f"{ROOT.parent / 'plenora-cargo-cache'}:/usr/local/cargo/registry",
         "-v", "plenora-conformance-current-target:/workspace/target",
         "-w", "/workspace",
+        "-e", "CARGO_BUILD_JOBS=2",
     ]
     if insecure_local:
         command += ["-e", "PLENORA_TLS_INSECURE_LOCAL=1"]

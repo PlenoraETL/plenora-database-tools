@@ -119,6 +119,7 @@ async fn dry_run_reuses_writer_classification_for_every_policy_path_and_consent(
                     });
                     if policy != MappingPolicy::Strict {
                         state.loss_instances = vec![RuleInstance {
+                            subject: None,
                             field_id: 0,
                             rule_id: RuleId::PgPadText,
                             parameters: RuleParameters::default(),
@@ -220,6 +221,7 @@ async fn r5_leaf_refusals_keep_execution_risk_without_effects() {
                         key: false,
                     });
                     state.loss_instances = vec![RuleInstance {
+                        subject: None,
                         field_id: 0,
                         rule_id,
                         parameters: RuleParameters::default(),
@@ -291,4 +293,104 @@ async fn r5_leaf_refusals_keep_execution_risk_without_effects() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn unknown_dimensions_validate_the_last_batch_before_delivery_and_obey_budget() {
+    use plenora_database_core::protocol as p;
+    let field = Field::new("geom", DataType::Binary, true).with_metadata(
+        std::collections::HashMap::from([
+            (p::FIELD_ID.to_owned(), "42".to_owned()),
+            (p::GEOMETRY_ENCODING.to_owned(), "ewkb".to_owned()),
+            (p::GEOMETRY_DIMENSIONS.to_owned(), "unknown".to_owned()),
+            (p::GEOMETRY_TYPES_DECLARATION.to_owned(), "exact".to_owned()),
+            (p::GEOMETRY_TYPES.to_owned(), "point".to_owned()),
+            (
+                p::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
+                "geometry".to_owned(),
+            ),
+            (p::GEOMETRY_PRECISION.to_owned(), "float64".to_owned()),
+            (p::GEOMETRY_CRS_RESOLUTION.to_owned(), "missing".to_owned()),
+        ]),
+    );
+    let plan = super::super::plan::WriteColumnPlan::compile(&field).unwrap();
+    let schema = p::contract_schema(vec![field]).unwrap();
+    let mut point = vec![1, 1, 0, 0, 0];
+    point.extend([0; 16]);
+    let bad = plenora_database_core::ewkb::with_root_srid(&point, 4326, 32).unwrap();
+    let batch = |bytes: &[u8]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::BinaryArray::from(vec![Some(bytes)]))],
+        )
+        .unwrap()
+    };
+    let make_input = |last: &[u8]| {
+        Box::new(Input {
+            schema: schema.clone(),
+            batches: VecDeque::from([batch(&point), batch(last)]),
+            declared: Some(2),
+        }) as Box<dyn BatchStream>
+    };
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let error = super::super::prevalidate::input(
+        make_input(&bad),
+        std::slice::from_ref(&plan),
+        &budget,
+        &cancel,
+        u64::MAX,
+        u64::MAX,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(
+        (
+            error.category,
+            error.phase,
+            error.remote_effect,
+            error.retry
+        ),
+        (
+            plenora_database_core::ErrorCategory::Crs,
+            ErrorPhase::Validate,
+            plenora_database_core::RemoteEffect::None,
+            plenora_database_core::RetryDisposition::Never
+        )
+    );
+    let mut buffered = super::super::prevalidate::input(
+        make_input(&point),
+        std::slice::from_ref(&plan),
+        &budget,
+        &cancel,
+        u64::MAX,
+        u64::MAX,
+    )
+    .await
+    .unwrap();
+    assert_eq!(buffered.declared_input_rows(), Some(2));
+    assert!(buffered.next_batch(&cancel).await.unwrap().is_some());
+    assert!(buffered.next_batch(&cancel).await.unwrap().is_some());
+    assert!(buffered.next_batch(&cancel).await.unwrap().is_none());
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: 1,
+        ..ResourceLimits::default()
+    })
+    .unwrap();
+    let error = super::super::prevalidate::input(
+        make_input(&point),
+        &[plan],
+        &budget,
+        &cancel,
+        u64::MAX,
+        u64::MAX,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
 }

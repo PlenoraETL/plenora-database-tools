@@ -88,7 +88,7 @@ impl DefinitionText {
 ///
 /// E anche il `\s` delle sue espressioni regolari su `str` (la grammatica di
 /// `crs_id`, lo spoglio del WKT): il `White_Space` di Unicode piu i quattro
-/// separatori U+001C..U+001F. Elenco chiuso, quello di Python 3.11
+/// separatori U+001C..U+001F. Elenco chiuso, quello di str.isspace di Python
 /// (Unicode 14).
 #[must_use]
 pub const fn python_space(c: char) -> bool {

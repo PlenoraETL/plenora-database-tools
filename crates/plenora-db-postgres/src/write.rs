@@ -48,10 +48,11 @@ pub mod binary_codec;
 mod canonical;
 pub use canonical::{reduced_temporal, LeafLoss};
 mod dry_run;
-mod effective;
+pub mod effective;
 mod intermediate;
 mod plan;
 mod prepared_codec;
+mod prevalidate;
 mod recovery;
 mod resources;
 mod row_diagnostics;
@@ -114,17 +115,24 @@ pub struct PreparedPostgresWrite {
     pub(crate) loss_instances: Vec<plenora_database_core::loss_registry::RuleInstance>,
     pub(crate) snapshot: Option<crate::catalog::CatalogSchemaToken>,
     column_plans: Vec<WriteColumnPlan>,
+    pub(crate) metadata_plan: crate::geometry_properties::SchemaPlan,
 }
 
 pub fn prepare_state(
     schema: &SchemaRef,
     operation: &WriteOperation,
 ) -> Result<PreparedPostgresWrite> {
+    let metadata_plan = crate::geometry_properties::SchemaPlan::compile(schema)?;
+    let mut loss_instances = crate::geometry_properties::representation_rules(schema)?;
+    if operation.mode != WriteMode::DeleteByKeys {
+        loss_instances.extend(metadata_plan.rules()?);
+    }
     Ok(PreparedPostgresWrite {
         operation: operation.clone(),
         input_schema: schema.clone(),
         covered: false,
-        loss_instances: Vec::new(),
+        loss_instances,
+        metadata_plan,
         snapshot: None,
         column_plans: compile_schema_plan(schema, operation)?,
     })
@@ -152,6 +160,7 @@ fn compile_schema_plan(
         ));
     }
     validate_schema_contract(schema)?;
+
     plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     for field in schema.fields() {
         Identifier::new(field.name().clone())?;
@@ -205,6 +214,7 @@ pub async fn execute(
     )
     .await;
     let mut result = result;
+    let mut evaluation = evaluation.into_context();
     let report = evaluation
         .ledger
         .finalize(&result, evaluation.confirmed)?
@@ -265,7 +275,18 @@ async fn execute_inner(
             "schema stream diverso dallo schema preparato",
         ));
     }
+    evaluation.metadata(&prepared_state.metadata_plan, &schema, &prepared.operation)?;
+    let metadata_plan = prepared_state.metadata_plan;
     let mut column_plans = prepared_state.column_plans;
+    input = prevalidate::input(
+        input,
+        &column_plans,
+        budget,
+        cancellation,
+        runtime.max_batch_bytes,
+        runtime.max_wkb_cell_bytes,
+    )
+    .await?;
     // Row-scoped diagnostics è supportata solo per Append + SingleTransaction
     // (l'unico scenario dove ha senso quarantinare righe: il target esiste
     // già e si stanno aggiungendo N righe di cui alcune possono fallire).
@@ -419,6 +440,16 @@ async fn execute_inner(
             None => return Err(recovery.rollback_cancellation(transaction).await),
         }
     }
+    let registrations = match select_with_cancellation(
+        crate::field_identity::prepare(&transaction, operation, &schema, &metadata_plan),
+        cancellation,
+    )
+    .await
+    {
+        Some(Ok(registrations)) => registrations,
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
+    };
     if let Some(diagnostic_input) = diagnostic_input {
         // La regola V sulle colonne del target, prima di ogni valore.
         match select_with_cancellation(
@@ -445,7 +476,7 @@ async fn execute_inner(
             None => return Err(recovery.rollback_cancellation(transaction).await),
         }
         match select_with_cancellation(
-            crate::field_identity::register(&transaction, operation, &schema),
+            crate::field_identity::register(&transaction, operation, &registrations, evaluation),
             cancellation,
         )
         .await
@@ -518,7 +549,8 @@ async fn execute_inner(
                 &paths,
             )
             .await?;
-            crate::field_identity::register(&transaction, operation, &schema).await
+            crate::field_identity::register(&transaction, operation, &registrations, evaluation)
+                .await
         },
         cancellation,
     )
@@ -856,6 +888,7 @@ pub async fn assign_dry_run_session_rules(
                 state
                     .loss_instances
                     .push(plenora_database_core::loss_registry::RuleInstance {
+                        subject: None,
                         field_id: u32::try_from(index)
                             .map_err(|_| DatabaseError::resource_limit("troppi campi nel piano"))?,
                         rule_id,
@@ -1154,6 +1187,15 @@ fn enforce_input_limits(
                         return Err(DatabaseError::resource_limit(
                             "budget componenti geometriche esaurito",
                         ));
+                    }
+                    if plan.needs_complete_prevalidation() && root_srid_flag(value) {
+                        plenora_database_core::ewkb::inspect_ewkb_detailed(
+                            value,
+                            remaining,
+                            max_geometry_depth,
+                        )?;
+                        return Err(public_error(ErrorCategory::Crs, ErrorPhase::Validate, false,
+                            "dimensioni geometriche unknown con SRID incorporato non rappresentabili in PostgreSQL"));
                     }
                     let inspection = verify_value(
                         plan.value_contract(),
@@ -1693,7 +1735,7 @@ fn stamp_declared_srid(
     plans: &[WriteColumnPlan],
     max_depth: u64,
 ) -> Result<RecordBatch> {
-    if !plans.iter().any(WriteColumnPlan::needs_srid_stamp) {
+    if !plans.iter().any(|plan| plan.needs_srid_stamp()) {
         return Ok(batch.clone());
     }
     let mut columns = Vec::with_capacity(batch.num_columns());

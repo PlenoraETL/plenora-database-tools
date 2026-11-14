@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from typing_extensions import assert_type
+from typing import assert_type
 
 import plenora_database as p
 from plenora_database._session import Session

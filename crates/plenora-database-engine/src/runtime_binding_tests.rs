@@ -186,6 +186,7 @@ fn bytes_on_the_sink_make_a_later_error_partial() {
 #[test]
 fn host_errors_keep_their_axes_and_lose_their_text() {
     let host = DatabaseError {
+        read_loss: None,
         category: ErrorCategory::NotFound,
         phase: ErrorPhase::Prepare,
         remote_effect: RemoteEffect::None,

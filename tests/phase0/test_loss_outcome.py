@@ -7,6 +7,25 @@ from scripts.execution_loss_semantics import validate_outcome
 
 
 class LossOutcomeContractTests(unittest.TestCase):
+    def test_mysql_surface_vectors_and_plan_only_result(self):
+        schemas = gate.discover_schemas(gate.REPO_ROOT / "contracts")
+        registry = gate.build_registry(schemas.values())
+        schema = schemas[(gate.ACTIVE_CONTRACT_ROOT / "write-outcome-v3.schema.json").resolve()]
+        validator = gate.Draft202012Validator(schema, registry=registry)
+        vectors = gate.load_json(gate.REPO_ROOT / "tests/fixtures/mysql_permissive/surfaces.json")
+        self.assertEqual(set(vectors["majors"]), {"8.0", "8.4", "9.7"})
+        for case in vectors["cases"]:
+            validator.validate(case["outcome"])
+            validate_outcome(case["outcome"])
+        public = schemas[(gate.ACTIVE_CONTRACT_ROOT / "public-operation-contracts.schema.json").resolve()]
+        validator = gate.Draft202012Validator(public["$defs"]["writeResult"], registry=registry)
+        planned = next(case for case in vectors["cases"] if case["name"] == "planned")
+        document = {"status": "dry_run", "remote_effect": "none", "evaluation": "not_performed",
+                    "loss_report": planned["outcome"]["loss_report"]}
+        validator.validate(document)
+        document["remote_effect"] = "committed"
+        self.assertFalse(validator.is_valid(document))
+
     def test_v3_requires_valid_report_and_rejects_unknown_members(self):
         schemas = gate.discover_schemas(gate.REPO_ROOT / "contracts")
         registry = gate.build_registry(schemas.values())

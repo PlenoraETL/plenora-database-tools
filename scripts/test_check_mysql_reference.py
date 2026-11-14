@@ -320,7 +320,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool;
         # Operandi geometrici e semantica delle scritture conservano tutte le prove.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 78)
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 94)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
@@ -891,9 +891,11 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             self.assertEqual(gate.run_static_checks(), 0)
 
         executed = [command[-1] for command in calls]
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
         self.assertTrue(executed[0].endswith("test_check_mysql_reference.py"))
-        self.assertEqual(executed[1], "tests.test_mysql_matrix")
+        self.assertTrue(executed[1].endswith("mysql_permissive_inventory.py"))
+        self.assertEqual(executed[2], "tests.test_mysql_permissive_inventory")
+        self.assertEqual(executed[3], "tests.test_mysql_matrix")
 
     def test_an_unknown_flag_never_degrades_into_another_entry_point(self) -> None:
         self.assertIs(gate.selected_entry_point([]), gate.main)
@@ -1448,7 +1450,7 @@ def compose_declarations(pattern: str) -> list[str]:
 SDK_VERSION = sdk.toml_version(
     sdk.PYPROJECT.read_text(encoding="utf-8"), "project"
 )
-SDK_WHEEL_NAME = f"plenora_database-{SDK_VERSION}-cp310-abi3-linux_x86_64.whl"
+SDK_WHEEL_NAME = f"plenora_database-{SDK_VERSION}-cp314-abi3-linux_x86_64.whl"
 SDK_ARTIFACT = {
     "wheel": SDK_WHEEL_NAME,
     "wheel_sha256": "a" * 64,
@@ -1462,9 +1464,9 @@ SDK_ARTIFACT = {
             "--no-default-features --features postgres"
         ),
     },
-    "package_path": "/usr/local/lib/python3.13/site-packages/plenora_database",
+    "package_path": "/usr/local/lib/python3.14/site-packages/plenora_database",
     "native_path": (
-        "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
+        "/usr/local/lib/python3.14/site-packages/plenora_database/_native.abi3.so"
     ),
     "maturin": "1.16.0",
     "rustc": "1.98.1",
@@ -1474,7 +1476,7 @@ SDK_VERSIONS = {
     "pyarrow": "25.0.1",
     "pytest": "9.1.1",
     "pytest-asyncio": "1.4.0",
-    "python": "3.13.9",
+    "python": "3.14.6",
 }
 SDK_COUNTS = {"passed": 231, "skipped": 4, "deselected": 0}
 SDK_IMAGES = {
@@ -1649,7 +1651,11 @@ class PythonSdkRunnerTests(unittest.TestCase):
             command = sdk_pytest_command("offline")
 
         self.assertNotIn("--network", command)
-        self.assertNotIn("-e", command)
+        # Only paths to this build's artifacts/fixtures; no endpoint or credential.
+        self.assertEqual(
+            [command[i + 1].split("=", 1)[0] for i, arg in enumerate(command) if arg == "-e"],
+            ["PLENORA_CLI_BIN", "PLENORA_PG_SURFACE_BIN", "PLENORA_PG_GEOMETRY_FIXTURES"],
+        )
 
     def test_the_build_is_locked_and_pins_a_maturin_the_package_declares(
         self,
@@ -1942,7 +1948,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         controllo sul comando poteva solo escludere le strade note.
         """
 
-        site = Path("/usr/local/lib/python3.13/site-packages")
+        site = Path("/usr/local/lib/python3.14/site-packages")
         probe.assert_installed(
             "plenora_database", site / "plenora_database" / "__init__.py", [site]
         )
@@ -1980,8 +1986,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
         """
 
         installed = (
-            "/usr/local/lib/python3.13/site-packages/plenora_database "
-            "/usr/local/lib/python3.13/site-packages/plenora_database/"
+            "/usr/local/lib/python3.14/site-packages/plenora_database "
+            "/usr/local/lib/python3.14/site-packages/plenora_database/"
             "_native.abi3.so "
             f"{'b' * 64}"
         )
@@ -2017,7 +2023,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             (ROOT / "requirements-sdk-tests.txt").read_text(encoding="utf-8")
         )
         declared = " ".join(f"{name}=={version}" for name, version in pins.items())
-        python = f"{sdk.PYTHON_MARKER}3.13.9"
+        python = f"{sdk.PYTHON_MARKER}3.14.6"
 
         for artifact in (
             f"plenora-database=={SDK_VERSION}",
@@ -2027,7 +2033,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             output = f"{sdk.PACKAGES_MARKER}{declared} {artifact}\n{python}\n"
             versions = sdk.installed_versions(output)
             self.assertEqual(versions["pyarrow"], pins["pyarrow"])
-            self.assertEqual(versions["python"], "3.13.9")
+            self.assertEqual(versions["python"], "3.14.6")
             self.assertNotIn("plenora-database", versions)
 
         without = f"{sdk.PACKAGES_MARKER}{declared}\n{python}\n"
@@ -2160,7 +2166,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertEqual(
             sdk.CLI_BUILD_COMMAND,
             "cargo build --release --locked -p plenora-database-cli "
-            "--no-default-features --features postgres,mysql,sqlserver",
+            "--no-default-features --features postgres,mysql,sqlserver --bins --example postgres-surfaces",
         )
 
         source = SDK_RUNNER.read_text(encoding="utf-8")
@@ -2306,16 +2312,20 @@ class PythonSdkRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             set(sdk.SCOPE_CONTRACTS),
-            {"live", "offline", "stabilization", "benchmark"},
+            {"live", "offline", "stabilization", "benchmark", "mysql-surfaces"},
         )
         live = sdk.SCOPE_CONTRACTS["live"]
         offline = sdk.SCOPE_CONTRACTS["offline"]
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (1009, 27, 0))
+        from scripts.python_test_inventory import sdk_counts, count
+        cases = sdk_counts()
+        total = sum(cases.values())
+        live_skipped = cases["db2"] + cases["oracle"]
+        self.assertEqual((live.passed, live.skipped, live.deselected), (total - live_skipped, live_skipped, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (706, 330, 0)
+            (offline.passed, offline.skipped, offline.deselected), (cases["offline"], total - cases["offline"], 0)
         )
         self.assertEqual(
             (
@@ -2323,11 +2333,11 @@ class PythonSdkRunnerTests(unittest.TestCase):
                 stabilization.skipped,
                 stabilization.deselected,
             ),
-            (30, 0, 0),
+            (count(["test_stabilization.py"]), 0, 0),
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 1034),
+            (cases["bench"], 0, total - cases["bench"]),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 e Oracle anche live, e nessuno

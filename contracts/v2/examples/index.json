@@ -64,6 +64,14 @@
     {
       "file": "outcome-v3-rolled-back.json",
       "schema": "../write-outcome-v3.schema.json"
+    },
+    {
+      "file": "execution-loss-v4-metadata.json",
+      "schema": "../execution-loss-report-v4.schema.json"
+    },
+    {
+      "file": "read-loss-v2-metadata.json",
+      "schema": "../read-loss-v2.schema.json"
     }
   ],
   "rejected": [

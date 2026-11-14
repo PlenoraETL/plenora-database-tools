@@ -1,5 +1,6 @@
 use crate::error::{classify_error, public_error};
-use crate::pool::PooledClient;
+#[cfg(test)]
+use crate::geometry_properties::crs_changes;
 use crate::write::LeafLoss;
 use crate::{PostgresProvider, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
@@ -7,7 +8,7 @@ use plenora_database_core::loss::{LossReport, MappingPolicy};
 use plenora_database_core::loss_registry::{RuleId, RuleInstance, RuleParameters};
 use plenora_database_core::plan::{ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::primary_key::validate_create_primary_key;
-use plenora_database_core::protocol;
+
 use plenora_database_core::provider::SecretString;
 use plenora_database_core::store_rewrite::ColumnRewrites;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -18,6 +19,7 @@ pub async fn write(
     secret: &SecretString,
     operation: &WriteOperation,
     input_schema: &SchemaRef,
+    metadata_plan: &crate::geometry_properties::SchemaPlan,
 ) -> Result<(
     LossReport,
     Vec<ColumnRewrites>,
@@ -25,7 +27,8 @@ pub async fn write(
     Option<crate::catalog::CatalogSchemaToken>,
 )> {
     let client = provider.connect_session(secret).await?;
-    validate_resolved_crs_against_postgis(&client, input_schema).await?;
+    crate::geometry_properties::validate_resolved_crs_against_postgis(&client, input_schema)
+        .await?;
     let schema_name = crate::target_schema::schema_of(&operation.target)?;
     let exists: bool = client
         .client()?
@@ -137,7 +140,10 @@ pub async fn write(
     // In una chiave un valore riscritto si rifiuta con ogni politica (regola
     // S): non e una perdita da dichiarare.
     let is_key = |name: &str| operation.keys.iter().any(|key| key == name);
-    let mut losses = Vec::new();
+    let mut losses = crate::geometry_properties::representation_rules(input_schema)?;
+    if operation.mode != WriteMode::DeleteByKeys {
+        losses.extend(metadata_plan.rules()?);
+    }
     if exists && operation.mode != WriteMode::Create {
         let (target_columns, _schema_token) =
             provider.cached_columns(&client, &operation.target).await?;
@@ -299,45 +305,12 @@ pub async fn write(
             if source.is_nullable() && !target.nullable {
                 losses.push(nullability_loss(field_id, operation.mapping_policy)?);
             }
-            // Lo SRID che la colonna riceverebbe, dichiarato o derivato da
-            // `EPSG:<n>` (GEO-008): un campo senza `srid` ma con `EPSG:4326`
-            // verso una colonna 4326 non perde niente.
-            let derived_srid = plenora_database_core::field_contract::FieldContract::parse(source)?
-                .target_srid()?
-                .map(|srid| srid.to_string());
-            let source_srid = source
-                .metadata()
-                .get(protocol::GEOMETRY_SRID)
-                .or_else(|| source.metadata().get("plenora.srid"))
-                .or(derived_srid.as_ref());
-            let target_srid = target_field
-                .metadata()
-                .get(protocol::GEOMETRY_SRID)
-                .or_else(|| target_field.metadata().get("plenora.srid"));
-            if source_srid != target_srid && (source_srid.is_some() || target_srid.is_some()) {
-                losses.push(mapping_loss(
-                    field_id,
-                    RuleId::PgSrid,
-                    source_srid.cloned(),
-                    target_srid.cloned(),
-                )?);
-            }
-            let source_crs = source.metadata().get(protocol::GEOMETRY_CRS_ID);
-            let target_crs = target_field.metadata().get(protocol::GEOMETRY_CRS_ID);
-            if crs_changes(
+            losses.extend(crate::geometry_properties::target_rules(
+                source,
+                &target_field,
+                field_number(field_id)?,
                 operation.mapping_policy,
-                source_crs,
-                target_crs,
-                source_srid,
-                target_srid,
-            ) {
-                losses.push(mapping_loss(
-                    field_id,
-                    RuleId::PgCrs,
-                    source_crs.cloned(),
-                    target_crs.cloned(),
-                )?);
-            }
+            )?);
         }
         for key in &operation.keys {
             if !target_columns.iter().any(|column| &column.name == key) {
@@ -414,6 +387,11 @@ pub async fn write(
         losses: execution
             .risk
             .iter()
+            .filter(|risk| risk.subject.is_none())
+            .filter(|risk| {
+                operation.mapping_policy != MappingPolicy::Strict
+                    || risk.rule_id != RuleId::PgGeometryRepresentation
+            })
             .map(|risk| {
                 let mut loss = risk.rule_id.legacy(
                     risk.field_id,
@@ -452,124 +430,6 @@ pub async fn write(
 // Un authority ID letto dal catalogo arricchisce uno SRID gia dichiarato:
 // non cambia le coordinate o il riferimento della geometria. Due identita
 // esplicite discordanti restano invece un rischio, anche con SRID uguale.
-fn crs_changes(
-    policy: MappingPolicy,
-    source: Option<&String>,
-    target: Option<&String>,
-    source_srid: Option<&String>,
-    target_srid: Option<&String>,
-) -> bool {
-    let same_srid = source_srid.is_some_and(|srid| Some(srid) == target_srid);
-    source != target && (policy == MappingPolicy::Strict || !(source.is_none() && same_srid))
-}
-
-// Deviazione dichiarata (REJ-003, contracts/adoption-source.json): i rifiuti decisi
-// leggendo il bersaglio escono con fase `prepare`, non `probe`.
-/// Il CRS di ogni campo geometrico contro `spatial_ref_sys` del bersaglio,
-/// prima di ogni effetto.
-///
-/// - uno SRID **derivato** da `crs_id` `EPSG:<n>` (GEO-008) deve essere
-///   registrato come `EPSG:<n>`, qualunque sia lo stato di risoluzione: lo
-///   stesso numero puo nominare un altro CRS (`54009` e `ESRI:54009` in
-///   `PostGIS`) o nessuno;
-/// - un CRS `resolved` con `crs_id` deve coincidere con l'autorita
-///   registrata per il suo SRID;
-/// - una colonna `geography` vuole uno SRID geografico: uno proiettato e un
-///   limite del bersaglio (`unsupported`), uno sconosciuto un CRS che il
-///   bersaglio non conosce (`crs`). Senza questa lettura il rifiuto arrivava
-///   dalla DDL come `protocol`.
-async fn validate_resolved_crs_against_postgis(
-    client: &PooledClient,
-    input_schema: &SchemaRef,
-) -> Result<()> {
-    let crs_error =
-        |message: &str| public_error(ErrorCategory::Crs, ErrorPhase::Prepare, false, message);
-    // `spatial_ref_sys` dello schema di PostGIS (regola Q), letto una volta.
-    let mut postgis: Option<String> = None;
-    for field in input_schema.fields() {
-        let contract = plenora_database_core::field_contract::FieldContract::parse(field)?;
-        if !contract.spatial {
-            continue;
-        }
-        let resolved = contract.crs_resolution == Some("resolved") && contract.crs_id.is_some();
-        let geography = contract.is_geography();
-        // Lo SRID della colonna, dichiarato o derivato (GEO-008); lo schema e
-        // gia stato verificato da `write::prepare_state`.
-        let Some(target) = contract.target_srid_source()? else {
-            continue;
-        };
-        let Ok(srid) = i32::try_from(target.srid) else {
-            continue;
-        };
-        if srid == 0 || !(target.derived || resolved || geography) {
-            continue;
-        }
-        let qualifier = if let Some(qualifier) = &postgis {
-            qualifier.clone()
-        } else {
-            let qualifier =
-                crate::postgis_schema::qualifier(client.client()?, ErrorPhase::Prepare).await?;
-            postgis = Some(qualifier.clone());
-            qualifier
-        };
-        let row = client
-            .client()?
-            .query_opt(
-                &crate::postgis_schema::qualify(
-                    "SELECT auth_name, auth_srid, \
-                        (srtext::pg_catalog.text LIKE 'GEOGCS%' \
-                         OR srtext::pg_catalog.text LIKE 'GEOGCRS%' \
-                         OR proj4text::pg_catalog.text LIKE '%+proj=longlat%' \
-                         OR proj4text::pg_catalog.text LIKE '%+proj=latlong%') \
-                     FROM spatial_ref_sys WHERE srid = $1",
-                    &qualifier,
-                ),
-                &[&srid],
-            )
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?
-            .ok_or_else(|| crs_error("SRID del campo assente da spatial_ref_sys"))?;
-        let authority: Option<String> = row.get(0);
-        let authority_code: Option<i32> = row.get(1);
-        let geographic: Option<bool> = row.get(2);
-        if target.derived
-            && !(authority
-                .as_deref()
-                .is_some_and(|name| name.eq_ignore_ascii_case("EPSG"))
-                && authority_code == Some(srid))
-        {
-            return Err(crs_error(
-                "SRID derivato da crs_id EPSG registrato in spatial_ref_sys con un'altra identita",
-            ));
-        }
-        // Una definizione senza identificatore non si confronta con il
-        // catalogo: il campo registra lo SRID che dichiara (GEO-004), e
-        // `resolved` qui vuol dire `resolved` con `crs_id`.
-        if let (true, Some(declared_id)) = (resolved, contract.crs_id) {
-            let observed_id = authority
-                .as_deref()
-                .filter(|value| !value.is_empty())
-                .zip(authority_code)
-                .map(|(name, code)| format!("{name}:{code}"))
-                .ok_or_else(|| crs_error("spatial_ref_sys non risolve un authority ID"))?;
-            if !declared_id.eq_ignore_ascii_case(&observed_id) {
-                return Err(crs_error(
-                    "identificatore CRS non coerente con spatial_ref_sys",
-                ));
-            }
-        }
-        if geography && geographic != Some(true) {
-            return Err(public_error(
-                ErrorCategory::Unsupported,
-                ErrorPhase::Prepare,
-                false,
-                "geography PostgreSQL richiede uno SRID geografico in spatial_ref_sys",
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn field_number(field_id: usize) -> Result<u32> {
     u32::try_from(field_id)
         .map_err(|_| DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport"))
@@ -632,6 +492,7 @@ fn instance(
     target_type: Option<String>,
 ) -> RuleInstance {
     RuleInstance {
+        subject: None,
         rule_id,
         field_id,
         source_type,

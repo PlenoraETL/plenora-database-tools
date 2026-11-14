@@ -66,10 +66,17 @@
     },
     "rule": {
       "enum": [
+        "mysql.double_underflow",
+        "mysql.fixed_double",
+        "mysql.fixed_float",
+        "mysql.fractional_seconds",
+        "mysql.negative_zero",
         "pg.add_nullable",
         "pg.arrow_mismatch",
         "pg.crs",
+        "pg.geometry.representation",
         "pg.jsonb",
+        "pg.metadata.key_not_preserved",
         "pg.missing_column",
         "pg.nullability",
         "pg.numeric",

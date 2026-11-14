@@ -2,7 +2,6 @@ use super::usize_to_u64;
 use crate::arrow::range_fields;
 use crate::catalog::{catalog_field, catalog_json_list};
 use arrow_schema::{DataType, Field, IntervalUnit, TimeUnit};
-use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::protocol;
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
@@ -39,6 +38,8 @@ pub struct ColumnSpec {
     pub source: Option<(u32, i16)>,
     #[serde(skip)]
     pub registered_field_id: Option<String>,
+    #[serde(skip)]
+    pub arrow_metadata: Option<crate::column_metadata::ColumnMetadata>,
     #[serde(skip)]
     pub kind: ColumnKind,
 }
@@ -137,6 +138,7 @@ impl ColumnSpec {
             domain_constraints: Vec::new(),
             collation: None,
             registered_field_id: None,
+            arrow_metadata: None,
             source: column.table_oid().zip(column.column_id()),
             kind,
         })
@@ -205,7 +207,7 @@ impl ColumnSpec {
                 _ => ColumnKind::Utf8,
             }
         };
-        Ok(Self {
+        let column = Self {
             name,
             native_type,
             nullable,
@@ -227,6 +229,9 @@ impl ColumnSpec {
             domain_base_type,
             domain_constraints,
             collation,
+            arrow_metadata: crate::column_metadata::decode(
+                catalog_field::<Option<String>>(row, "column_comment")?.as_deref(),
+            )?,
             registered_field_id: crate::field_identity::registered_id(
                 catalog_field::<Option<String>>(row, "column_comment")?.as_deref(),
             )?,
@@ -236,7 +241,9 @@ impl ColumnSpec {
                 row, "source_attnum"
             )?),
             kind,
-        })
+        };
+        crate::geometry_properties::validate_catalog(&column)?;
+        Ok(column)
     }
 
     pub fn arrow_field(&self) -> Field {
@@ -253,7 +260,7 @@ impl ColumnSpec {
         Field::new(&self.name, self.arrow_data_type(), self.nullable).with_metadata(metadata)
     }
 
-    fn arrow_data_type(&self) -> DataType {
+    pub fn arrow_data_type(&self) -> DataType {
         match self.kind {
             ColumnKind::Bool => DataType::Boolean,
             ColumnKind::I32 => DataType::Int32,
@@ -309,119 +316,10 @@ impl ColumnSpec {
     }
 
     fn arrow_metadata(&self) -> HashMap<String, String> {
-        let mut metadata = HashMap::new();
-        self.insert_postgres_metadata(&mut metadata);
-        self.insert_spatial_metadata(&mut metadata);
-        metadata
-    }
-
-    fn insert_postgres_metadata(&self, metadata: &mut HashMap<String, String>) {
-        metadata.insert(
-            protocol::POSTGRES_NATIVE_TYPE.to_owned(),
-            self.native_type.clone(),
-        );
-        if let Some(declaration) = &self.native_declaration {
-            metadata.insert(
-                protocol::POSTGRES_NATIVE_DECLARATION.to_owned(),
-                declaration.clone(),
-            );
-        }
-        if let Some(type_kind) = &self.type_kind {
-            metadata.insert(protocol::POSTGRES_TYPE_KIND.to_owned(), type_kind.clone());
-        }
-        if !self.enum_labels.is_empty() {
-            if let Ok(value) = serde_json::to_string(&self.enum_labels) {
-                metadata.insert(protocol::POSTGRES_ENUM_LABELS.to_owned(), value);
-            }
-        }
-        if let Some(base_type) = &self.domain_base_type {
-            metadata.insert(
-                protocol::POSTGRES_DOMAIN_BASE_TYPE.to_owned(),
-                base_type.clone(),
-            );
-        }
-        if !self.domain_constraints.is_empty() {
-            if let Ok(value) = serde_json::to_string(&self.domain_constraints) {
-                metadata.insert(protocol::POSTGRES_DOMAIN_CONSTRAINTS.to_owned(), value);
-            }
-        }
-        if let Some(collation) = &self.collation {
-            metadata.insert(protocol::POSTGRES_COLLATION.to_owned(), collation.clone());
-        }
-    }
-
-    fn insert_spatial_metadata(&self, metadata: &mut HashMap<String, String>) {
-        if !matches!(self.kind, ColumnKind::Geometry | ColumnKind::Geography) {
-            return;
-        }
-        metadata.insert(
-            protocol::GEOARROW_EXTENSION_NAME.to_owned(),
-            GEOARROW_WKB_EXTENSION_NAME.to_owned(),
-        );
-        metadata.insert(
-            protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
-            if matches!(self.kind, ColumnKind::Geography) {
-                "geography"
-            } else {
-                "geometry"
-            }
-            .to_owned(),
-        );
-        match (&self.spatial_crs_id, self.spatial_srid) {
-            // Autorita risolta da `spatial_ref_sys`.
-            (Some(crs_id), Some(srid)) => {
-                metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
-                metadata.insert(
-                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                    "resolved".to_owned(),
-                );
-                metadata.insert(protocol::GEOMETRY_CRS_ID.to_owned(), crs_id.clone());
-                metadata.insert(
-                    protocol::GEOMETRY_AXIS_ORDER.to_owned(),
-                    "unknown".to_owned(),
-                );
-            }
-            (_, srid) => protocol::insert_declared_crs(metadata, "POSTGIS", srid),
-        }
-        // ARROW-VOCABULARY §4: dimensioni e dichiarazione dei tipi sono
-        // obbligatorie; quando il catalogo non le conosce (una colonna senza
-        // typmod, un'espressione di query) si dichiarano `unknown` e
-        // `unresolved` invece di ometterle.
-        metadata.insert(
-            protocol::GEOMETRY_DIMENSIONS.to_owned(),
-            self.spatial_dimensions
-                .as_deref()
-                .map_or_else(|| "unknown".to_owned(), str::to_ascii_lowercase),
-        );
-        // PostGIS memorizza le coordinate in doppia precisione.
-        metadata.insert(
-            protocol::GEOMETRY_PRECISION.to_owned(),
-            "float64".to_owned(),
-        );
-        if self.spatial_type.is_none() {
-            metadata.insert(
-                protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
-                "unresolved".to_owned(),
-            );
-        }
-        if let Some(spatial_type) = &self.spatial_type {
-            if spatial_type.eq_ignore_ascii_case("geometry") {
-                metadata.insert(
-                    protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
-                    "mixed".to_owned(),
-                );
-            } else {
-                metadata.insert(
-                    protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
-                    "exact".to_owned(),
-                );
-                metadata.insert(
-                    protocol::GEOMETRY_TYPES.to_owned(),
-                    spatial_type.to_ascii_lowercase(),
-                );
-            }
-        }
-        metadata.insert(protocol::GEOMETRY_ENCODING.to_owned(), "ewkb".to_owned());
+        self.arrow_metadata.as_ref().map_or_else(
+            || crate::geometry_properties::catalog_metadata(self),
+            |saved| saved.field.clone().into_iter().collect(),
+        )
     }
 
     pub fn projection_sql(&self, renderer: &Renderer) -> Result<String> {
@@ -457,9 +355,14 @@ impl ColumnSpec {
             {
                 format!("{quoted}::pg_catalog.text")
             }
-            ColumnKind::Geometry => format!("ST_AsEWKB({quoted})"),
-            ColumnKind::Geography => {
-                format!("ST_AsEWKB({quoted}::geometry)")
+            ColumnKind::Geometry | ColumnKind::Geography => {
+                let function = crate::geometry_properties::projection_function(self)?;
+                let cast = if matches!(self.kind, ColumnKind::Geography) {
+                    "::geometry"
+                } else {
+                    ""
+                };
+                format!("{function}({quoted}{cast}, 'NDR')")
             }
             _ => quoted.clone(),
         };

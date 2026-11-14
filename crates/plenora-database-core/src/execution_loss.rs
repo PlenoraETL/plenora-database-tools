@@ -18,6 +18,12 @@ pub enum Basis {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RiskEntry {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::metadata_subject::present"
+    )]
+    pub subject: Option<crate::metadata_subject::MetadataSubject>,
     pub field_id: u32,
     pub rule_id: RuleId,
     pub category: LossCategory,
@@ -47,6 +53,7 @@ impl RiskEntry {
     ) -> Self {
         let rule = rule_id.definition();
         Self {
+            subject: None,
             field_id,
             rule_id,
             category: rule.category,
@@ -74,6 +81,12 @@ impl RiskEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvaluationEntry {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::metadata_subject::present"
+    )]
+    pub subject: Option<u32>,
     pub field_id: u32,
     pub rule_id: RuleId,
     pub basis: Basis,
@@ -90,6 +103,12 @@ pub struct Evaluation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectiveEntry {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::metadata_subject::present"
+    )]
+    pub subject: Option<u32>,
     pub field_id: u32,
     pub rule_id: RuleId,
     pub category: LossCategory,
@@ -124,9 +143,13 @@ impl ExecutionLossReport {
     /// # Errors
     /// Rifiuta duplicati e limiti prima dell'ingresso.
     pub fn planned(policy: MappingPolicy, mut risk: Vec<RiskEntry>) -> Result<Self> {
-        risk.sort_by_key(|r| (r.field_id, r.rule_id));
+        risk.sort_by_key(|r| (r.field_id, r.rule_id, r.subject.as_ref().map(|s| s.index)));
         let report = Self {
-            schema_version: 3,
+            schema_version: if risk.iter().any(|r| r.subject.is_some()) {
+                4
+            } else {
+                3
+            },
             policy,
             risk,
             evaluation: Evaluation::default(),
@@ -139,7 +162,13 @@ impl ExecutionLossReport {
     /// # Errors
     /// Rifiuta campi fuori contratto e conteggi non sostenuti dalla valutazione.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != 3 {
+        if self.schema_version
+            != if self.risk.iter().any(|r| r.subject.is_some()) {
+                4
+            } else {
+                3
+            }
+        {
             return Err(invalid());
         }
         if self.risk.len() > MAX_LOSSES
@@ -149,8 +178,23 @@ impl ExecutionLossReport {
             return Err(limit());
         }
         let mut risks = BTreeMap::new();
+        let mut metadata_keys = std::collections::BTreeSet::new();
         let mut potential = 0_usize;
         for risk in &self.risk {
+            if (risk.rule_id == RuleId::PgMetadataKeyNotPreserved) != risk.subject.is_some() {
+                return Err(invalid());
+            }
+            if let Some(subject) = &risk.subject {
+                subject.validate()?;
+                let field = (subject.scope == crate::metadata_subject::MetadataScope::Field)
+                    .then_some(risk.field_id);
+                if !metadata_keys.insert((field, &subject.key_sha256)) {
+                    return Err(invalid());
+                }
+                if risk.rule_id != RuleId::PgMetadataKeyNotPreserved {
+                    return Err(invalid());
+                }
+            }
             if risk.reason.is_empty()
                 || risk.reason.chars().count() > MAX_REASON_CHARS
                 || [&risk.source_type, &risk.target_type]
@@ -161,7 +205,16 @@ impl ExecutionLossReport {
                 return Err(limit());
             }
             if risk.category != risk.rule_id.definition().category
-                || risks.insert((risk.field_id, risk.rule_id), risk).is_some()
+                || risks
+                    .insert(
+                        (
+                            risk.field_id,
+                            risk.rule_id,
+                            risk.subject.as_ref().map(|s| s.index),
+                        ),
+                        risk,
+                    )
+                    .is_some()
             {
                 return Err(invalid());
             }
@@ -174,11 +227,15 @@ impl ExecutionLossReport {
         }
         let mut evaluations = BTreeMap::new();
         for entry in &self.evaluation.entries {
-            if !risks.contains_key(&(entry.field_id, entry.rule_id))
+            if !risks.contains_key(&(entry.field_id, entry.rule_id, entry.subject))
                 || entry.would_change > entry.checked
+                || (entry.subject.is_some() && entry.checked > 1)
                 || !entry.rule_id.bases().contains(&entry.basis)
                 || evaluations
-                    .insert((entry.field_id, entry.rule_id, entry.basis), entry)
+                    .insert(
+                        (entry.field_id, entry.rule_id, entry.basis, entry.subject),
+                        entry,
+                    )
                     .is_some()
             {
                 return Err(invalid());
@@ -186,7 +243,7 @@ impl ExecutionLossReport {
         }
         let mut effective = BTreeMap::new();
         for entry in &self.effective {
-            let key = (entry.field_id, entry.rule_id, entry.basis);
+            let key = (entry.field_id, entry.rule_id, entry.basis, entry.subject);
             let evaluated = evaluations.get(&key).ok_or_else(invalid)?;
             let total = entry
                 .committed
@@ -221,10 +278,10 @@ impl ExecutionLossReport {
                 return Err(invalid());
             }
             let count = committed
-                .entry((entry.field_id, entry.rule_id))
+                .entry((entry.field_id, entry.rule_id, entry.subject))
                 .or_insert(0_u64);
             *count = count.checked_add(entry.committed).ok_or_else(invalid)?;
-            if *count > confirmed {
+            if entry.subject.map_or(*count > confirmed, |_| *count > 1) {
                 return Err(invalid());
             }
         }
@@ -243,6 +300,7 @@ impl ExecutionLossReport {
         for risk in &self.risk {
             for &basis in risk.rule_id.bases() {
                 worst.evaluation.entries.push(EvaluationEntry {
+                    subject: risk.subject.as_ref().map(|s| s.index),
                     field_id: risk.field_id,
                     rule_id: risk.rule_id,
                     basis,
@@ -250,6 +308,7 @@ impl ExecutionLossReport {
                     would_change: u64::MAX,
                 });
                 worst.effective.push(EffectiveEntry {
+                    subject: risk.subject.as_ref().map(|s| s.index),
                     field_id: risk.field_id,
                     rule_id: risk.rule_id,
                     category: risk.category,
@@ -267,12 +326,13 @@ impl ExecutionLossReport {
     }
 
     pub fn sort(&mut self) {
-        self.risk.sort_by_key(|r| (r.field_id, r.rule_id));
+        self.risk
+            .sort_by_key(|r| (r.field_id, r.rule_id, r.subject.as_ref().map(|s| s.index)));
         self.evaluation
             .entries
-            .sort_by_key(|r| (r.field_id, r.rule_id, r.basis));
+            .sort_by_key(|r| (r.field_id, r.rule_id, r.basis, r.subject));
         self.effective
-            .sort_by_key(|r| (r.field_id, r.rule_id, r.basis));
+            .sort_by_key(|r| (r.field_id, r.rule_id, r.basis, r.subject));
     }
 }
 impl RuleId {
@@ -334,7 +394,7 @@ fn sorted_risk<S: serde::Serializer>(
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
     let mut entries: Vec<_> = entries.iter().collect();
-    entries.sort_by_key(|r| (r.field_id, r.rule_id));
+    entries.sort_by_key(|r| (r.field_id, r.rule_id, r.subject.as_ref().map(|s| s.index)));
     entries.serialize(serializer)
 }
 fn sorted_evaluation<S: serde::Serializer>(
@@ -342,7 +402,7 @@ fn sorted_evaluation<S: serde::Serializer>(
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
     let mut entries: Vec<_> = entries.iter().collect();
-    entries.sort_by_key(|r| (r.field_id, r.rule_id, r.basis));
+    entries.sort_by_key(|r| (r.field_id, r.rule_id, r.basis, r.subject));
     entries.serialize(serializer)
 }
 fn sorted_effective<S: serde::Serializer>(
@@ -350,6 +410,6 @@ fn sorted_effective<S: serde::Serializer>(
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
     let mut entries: Vec<_> = entries.iter().collect();
-    entries.sort_by_key(|r| (r.field_id, r.rule_id, r.basis));
+    entries.sort_by_key(|r| (r.field_id, r.rule_id, r.basis, r.subject));
     entries.serialize(serializer)
 }

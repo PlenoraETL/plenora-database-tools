@@ -8,7 +8,7 @@
 //!   - `query_plan.rs` (query builder da ReadOperation)
 //!   - `read_stream.rs` (BatchStream + cancel + memory)
 //!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
+//! `#[ignore]` per default: richiedono PLENORA_TEST_POSTGRES_DSN.
 
 #![cfg(test)]
 #![allow(
@@ -37,11 +37,10 @@ use plenora_database_core::{
 };
 use plenora_db_postgres::PostgresProvider;
 
-const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-                   dbname=dataflow_test";
+mod common;
 
 fn secret() -> SecretString {
-    SecretString::new(DSN.to_owned())
+    common::secret()
 }
 
 fn budget() -> ResourceBudget {
@@ -127,7 +126,7 @@ async fn drop_fixture(table: &str) {
 //  almeno un batch, rows > 0.
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7b_read_spatial_ref_sys_produces_valid_arrow_stream() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -166,7 +165,7 @@ async fn h7b_read_spatial_ref_sys_produces_valid_arrow_stream() {
 //  materializzato senza errori di mapping.
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7b_read_heterogeneous_types_yields_expected_arrow_schema() {
     let table = "_h7b_hetero";
@@ -222,7 +221,7 @@ async fn h7b_read_heterogeneous_types_yields_expected_arrow_schema() {
 //  contiene solo 2, i batch idem.
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7b_read_projection_reduces_schema_columns() {
     let table = "_h7b_proj";
@@ -270,7 +269,7 @@ async fn h7b_read_projection_reduces_schema_columns() {
 //  H7b.4 — Row limit onorato dal query builder.
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7b_read_row_limit_is_honored_by_query_planner() {
     let table = "_h7b_limit";
@@ -310,7 +309,7 @@ async fn h7b_read_row_limit_is_honored_by_query_planner() {
 //  batch Arrow devono avere il null bit set correttamente.
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7b_read_handles_null_values_across_columns() {
     let table = "_h7b_nulls";
@@ -368,7 +367,7 @@ async fn h7b_read_handles_null_values_across_columns() {
 // operativo completo. `RemoteEffect::None` distingue una lettura interrotta
 // da una scrittura il cui effetto remoto potrebbe essere ignoto.
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[ignore = "live: richiede PLENORA_TEST_POSTGRES_DSN"]
 #[tokio::test]
 async fn h7b_read_stream_is_cancel_aware() {
     let table = "_h7b_bigstream";

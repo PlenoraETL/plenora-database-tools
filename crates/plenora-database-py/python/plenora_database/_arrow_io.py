@@ -12,6 +12,7 @@ from itertools import chain
 from typing import Any
 
 from .errors import PlenoraDataMappingError, PlenoraInvalidPlanError, _SdkAxes
+from .arrow_stream import ArrowStreamReader, _consume, _native_reader, _sdk_source
 
 
 def _narrowed_type(field_type: Any, pa: Any) -> Any:
@@ -189,9 +190,8 @@ def _translated(phase: str, message: str, call: Any, *, trusted: bool = False) -
     Un `PlenoraError` qualunque resta tale solo con `trusted`, quando `call`
     non esegue codice del chiamante (il reader nativo). Da una sorgente di
     `copy_from` e esterno: il chiamante puo sollevarlo con qualunque
-    messaggio. Limite dichiarato: l'errore di un `BatchReader` del database
-    usato come sorgente attraversa lo stream C di pyarrow, che non conserva
-    la classe, e arriva come `data_mapping`.
+    messaggio. I reader nativi conservano lo stato strutturato accanto allo
+    stream C: il consumatore SDK lo consulta senza interpretare il testo.
     """
 
     from .errors import PlenoraError
@@ -203,9 +203,10 @@ def _translated(phase: str, message: str, call: Any, *, trusted: bool = False) -
     except PlenoraError:
         if trusted:
             raise
-        raise _mapping_error(message, phase) from None
     except Exception:
-        raise _mapping_error(message, phase) from None
+        pass
+    # Outside except so the foreign exception is not retained in __context__.
+    raise _mapping_error(message, phase) from None
 
 
 def _require_pyarrow() -> Any:
@@ -219,31 +220,44 @@ def _require_pyarrow() -> Any:
     return pa
 
 
-def _record_batch_reader(reader: Any) -> Any:
-    """Un `pyarrow.RecordBatchReader` lazy sopra un `BatchReader` nativo.
-
-    Lo schema viene dal reader, non dal primo batch: un risultato vuoto ha
-    comunque il suo schema. Ogni chunk e uno stream IPC autonomo con un solo
-    batch; uno schema diverso da quello dichiarato e un errore, non un batch
-    accettato.
-    """
-
+def _decode_chunk(chunk: Any, schema: Any) -> list[Any]:
     pa = _require_pyarrow()
-    schema = pa.ipc.open_stream(pa.py_buffer(reader.schema_bytes())).schema
+    stream = pa.ipc.open_stream(pa.py_buffer(chunk))
+    if not stream.schema.equals(schema, check_metadata=True):
+        raise ValueError("batch con schema diverso da quello del reader")
+    batches = list(stream)
+    for batch in batches:
+        batch.validate(full=True)
+    return batches
 
-    def batches() -> Iterator[Any]:
-        for chunk in reader:
-            stream = pa.ipc.open_stream(pa.py_buffer(chunk))
-            if not stream.schema.equals(schema, check_metadata=True):
-                raise ValueError("batch con schema diverso da quello del reader")
-            for batch in stream:
-                _translated(
-                    "read", "batch Arrow del reader non valido",
-                    lambda: batch.validate(full=True),
-                )
-                yield batch
 
-    return pa.RecordBatchReader.from_batches(schema, batches())
+class _NativeBatches:
+    """Own the source even before the first callback; C release drops this owner."""
+    def __init__(self, source: Any, schema: Any) -> None:
+        self.source, self.schema = source, schema
+        self.iterator = iter(source)
+        self.pending: list[Any] = []
+
+    def __iter__(self) -> Any:
+        return self
+
+    def __next__(self) -> Any:
+        def consume() -> Any:
+            while not self.pending:
+                self.pending = _decode_chunk(next(self.iterator), self.schema)
+            return self.pending.pop(0)
+        return _consume(self.source, consume)
+
+    def __del__(self) -> None:
+        if _native_reader(self.source):
+            self.source.close()
+
+
+def _record_batch_reader(reader: Any) -> Any:
+    pa = _require_pyarrow()
+    schema = _consume(reader, lambda: pa.ipc.open_stream(pa.py_buffer(reader.schema_bytes())).schema)
+    owner = _NativeBatches(reader, schema)
+    return _consume(reader, lambda: pa.RecordBatchReader.from_batches(schema, owner))
 
 
 def c_stream_from_reader(reader: Any, requested_schema: Any = None) -> Any:
@@ -253,23 +267,15 @@ def c_stream_from_reader(reader: Any, requested_schema: Any = None) -> Any:
     errore del database resta il `PlenoraError` del reader.
     """
 
-    return _translated(
-        "read",
-        "stream Arrow del reader non esportabile",
-        lambda: _record_batch_reader(reader).__arrow_c_stream__(requested_schema),
-        trusted=True,
-    )
+    exported = _record_batch_reader(reader)
+    return _consume(reader, lambda: exported.__arrow_c_stream__(requested_schema))
 
 
 def table_from_reader(reader: Any) -> Any:
     """Tutti i batch ancora da leggere come `pyarrow.Table`."""
 
-    return _translated(
-        "read",
-        "batch Arrow del reader non leggibile",
-        lambda: _record_batch_reader(reader).read_all(),
-        trusted=True,
-    )
+    imported = _record_batch_reader(reader)
+    return _consume(reader, imported.read_all)
 
 
 def _to_ipc_bytes(source: Any) -> bytes:
@@ -322,7 +328,9 @@ def _to_ipc_bytes(source: Any) -> bytes:
     return _translated(
         "prepare",
         "copy_from: sorgente Arrow non leggibile",
-        lambda: _source_to_ipc(source, pa, ipc),
+        lambda: (_consume(source, lambda: _source_to_ipc(source, pa, ipc))
+                 if _sdk_source(source) else _source_to_ipc(source, pa, ipc)),
+        trusted=_sdk_source(source),
     )
 
 
@@ -352,7 +360,14 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
     if isinstance(source, (pa.Array, pa.ChunkedArray)):
         source.validate(full=True)
 
-    if isinstance(source, pa.Table):
+    if type(source) is ArrowStreamReader:
+        schema = source.schema
+        batches = source
+    elif _native_reader(source):
+        reader = ArrowStreamReader(source)
+        schema = reader.schema
+        batches = reader
+    elif isinstance(source, pa.Table):
         source.validate(full=True)
         schema = source.schema
         batches = source.to_batches()
@@ -436,4 +451,4 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
                 )
         return buf.getvalue()
 
-    return _translated("prepare", "copy_from: serializzazione Arrow non valida", serialize)
+    return _translated("prepare", "copy_from: serializzazione Arrow non valida", serialize, trusted=_sdk_source(source))

@@ -1,8 +1,8 @@
 name: python-wheel
 
-# Builda wheel abi3-py310 standard per Linux (manylinux_2_34) e Windows
+# Builda wheel abi3-py314 standard per Linux (manylinux_2_34) e Windows
 # (x86_64), piu il wheel runtime Db2 Linux x86_64 con build tag `1db2`.
-# Un unico wheel per piattaforma copre Python >= 3.10.
+# Un unico wheel per piattaforma copre Python >= 3.14.
 #
 # Ogni job di build installa e verifica il proprio wheel **prima**
 # dell'upload: un artefatto rotto non deve nemmeno diventare scaricabile,
@@ -36,6 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
       - name: Build wheel (manylinux_2_34)
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -47,6 +50,7 @@ jobs:
             --locked
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
+            --interpreter python3.14
           manylinux: 2_34
           rust-toolchain: '1.98.1'
       - name: Dipendenze dei gate
@@ -63,9 +67,6 @@ jobs:
             --output="dist/plenora-database-tools-${version}-source.tar.gz" \
             HEAD
           python3 scripts/licenze_artefatto.py --profile source "dist/plenora-database-tools-${version}-source.tar.gz"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
       - name: Install and verify wheel
         shell: bash
         run: |
@@ -94,6 +95,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -105,6 +109,7 @@ jobs:
             --locked
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
+            --interpreter python
           rust-toolchain: '1.98.1'
       - name: Dipendenze dei gate
         run: python -m pip install -r requirements-self-tests.txt
@@ -114,9 +119,6 @@ jobs:
           cargo build --release --locked -p plenora-database-cli
           python scripts/licenze_artefatto.py --profile cli-windows --binary target/release/plenora-database.exe dist/plenora-database-windows-x86_64.zip
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
       - name: Install and verify wheel
         shell: bash
         run: |
@@ -149,7 +151,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - name: Dipendenze del gate
         run: python -m pip install -r requirements-self-tests.txt
       - name: Self-test del gate
@@ -181,7 +183,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheel-db2-linux-x86_64
-          path: ${{ runner.temp }}/db2-dist/*-1db2-cp310-abi3-linux_x86_64.whl
+          path: ${{ runner.temp }}/db2-dist/*-1db2-cp314-abi3-linux_x86_64.whl
           if-no-files-found: error
       - name: Ferma il riferimento
         if: always()
@@ -196,13 +198,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wheel-linux-x86_64
           path: dist
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
       - name: Install and verify wheel
         shell: bash
         run: |
@@ -228,7 +230,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python: ['3.14']
         include:
           - os: ubuntu-latest
             artifact: wheel-linux-x86_64
@@ -236,13 +238,13 @@ jobs:
             artifact: wheel-windows-x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ matrix.artifact }}
           path: dist
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python }}
       - name: Importa e verifica il wheel scaricato
         shell: bash
         run: |
@@ -256,14 +258,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: wheel-*
           path: dist
           merge-multiple: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
       - name: Dipendenze del controllo avvisi
         run: python -m pip install -r requirements-self-tests.txt
       - name: Verifica avvisi degli artefatti scaricati
@@ -316,6 +318,9 @@ jobs:
       artifact-metadata: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
       - name: Checkout immutabile plenora-contracts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -328,9 +333,6 @@ jobs:
           merge-multiple: true
       - name: List collected release artifacts
         run: ls -la dist/
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
       - name: Install contract gate dependencies
         run: python3 -m pip install -r requirements-self-tests.txt
       - name: Validate the released CLI against the immutable contract pin
@@ -405,7 +407,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1
         with:
           toolchain: '1.98.1'

@@ -14,17 +14,17 @@ python scripts\render_state.py
 
 | crate | versione |
 | --- | --- |
-| `plenora-database-cli` | 10.0.0 |
-| `plenora-database-core` | 10.0.0 |
-| `plenora-database-engine` | 10.0.0 |
-| `plenora-database-py` | 10.0.0 |
-| `plenora-database-sql` | 10.0.0 |
-| `plenora-database-testkit` | 10.0.0 |
-| `plenora-db-db2` | 10.0.0 |
-| `plenora-db-mysql` | 10.0.0 |
-| `plenora-db-oracle` | 10.0.0 |
-| `plenora-db-postgres` | 10.0.0 |
-| `plenora-db-sqlserver` | 10.0.0 |
+| `plenora-database-cli` | 11.0.0 |
+| `plenora-database-core` | 11.0.0 |
+| `plenora-database-engine` | 11.0.0 |
+| `plenora-database-py` | 11.0.0 |
+| `plenora-database-sql` | 11.0.0 |
+| `plenora-database-testkit` | 11.0.0 |
+| `plenora-db-db2` | 11.0.0 |
+| `plenora-db-mysql` | 11.0.0 |
+| `plenora-db-oracle` | 11.0.0 |
+| `plenora-db-postgres` | 11.0.0 |
+| `plenora-db-sqlserver` | 11.0.0 |
 
 ## Contratto attivo
 
@@ -35,11 +35,14 @@ La major attiva e `contracts/v2/`, e contiene:
 - `capabilities.schema.json`
 - `common.schema.json`
 - `execution-loss-report-v3.schema.json`
+- `execution-loss-report-v4.schema.json`
 - `golden-manifest.schema.json`
 - `loss-report.schema.json`
 - `plan.schema.json`
 - `public-operation-contracts.schema.json`
 - `read-checkpoint.schema.json`
+- `read-loss-v1.schema.json`
+- `read-loss-v2.schema.json`
 - `write-outcome-v3.schema.json`
 - `write-outcome.schema.json`
 
@@ -186,9 +189,9 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 
 | provider | test Rust |
 | --- | --- |
-| PostgreSQL | 488 |
-| MySQL + MariaDB | 429 |
-| SQL Server | 265 |
+| PostgreSQL | 506 |
+| MySQL + MariaDB | 461 |
+| SQL Server | 266 |
 | Oracle Database Free | 203 |
 | IBM Db2 LUW | 182 |
 
@@ -199,5 +202,5 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 | famiglia | test |
 | --- | --- |
 | `live_default` | 49 |
-| `live_reference` | 78 |
-| `unit` | 300 |
+| `live_reference` | 94 |
+| `unit` | 316 |

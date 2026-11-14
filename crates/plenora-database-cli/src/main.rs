@@ -276,6 +276,7 @@ pub(crate) fn print_committed(
 /// dimostrabile (ERR-001).
 fn unknown_commit_error(commit: &CommitOutcome) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: commit.unknown_category().unwrap_or(ErrorCategory::Internal),
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,
@@ -788,11 +789,13 @@ async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<(
         .next()
         .ok_or_else(|| CliError::from("--data richiede un percorso"))?;
     let mut accept_loss = request.accept_loss;
+    let mut dry_run = false;
     for flag in args {
-        if flag != "--accept-loss" {
-            return Err("opzione write sconosciuta".into());
+        match flag.as_str() {
+            "--accept-loss" => accept_loss = true,
+            "--dry-run" => dry_run = true,
+            _ => return Err("opzione write sconosciuta".into()),
         }
-        accept_loss = true;
     }
     set_public_command("write", "plenora-database-write-result-v2");
     let target = request.target();
@@ -800,6 +803,9 @@ async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<(
     let mut forwarded = canonical_operation_arguments(target, [operation, data])?;
     if accept_loss {
         forwarded.push("--accept-loss".to_owned());
+    }
+    if dry_run {
+        forwarded.push("--dry-run".to_owned());
     }
     database_write_ipc(&mut forwarded.into_iter()).await
 }
@@ -1465,10 +1471,14 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
         )
     })?;
     let mut accept_loss = false;
+    let mut dry_run = false;
     let remaining: Vec<String> = args
         .filter(|arg| {
             if arg == "--accept-loss" {
                 accept_loss = true;
+                false
+            } else if arg == "--dry-run" {
+                dry_run = true;
                 false
             } else {
                 true
@@ -1491,6 +1501,17 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
             &cancellation,
         )
         .await?;
+    if dry_run {
+        let report = prepared
+            .execution_loss()
+            .map_or_else(
+                || serde_json::to_value(&prepared.loss_report),
+                serde_json::to_value,
+            )
+            .map_err(|_| "rapporto non serializzabile".to_owned())?;
+        return print_json(&json!({"status":"dry_run", "remote_effect":"none",
+            "evaluation":"not_performed", "loss_report":report}));
+    }
     // Solo un commit certo e completo e un successo (SURF-014).
     let outcome = opened
         .provider
@@ -1942,6 +1963,7 @@ async fn write_stream_to_ipc_with_cleanup(
     let (batches, rows) = match result {
         Ok(counts) => counts,
         Err(mut error) => {
+            error.database_error_mut().read_loss = stream.read_loss().map(Box::new);
             drop(file);
             match remove_temporary(&temporary) {
                 Ok(()) => {
@@ -2005,20 +2027,37 @@ async fn write_stream_to_ipc_with_cleanup(
             staging_cleanup_failure("artifact pubblicato; cleanup fallito", &temporary, &error),
         )
     })?;
+    Ok(ipc_materialization_report(
+        parent,
+        format,
+        batches,
+        rows,
+        stream.read_loss().as_ref(),
+    ))
+}
+
+fn ipc_materialization_report(
+    parent: &Path,
+    format: IpcOutput,
+    batches: u64,
+    rows: u64,
+    read_loss: Option<&plenora_database_core::read_loss::ReadLossReport>,
+) -> serde_json::Value {
     let durability = if sync_parent_directory(parent) {
         "confirmed"
     } else {
         "unconfirmed"
     };
-    Ok(json!({
+    json!({
         "schema_version": 1,
         "status": "materialized",
+        "read_loss": read_loss,
         "format": format.report_name(),
         "batches": batches,
         "rows": rows,
         "durability": durability,
         "staging_cleanup": "complete",
-    }))
+    })
 }
 
 /// Il messaggio di un artifact temporaneo che non si e potuto rimuovere.
@@ -2223,6 +2262,7 @@ fn local_artifact_error(
     message: impl Into<String>,
 ) -> CliError {
     CliError::Fatal(DatabaseError {
+        read_loss: None,
         category,
         phase,
         remote_effect,

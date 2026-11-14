@@ -522,6 +522,7 @@ async fn execute_evaluated(
         fault,
     )
     .await;
+    let mut evaluation = evaluation.into_context();
     let report = evaluation
         .ledger
         .finalize(&result, evaluation.confirmed)?
@@ -1321,6 +1322,7 @@ async fn rollback_session(
 
 fn transport_loss_error(execution_id: &str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Io,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,

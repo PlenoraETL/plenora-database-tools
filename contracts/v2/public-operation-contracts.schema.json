@@ -174,7 +174,16 @@
     "writeResult": {
       "$id": "https://schemas.plenora.dev/plenora-database-write-result-v2.schema.json",
       "x-plenora-contract": "plenora-database-write-result-v2",
-      "$ref": "https://plenora.local/database-tools/v2/write-outcome-v3.schema.json"
+      "oneOf": [
+        {"$ref": "https://plenora.local/database-tools/v2/write-outcome-v3.schema.json"},
+        {"type": "object", "required": ["status", "remote_effect", "evaluation", "loss_report"],
+         "properties": {"status": {"const": "dry_run"}, "remote_effect": {"const": "none"},
+           "evaluation": {"const": "not_performed"}, "loss_report": {"oneOf": [
+             {"$ref": "https://plenora.local/database-tools/v2/execution-loss-report-v3.schema.json"},
+              {"$ref": "https://plenora.local/database-tools/v2/execution-loss-report-v4.schema.json"},
+             {"$ref": "https://plenora.local/database-tools/v2/loss-report.schema.json"}]}},
+         "additionalProperties": false}
+      ]
     },
     "queryInput": {
       "$id": "https://schemas.plenora.dev/plenora-database-query-input-v1.schema.json",

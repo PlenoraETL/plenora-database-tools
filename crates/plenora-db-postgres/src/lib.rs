@@ -7,12 +7,14 @@
 mod age;
 mod arrow;
 mod catalog;
+mod column_metadata;
 mod column_types;
 mod connection;
 mod control;
 mod error;
 mod field_contract;
 mod field_identity;
+mod geometry_properties;
 mod metrics;
 mod parameter_codec;
 mod pool;
@@ -64,6 +66,8 @@ pub struct PostgresWriteDryRun {
     /// `LossReport` che la scrittura avrebbe. `None` se il dry run e
     /// offline, e le classi che decide il catalogo non sono state decise.
     pub loss_report: Option<plenora_database_core::loss::LossReport>,
+    /// Rischio e valutazione osservata, senza perdite effettive nel dry run.
+    pub execution_loss: Option<plenora_database_core::execution_loss::ExecutionLossReport>,
     /// Se una policy di row-level security decide sull'ingresso: in quel
     /// caso il dry run non decide l'esito, e lo dice. Offline e
     /// `NotPerformed`: il catalogo non e stato letto.
@@ -203,6 +207,7 @@ impl PostgresProvider {
                         &schema,
                         verdict.may_lock,
                         verdict.owner,
+                        &state.metadata_plan,
                     )
                     .await?;
                     // La regola V come la scrittura: le colonne del target che
@@ -275,6 +280,7 @@ impl PostgresProvider {
             // l'ingresso, come nella scrittura.
             drop(prepared);
             Ok(PostgresWriteDryRun {
+                execution_loss: verified.execution_loss,
                 batches: verified.batches,
                 rows: verified.rows,
                 loss_report,
@@ -1187,8 +1193,14 @@ impl Provider for PostgresProvider {
             let mut driver_state = write::prepare_state(&input_schema, operation)?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-            let (loss_report, admitted, instances, snapshot) =
-                preflight::write(self, secret, operation, &input_schema).await?;
+            let (loss_report, admitted, instances, snapshot) = preflight::write(
+                self,
+                secret,
+                operation,
+                &input_schema,
+                &driver_state.metadata_plan,
+            )
+            .await?;
             // La regola A: le riscritture misurate del target, che la
             // scrittura e il dry run verificano valore per valore.
             driver_state.apply_admission(&input_schema, operation, &admitted);
@@ -1241,7 +1253,7 @@ impl Provider for PostgresProvider {
                         &prepared.operation.keys,
                         &input.schema(),
                     )?;
-                    let result = write::execute(
+                    let result = Box::pin(write::execute(
                         secret,
                         prepared,
                         input,
@@ -1263,7 +1275,7 @@ impl Provider for PostgresProvider {
                             pool_acquire_timeout_ms: self.pool_acquire_timeout_ms,
                         },
                         consent,
-                    )
+                    ))
                     .await;
                     if result.is_ok() {
                         self.invalidate_cached_schema(secret, &target);
@@ -1438,3 +1450,6 @@ mod audit900_live_tests;
 
 #[cfg(test)]
 mod effective_loss_live_tests;
+
+#[cfg(test)]
+mod geometry_qualification_live_tests;

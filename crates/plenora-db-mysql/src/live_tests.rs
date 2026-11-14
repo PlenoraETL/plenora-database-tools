@@ -9974,10 +9974,12 @@ async fn regola_a_write(
             &cancellation,
         )
         .await?;
-    assert!(
-        prepared.loss_report.losses.is_empty(),
-        "Strict: nessuna perdita dichiarata"
-    );
+    if operation.mapping_policy == MappingPolicy::Strict {
+        assert!(
+            prepared.loss_report.losses.is_empty(),
+            "Strict: nessuna perdita dichiarata"
+        );
+    }
     hooks
         .provider()
         .write(
@@ -10057,8 +10059,7 @@ async fn live_a_double_m_d_non_arrotonda_in_silenzio() {
             regola_a_append(&hooks, table, Arc::new(Float64Array::from(vec![value]))).await,
         );
     }
-    // Con le altre politiche la scrittura non e qualificata su questo
-    // provider (`validate_operation`): rifiutata, mai `committed`.
+    // Il float a precisione fissa resta rifiutato per valore anche con consenso.
     let compatible = regola_a_write(
         &hooks,
         &regola_a_operation(
@@ -10079,7 +10080,7 @@ async fn live_a_double_m_d_non_arrotonda_in_silenzio() {
     )
     .await
     .expect_err("Compatible non e qualificata");
-    assert_eq!(compatible.category, ErrorCategory::Unsupported);
+    assert_eq!(compatible.category, ErrorCategory::DataMapping);
     assert_eq!(
         regola_a_count(&hooks, table).await,
         0,
@@ -15024,4 +15025,1826 @@ async fn live_audit900_nul() {
     )
     .await
     .expect("matrice NUL MySQL/MariaDB");
+}
+
+/// P3 confronta sorgente, conversione esplicita, staging e target con bind binari.
+/// Il gate operativo resta chiuso: questa e una prova del codec preparatorio.
+#[tokio::test]
+#[ignore = "richiede MySQL TLS; runner delle tre major"]
+#[allow(clippy::too_many_lines)]
+async fn live_p3_loss_codec_boundaries() {
+    use crate::loss_codec::RuleCodec;
+    use chrono::{Datelike, Timelike};
+    use mysql_async::Value;
+    use plenora_database_core::execution_loss_context::ExecutionLossContext;
+    use plenora_database_core::loss::LossConsent;
+    use plenora_database_core::store_rewrite::StoreRewrite;
+    use plenora_database_core::ErrorPhase;
+
+    fn wire(micros: i64) -> Value {
+        let d = chrono::DateTime::from_timestamp_micros(micros).unwrap();
+        Value::Date(
+            u16::try_from(d.year()).unwrap(),
+            u8::try_from(d.month()).unwrap(),
+            u8::try_from(d.day()).unwrap(),
+            u8::try_from(d.hour()).unwrap(),
+            u8::try_from(d.minute()).unwrap(),
+            u8::try_from(d.second()).unwrap(),
+            d.timestamp_subsec_micros(),
+        )
+    }
+    async fn compare(
+        session: &mut MysqlSession,
+        cancel: &CancellationToken,
+        names: &[String; 3],
+        original: Value,
+        raw_expected: Value,
+        converted: Value,
+    ) {
+        for (table, value) in [
+            (names[0].as_str(), original),
+            (names[1].as_str(), converted.clone()),
+        ] {
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("DELETE FROM {table}"))
+                .await
+                .unwrap();
+            let sql = format!("INSERT INTO {table} VALUES (?)");
+            session
+                .connection_mut()
+                .unwrap()
+                .exec_drop(&sql, (value,))
+                .await
+                .unwrap();
+            session
+                .check_warnings_for_sql(ErrorPhase::Write, cancel, &sql)
+                .await
+                .unwrap();
+        }
+        session
+            .connection_mut()
+            .unwrap()
+            .query_drop(format!("DELETE FROM {}", names[2]))
+            .await
+            .unwrap();
+        let sql = format!("INSERT INTO {} SELECT v FROM {}", names[2], names[1]);
+        session
+            .connection_mut()
+            .unwrap()
+            .query_drop(&sql)
+            .await
+            .unwrap();
+        session
+            .check_warnings_for_sql(ErrorPhase::Write, cancel, &sql)
+            .await
+            .unwrap();
+        for (path, table) in names.iter().enumerate() {
+            let row: mysql_async::Row = session
+                .connection_mut()
+                .unwrap()
+                .exec_first(format!("SELECT v FROM {table}"), ())
+                .await
+                .unwrap()
+                .unwrap();
+            let expected = if path == 0 { &raw_expected } else { &converted };
+            match (expected, row.as_ref(0).unwrap()) {
+                (Value::Double(a), Value::Double(b)) => {
+                    assert_eq!(a.to_bits(), b.to_bits(), "qualification path {path}");
+                }
+                (a, b) => assert_eq!(a, b, "qualification path {path}"),
+            }
+        }
+    }
+    async fn tables(session: &mut MysqlSession, native: &str) -> [String; 3] {
+        // A new SQL identity per type also invalidates prepared parameter inference.
+        let suffix = native.replace(['(', ')', ','], "_");
+        let names = ["raw", "stage", "target"].map(|path| format!("_p3_{path}_{suffix}"));
+        for name in &names {
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("DROP TEMPORARY TABLE IF EXISTS {name}"))
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("CREATE TEMPORARY TABLE {name} (v {native})"))
+                .await
+                .unwrap();
+        }
+        names
+    }
+    fn convert(codec: &RuleCodec, array: &dyn plenora_database_core::arrow::array::Array) -> Value {
+        let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+        let (mut ctx, _) = ExecutionLossContext::new(
+            ProviderKind::Mysql,
+            MappingPolicy::Compatible,
+            LossConsent::Accept,
+            codec.instances.clone(),
+            &budget,
+        )
+        .unwrap();
+        ctx.begin_source_batch(1, 1, codec.instances.len(), 256)
+            .unwrap();
+        codec.evaluate(&mut ctx, array, 0, false).unwrap().1
+    }
+    let cancel = CancellationToken::new();
+    let mut session = MysqlSession::open(&live_config(), &cancel).await.unwrap();
+    let version: String = session
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT VERSION()")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(version.starts_with(&expected_version_prefix()));
+    let mode: String = session
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT @@session.sql_mode")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!mode.contains("TIME_TRUNCATE_FRACTIONAL"));
+    for base in ["datetime", "timestamp"] {
+        for p in 0..=6_u8 {
+            let native = format!("{base}({p})");
+            let names = tables(&mut session, &native).await;
+            compare(
+                &mut session,
+                &cancel,
+                &names,
+                Value::NULL,
+                Value::NULL,
+                Value::NULL,
+            )
+            .await;
+            let q = 10_i64.pow(6 - u32::from(p));
+            let mut seconds = vec![
+                1_000_000,
+                86_399_000_000,
+                946_684_799_000_000,
+                2_147_483_646_000_000,
+            ];
+            if base == "datetime" {
+                seconds.extend([
+                    -1_000_000,
+                    -2_208_988_801_000_000,
+                    -62_167_219_200_000_000,
+                    -62_135_596_800_000_000,
+                    253_402_300_798_000_000,
+                ]);
+            }
+            seconds.push(if base == "timestamp" {
+                2_147_483_647_000_000
+            } else {
+                253_402_300_799_000_000
+            });
+            for second in seconds {
+                for fraction in [0, 1, q - 1, q, q + 1, q / 2 - 1, q / 2, q / 2 + 1, 999_999]
+                    .into_iter()
+                    .filter(|n| *n >= 0 && *n < 1_000_000)
+                {
+                    if (second == 2_147_483_647_000_000 || second == 253_402_300_799_000_000)
+                        && p < 6
+                        && fraction >= 1_000_000 - q / 2
+                    {
+                        continue;
+                    }
+                    let input = second + fraction;
+                    let original = wire(input);
+                    let converted = if p == 6 {
+                        original.clone()
+                    } else {
+                        let codec = RuleCodec::new(
+                            ProviderKind::Mysql,
+                            0,
+                            DataType::Timestamp(TimeUnit::Microsecond, None),
+                            &native,
+                            StoreRewrite::FractionalSeconds { digits: p },
+                        )
+                        .unwrap();
+                        convert(&codec, &TimestampMicrosecondArray::from(vec![input]))
+                    };
+                    // MySQL 8.x date_add_interval loses year-zero dates on a
+                    // fractional carry (my_time.cc/get_date_from_daynr). Keep
+                    // this raw-server characterization separate from the codec:
+                    // explicit conversion and stage->target MUST retain the date.
+                    let raw_expected = match (&original, &converted) {
+                        (
+                            Value::Date(0, _, _, _, _, old_second, _),
+                            Value::Date(0, _, _, hour, minute, new_second, micros),
+                        ) if version.starts_with("8.") && old_second != new_second => {
+                            Value::Date(0, 0, 0, *hour, *minute, *new_second, *micros)
+                        }
+                        _ => converted.clone(),
+                    };
+                    compare(
+                        &mut session,
+                        &cancel,
+                        &names,
+                        original,
+                        raw_expected,
+                        converted,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+    let names = tables(&mut session, "double(255,30)").await;
+    let codec = RuleCodec::new(
+        ProviderKind::Mysql,
+        0,
+        DataType::Float64,
+        "double(255,30)",
+        StoreRewrite::NegativeZero,
+    )
+    .unwrap();
+    for input in [
+        -0.0,
+        0.0,
+        1e-10,
+        -1e-10,
+        1e-10_f64.next_up(),
+        (-1e-10_f64).next_down(),
+        1e225,
+        -1e225,
+    ] {
+        let array = Float64Array::from(vec![input]);
+        if !plenora_database_core::loss_registry::mysql_fixed_double_exact(input) {
+            // The native rounding is observed independently; the provider must
+            // reject it for every policy/consent before delivering a bind.
+            let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+            for policy in [
+                MappingPolicy::Strict,
+                MappingPolicy::Compatible,
+                MappingPolicy::Lossy,
+                MappingPolicy::Native,
+            ] {
+                for consent in [LossConsent::Deny, LossConsent::Accept] {
+                    let (mut ctx, _) = ExecutionLossContext::new(
+                        ProviderKind::Mysql,
+                        policy,
+                        consent,
+                        codec.instances.clone(),
+                        &budget,
+                    )
+                    .unwrap();
+                    ctx.begin_source_batch(1, 1, codec.instances.len(), 256)
+                        .unwrap();
+                    assert!(codec.evaluate(&mut ctx, &array, 0, false).is_err());
+                    assert!(ctx.ledger.report().effective.is_empty());
+                }
+            }
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("DELETE FROM {}", names[0]))
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .exec_drop(
+                    format!("INSERT INTO {} VALUES (?)", names[0]),
+                    (Value::Double(input),),
+                )
+                .await
+                .unwrap();
+            let observed: f64 = session
+                .connection_mut()
+                .unwrap()
+                .exec_first(format!("SELECT v FROM {}", names[0]), ())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                input.to_bits(),
+                observed.to_bits(),
+                "native rounding qualification"
+            );
+            continue;
+        }
+        let converted = convert(&codec, &array);
+        let Value::Double(number) = converted else {
+            panic!("double")
+        };
+        assert_eq!(
+            number.to_bits(),
+            if input == 0.0 {
+                0.0_f64.to_bits()
+            } else {
+                input.to_bits()
+            }
+        );
+        compare(
+            &mut session,
+            &cancel,
+            &names,
+            Value::Double(input),
+            Value::Double(number),
+            Value::Double(number),
+        )
+        .await;
+    }
+    session
+        .verify_session_profile(ErrorPhase::Write, &cancel)
+        .await
+        .unwrap();
+}
+
+/// Le guardie locali e il server devono rifiutare i bordi senza clamp o residui.
+#[tokio::test]
+#[ignore = "richiede MySQL TLS; runner delle tre major"]
+#[allow(clippy::too_many_lines)]
+async fn live_p3_loss_codec_hard_boundaries() {
+    use crate::loss_codec::RuleCodec;
+    use chrono::{Datelike, Timelike};
+    use mysql_async::Value;
+    use plenora_database_core::execution_loss_context::ExecutionLossContext;
+    use plenora_database_core::loss::LossConsent;
+    use plenora_database_core::store_rewrite::StoreRewrite;
+    let cancel = CancellationToken::new();
+    let mut session = MysqlSession::open(&live_config(), &cancel).await.unwrap();
+    for base in ["datetime", "timestamp"] {
+        for p in 0..6_u8 {
+            let native = format!("{base}({p})");
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TEMPORARY TABLE IF EXISTS _p3_hard")
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("CREATE TEMPORARY TABLE _p3_hard (v {native})"))
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .exec_drop(
+                    "INSERT INTO _p3_hard VALUES (?)",
+                    (Value::Date(2000, 1, 1, 0, 0, 0, 0),),
+                )
+                .await
+                .unwrap();
+            let mut values = if base == "datetime" {
+                vec![
+                    -62_167_219_200_000_001,
+                    253_402_300_799_999_999,
+                    253_402_300_800_000_000,
+                ]
+            } else {
+                vec![0, -1, 2_147_483_648_000_000]
+            };
+            if base == "timestamp" {
+                values.push(2_147_483_647_999_999);
+            }
+            let codec = RuleCodec::new(
+                ProviderKind::Mysql,
+                0,
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                &native,
+                StoreRewrite::FractionalSeconds { digits: p },
+            )
+            .unwrap();
+            for input in values {
+                let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+                let (mut ctx, _) = ExecutionLossContext::new(
+                    ProviderKind::Mysql,
+                    MappingPolicy::Compatible,
+                    LossConsent::Accept,
+                    codec.instances.clone(),
+                    &budget,
+                )
+                .unwrap();
+                ctx.begin_source_batch(1, 1, codec.instances.len(), 256)
+                    .unwrap();
+                assert!(codec
+                    .evaluate(
+                        &mut ctx,
+                        &TimestampMicrosecondArray::from(vec![input]),
+                        0,
+                        false
+                    )
+                    .is_err());
+                assert!(ctx
+                    .ledger
+                    .report()
+                    .evaluation
+                    .entries
+                    .iter()
+                    .all(|e| e.checked == 0));
+                let d = chrono::DateTime::from_timestamp_micros(input).unwrap();
+                if d.year() >= 0 {
+                    let raw = Value::Date(
+                        u16::try_from(d.year()).unwrap(),
+                        u8::try_from(d.month()).unwrap(),
+                        u8::try_from(d.day()).unwrap(),
+                        u8::try_from(d.hour()).unwrap(),
+                        u8::try_from(d.minute()).unwrap(),
+                        u8::try_from(d.second()).unwrap(),
+                        d.timestamp_subsec_micros(),
+                    );
+                    assert!(session
+                        .connection_mut()
+                        .unwrap()
+                        .exec_drop("INSERT INTO _p3_hard VALUES (?)", (raw,))
+                        .await
+                        .is_err());
+                }
+                let rows: Vec<(String,)> = session
+                    .connection_mut()
+                    .unwrap()
+                    .query("SELECT CAST(v AS CHAR) FROM _p3_hard")
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0].0.starts_with("2000-01-01 00:00:00"));
+            }
+        }
+    }
+}
+
+fn p4_batch(ids: Vec<i64>, values: Vec<Option<i64>>) -> RecordBatch {
+    let schema = contract_schema(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+    ])
+    .unwrap();
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(TimestampMicrosecondArray::from(values)),
+        ],
+    )
+    .unwrap()
+}
+
+async fn p4_execute(
+    provider: &MysqlProvider,
+    table: &str,
+    mode: WriteMode,
+    policy: MappingPolicy,
+    accept: bool,
+    input: Box<dyn BatchStream>,
+    cancellation: &CancellationToken,
+) -> Result<WriteOutcome, DatabaseError> {
+    p4_execute_selected(
+        provider,
+        table,
+        mode,
+        policy,
+        accept,
+        input,
+        cancellation,
+        &[],
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn p4_execute_selected(
+    provider: &MysqlProvider,
+    table: &str,
+    mode: WriteMode,
+    policy: MappingPolicy,
+    accept: bool,
+    input: Box<dyn BatchStream>,
+    cancellation: &CancellationToken,
+    updates: &[&str],
+) -> Result<WriteOutcome, DatabaseError> {
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let mut operation = write_op_scalar(live_config().database(), table, mode);
+    if matches!(
+        mode,
+        WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+    ) {
+        operation.keys = vec!["id".into()];
+    }
+    operation.update_columns = updates.iter().map(|s| (*s).to_owned()).collect();
+    operation.mapping_policy = policy;
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            input.schema(),
+            &budget,
+            cancellation,
+        )
+        .await?;
+    provider
+        .write(
+            &live_secret(),
+            prepared,
+            input,
+            &budget,
+            cancellation,
+            plenora_database_core::loss::LossConsent::from_accept_loss(accept),
+        )
+        .await
+}
+
+fn p4_report(
+    result: &Result<WriteOutcome, DatabaseError>,
+) -> plenora_database_core::execution_loss::ExecutionLossReport {
+    let report = match result {
+        Ok(o) => o.loss_report.as_ref().unwrap(),
+        Err(e) => e.loss_report.as_deref().unwrap(),
+    };
+    match report {
+        plenora_database_core::execution_loss::VersionedLossReport::Execution(r) => r.clone(),
+        plenora_database_core::execution_loss::VersionedLossReport::Legacy(_) => {
+            panic!("rapporto esecutivo assente")
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+#[allow(clippy::too_many_lines)]
+async fn live_p4_executor_paths_second_batch() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    for mode in [
+        WriteMode::Append,
+        WriteMode::Replace,
+        WriteMode::Update,
+        WriteMode::Upsert,
+    ] {
+        for policy in [
+            MappingPolicy::Strict,
+            MappingPolicy::Compatible,
+            MappingPolicy::Lossy,
+            MappingPolicy::Native,
+        ] {
+            for accept in [false, true] {
+                for lossy in [false, true] {
+                    for diagnostic in [false, true] {
+                        if diagnostic && mode != WriteMode::Append {
+                            continue;
+                        }
+                        let conn = audit.connection_mut().unwrap();
+                        conn.query_drop("DROP TABLE IF EXISTS _p4_paths")
+                            .await
+                            .unwrap();
+                        conn.query_drop("CREATE TABLE _p4_paths (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB").await.unwrap();
+                        conn.query_drop("INSERT INTO _p4_paths VALUES (1,'2000-01-01')")
+                            .await
+                            .unwrap();
+                        let first_id = if matches!(mode, WriteMode::Update | WriteMode::Upsert) {
+                            1
+                        } else {
+                            3
+                        };
+                        let first = p4_batch(vec![first_id], vec![Some(946_684_800_000_000)]);
+                        let second = p4_batch(
+                            vec![4],
+                            vec![Some(946_684_800_000_000 + if lossy { 501 } else { 0 })],
+                        );
+                        let input: Box<dyn BatchStream> = if diagnostic {
+                            Box::new(BatchesStream {
+                                schema: first.schema(),
+                                batches: VecDeque::from([first, second]),
+                                declared: 2,
+                            })
+                        } else {
+                            Box::new(VecBatchStream {
+                                schema: first.schema(),
+                                batches: VecDeque::from([first, second]),
+                            })
+                        };
+                        let result = p4_execute(
+                            &provider,
+                            "_p4_paths",
+                            mode,
+                            policy,
+                            accept,
+                            input,
+                            &cancellation,
+                        )
+                        .await;
+                        let permissive = policy != MappingPolicy::Strict;
+                        let should_pass =
+                            !lossy || (permissive && (accept || mode == WriteMode::Update));
+                        assert_eq!(
+                            result.is_ok(),
+                            should_pass,
+                            "{mode:?} {policy:?} {accept} {lossy} {diagnostic}: {result:?}"
+                        );
+                        if permissive {
+                            let report = p4_report(&result);
+                            report.validate().unwrap();
+                            let changes: u64 = report
+                                .evaluation
+                                .entries
+                                .iter()
+                                .map(|e| e.would_change)
+                                .sum();
+                            assert_eq!(changes, u64::from(lossy && mode != WriteMode::Update));
+                            let committed: u64 = report.effective.iter().map(|e| e.committed).sum();
+                            assert_eq!(
+                                committed,
+                                u64::from(lossy && should_pass && mode != WriteMode::Update)
+                            );
+                        }
+                        let rows: Vec<(i64, Option<String>)> = audit.connection_mut().unwrap().query("SELECT id, DATE_FORMAT(v,'%Y-%m-%d %H:%i:%s.%f') FROM _p4_paths ORDER BY id").await.unwrap();
+                        if !should_pass {
+                            assert_eq!(rows, vec![(1, Some("2000-01-01 00:00:00.000000".into()))]);
+                        } else if mode == WriteMode::Update {
+                            assert_eq!(rows.len(), 1);
+                        } else {
+                            assert_eq!(
+                                rows.last().unwrap().1.as_deref(),
+                                Some(if lossy {
+                                    "2000-01-01 00:00:00.001000"
+                                } else {
+                                    "2000-01-01 00:00:00.000000"
+                                })
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_paths")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p4_executor_faults() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_fault")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_fault (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    let stream = FailingBatchesStream {
+        schema: batch.schema(),
+        first: Some(batch.clone()),
+    };
+    let result = p4_execute(
+        &provider,
+        "_p4_fault",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(stream),
+        &cancellation,
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(p4_report(&result).effective.is_empty());
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_fault")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 0);
+    let _delay = crate::session::DelayedCommitResponse::engage();
+    let cancel = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        cancel.cancel();
+    });
+    let stream = VecBatchStream {
+        schema: batch.schema(),
+        batches: VecDeque::from([batch]),
+    };
+    let result = p4_execute(
+        &provider,
+        "_p4_fault",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(stream),
+        &cancellation,
+    )
+    .await;
+    let report = p4_report(&result);
+    assert_eq!(report.effective[0].committed, 0);
+    assert_eq!(report.effective[0].uncertain, 1);
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_fault")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "il fault deve intercettare la risposta dopo COMMIT"
+    );
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_fault")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "benchmark seriale sulle tre major MySQL"]
+async fn live_p4_serial_benchmark() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_bench")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_bench (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let rows = 128;
+    for mode in [WriteMode::Upsert, WriteMode::Update] {
+        for policy in [MappingPolicy::Strict, MappingPolicy::Compatible] {
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DELETE FROM _p4_bench")
+                .await
+                .unwrap();
+            if mode == WriteMode::Update {
+                for id in 0..rows {
+                    audit
+                        .connection_mut()
+                        .unwrap()
+                        .exec_drop("INSERT INTO _p4_bench VALUES (?, '2000-01-01')", (id,))
+                        .await
+                        .unwrap();
+                }
+            }
+            let batch = p4_batch(
+                (0..rows).collect(),
+                vec![Some(946_684_800_000_000); usize::try_from(rows).unwrap()],
+            );
+            let input = VecBatchStream {
+                schema: batch.schema(),
+                batches: VecDeque::from([batch]),
+            };
+            let start = std::time::Instant::now();
+            p4_execute(
+                &provider,
+                "_p4_bench",
+                mode,
+                policy,
+                false,
+                Box::new(input),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+            println!("p4_benchmark mode={mode:?} policy={policy:?} rows={rows} elapsed_us={} serial_limit={}", start.elapsed().as_micros(), crate::loss_execution::SERIAL_ROW_LIMIT);
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_bench")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "fault delle frontiere stage, target e pre-commit"]
+async fn live_p4_executor_fault_boundaries() {
+    for code in [1, 2, 3, 11, 12, 13, 21, 22, 23] {
+        let cancellation = CancellationToken::new();
+        let provider = MysqlProvider::new(live_config(), 2).unwrap();
+        let mut audit = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .unwrap();
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _p4_boundary")
+            .await
+            .unwrap();
+        audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_boundary (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB").await.unwrap();
+        let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+        let input = VecBatchStream {
+            schema: batch.schema(),
+            batches: VecDeque::from([batch]),
+        };
+        let fault = crate::loss_execution::faults::Guard::engage(code);
+        let result = p4_execute(
+            &provider,
+            "_p4_boundary",
+            WriteMode::Append,
+            MappingPolicy::Compatible,
+            true,
+            Box::new(input),
+            &cancellation,
+        )
+        .await;
+        drop(fault);
+        assert!(result.is_err(), "fault {code}");
+        let report = p4_report(&result);
+        report.validate().unwrap();
+        assert_eq!(report.evaluation.entries[0].would_change, 1);
+        assert_eq!(report.effective.iter().map(|e| e.committed).sum::<u64>(), 0);
+        assert_eq!(
+            report.effective.iter().map(|e| e.uncertain).sum::<u64>(),
+            u64::from(code >= 10 && code % 10 != 1)
+        );
+        let count: u64 = audit
+            .connection_mut()
+            .unwrap()
+            .query_first("SELECT COUNT(*) FROM _p4_boundary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE _p4_boundary")
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "rami selezionati e diagnostica MySQL"]
+async fn live_p4_executor_matched_assignment_and_diagnostics() {
+    for mode in [WriteMode::Update, WriteMode::Upsert, WriteMode::Append] {
+        for accept in [false, true] {
+            let cancellation = CancellationToken::new();
+            let provider = MysqlProvider::new(live_config(), 2).unwrap();
+            let mut audit = MysqlSession::open(&live_config(), &cancellation)
+                .await
+                .unwrap();
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TABLE IF EXISTS _p4_matched")
+                .await
+                .unwrap();
+            audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_matched (id BIGINT PRIMARY KEY, v DATETIME(3) NULL) ENGINE=InnoDB").await.unwrap();
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("INSERT INTO _p4_matched VALUES (1,'2000-01-01 00:00:00.001')")
+                .await
+                .unwrap();
+            let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+            let input: Box<dyn BatchStream> = if mode == WriteMode::Append {
+                Box::new(BatchesStream {
+                    schema: batch.schema(),
+                    batches: VecDeque::from([batch]),
+                    declared: 1,
+                })
+            } else {
+                Box::new(VecBatchStream {
+                    schema: batch.schema(),
+                    batches: VecDeque::from([batch]),
+                })
+            };
+            let result = p4_execute(
+                &provider,
+                "_p4_matched",
+                mode,
+                MappingPolicy::Compatible,
+                accept,
+                input,
+                &cancellation,
+            )
+            .await;
+            assert_eq!(result.is_ok(), accept && mode != WriteMode::Append);
+            let report = p4_report(&result);
+            report.validate().unwrap();
+            assert_eq!(report.evaluation.entries[0].would_change, 1);
+            assert_eq!(
+                report.effective.iter().map(|e| e.committed).sum::<u64>(),
+                u64::from(accept && mode != WriteMode::Append)
+            );
+            let value: String = audit
+                .connection_mut()
+                .unwrap()
+                .query_first("SELECT DATE_FORMAT(v,'%f') FROM _p4_matched")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(value, "001000");
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TABLE _p4_matched")
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "colonne escluse e operazioni di sole chiavi"]
+async fn live_p4_executor_selection_and_keys() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_selection")
+        .await
+        .unwrap();
+    audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_selection (id BIGINT PRIMARY KEY, v DATETIME(3) NULL, w BIGINT NULL) ENGINE=InnoDB").await.unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("INSERT INTO _p4_selection VALUES (1,'2000-01-01',0)")
+        .await
+        .unwrap();
+    let schema = contract_schema(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("w", DataType::Int64, true),
+    ])
+    .unwrap();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(TimestampMicrosecondArray::from(vec![946_684_800_000_501])),
+            Arc::new(Int64Array::from(vec![2])),
+        ],
+    )
+    .unwrap();
+    let result = p4_execute_selected(
+        &provider,
+        "_p4_selection",
+        WriteMode::Update,
+        MappingPolicy::Compatible,
+        false,
+        Box::new(VecBatchStream {
+            schema,
+            batches: VecDeque::from([batch]),
+        }),
+        &cancellation,
+        &["w"],
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(p4_report(&result).evaluation.entries.is_empty());
+    let row: (String, i64) = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT DATE_FORMAT(v,'%f'), w FROM _p4_selection")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row, ("000000".into(), 2));
+    for mode in [WriteMode::Upsert, WriteMode::DeleteByKeys] {
+        let schema = contract_schema(vec![Field::new("id", DataType::Int64, false)]).unwrap();
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1, 2]))])
+                .unwrap();
+        let result = p4_execute(
+            &provider,
+            "_p4_selection",
+            mode,
+            MappingPolicy::Compatible,
+            false,
+            Box::new(VecBatchStream {
+                schema,
+                batches: VecDeque::from([batch]),
+            }),
+            &cancellation,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(p4_report(&result).effective.is_empty());
+    }
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_selection")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 0);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_selection")
+        .await
+        .unwrap();
+}
+
+struct P4DriftStream {
+    batch: Option<RecordBatch>,
+    schema: SchemaRef,
+}
+impl BatchStream for P4DriftStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        Box::pin(async move {
+            if self.batch.is_some() {
+                let mut other = MysqlSession::open(&live_config(), cancellation).await?;
+                other
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop("SET SESSION lock_wait_timeout=1")
+                    .await
+                    .unwrap();
+                let attempt = other
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop("ALTER TABLE _p4_drift MODIFY v DATETIME(0)")
+                    .await;
+                assert!(
+                    matches!(attempt, Err(mysql_async::Error::Server(ref e)) if e.code == 1205),
+                    "il lock deve impedire ALTER prima dei bind"
+                );
+            }
+            Ok(self.batch.take())
+        })
+    }
+}
+#[tokio::test]
+#[ignore = "congelamento catalogo contro ALTER concorrente"]
+async fn live_p4_executor_catalog_lock() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_drift")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_drift (id BIGINT PRIMARY KEY,v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    let result = p4_execute(
+        &provider,
+        "_p4_drift",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(P4DriftStream {
+            schema: batch.schema(),
+            batch: Some(batch),
+        }),
+        &cancellation,
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(p4_report(&result).effective[0].committed, 1);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_drift")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "chunk reali al limite dei placeholder MySQL"]
+async fn live_p4_executor_multiple_chunks() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_chunks")
+        .await
+        .unwrap();
+    audit.connection_mut().unwrap().query_drop("CREATE TABLE _p4_chunks (id BIGINT PRIMARY KEY,v DATETIME(3) NULL,w BIGINT NULL) ENGINE=InnoDB").await.unwrap();
+    let rows = crate::MAX_BIND_PARAMETERS / 3 + 1;
+    let schema = contract_schema(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("w", DataType::Int64, true),
+    ])
+    .unwrap();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(
+                (0..i64::try_from(rows).unwrap()).collect::<Vec<_>>(),
+            )),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                946_684_800_000_501;
+                rows
+            ])),
+            Arc::new(Int64Array::from(vec![0; rows])),
+        ],
+    )
+    .unwrap();
+    let result = p4_execute(
+        &provider,
+        "_p4_chunks",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(VecBatchStream {
+            schema,
+            batches: VecDeque::from([batch]),
+        }),
+        &cancellation,
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(p4_report(&result).effective[0].committed, rows as u64);
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_chunks WHERE MICROSECOND(v)=1000")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, rows as u64);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_chunks")
+        .await
+        .unwrap();
+}
+
+struct P4AbandonedStream {
+    batch: Option<RecordBatch>,
+    schema: SchemaRef,
+    waiting: Arc<tokio::sync::Notify>,
+}
+impl BatchStream for P4AbandonedStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        _: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        Box::pin(async move {
+            if let Some(batch) = self.batch.take() {
+                return Ok(Some(batch));
+            }
+            self.waiting.notify_one();
+            std::future::pending().await
+        })
+    }
+}
+#[tokio::test]
+#[ignore = "future abbandonata dopo una assegnazione target"]
+async fn live_p4_executor_abandoned_future() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p4_drop")
+        .await
+        .unwrap();
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop(
+            "CREATE TABLE _p4_drop (id BIGINT PRIMARY KEY,v DATETIME(3) NULL) ENGINE=InnoDB",
+        )
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let mut future = Box::pin(p4_execute(
+        &provider,
+        "_p4_drop",
+        WriteMode::Append,
+        MappingPolicy::Compatible,
+        true,
+        Box::new(P4AbandonedStream {
+            schema: batch.schema(),
+            batch: Some(batch),
+            waiting: waiting.clone(),
+        }),
+        &cancellation,
+    ));
+    tokio::select! { () = waiting.notified() => {}, result = &mut future => panic!("esito prematuro: {result:?}") }
+    drop(future);
+    assert_eq!(provider.abandoned_writes().total, 1);
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p4_drop")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 0);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p4_drop")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p5_create_replay_and_prevalidation() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for accept in [false, true] {
+            audit
+                .connection_mut()
+                .unwrap()
+                .query_drop("DROP TABLE IF EXISTS _p5_create")
+                .await
+                .unwrap();
+            let result = p4_execute(
+                &provider,
+                "_p5_create",
+                WriteMode::Create,
+                policy,
+                accept,
+                Box::new(FailingBatchesStream {
+                    schema: batch.schema(),
+                    first: Some(batch.clone()),
+                }),
+                &cancellation,
+            )
+            .await;
+            assert_eq!(
+                result.as_ref().unwrap_err().remote_effect,
+                plenora_database_core::RemoteEffect::None
+            );
+            assert!(p4_report(&result).effective.is_empty());
+            let count: u64 = audit.connection_mut().unwrap().query_first("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='_p5_create'").await.unwrap().unwrap();
+            assert_eq!(count, 0);
+            let result = p4_execute(
+                &provider,
+                "_p5_create",
+                WriteMode::Create,
+                policy,
+                accept,
+                Box::new(VecBatchStream {
+                    schema: batch.schema(),
+                    batches: VecDeque::from([batch.clone(), batch.clone()]),
+                }),
+                &cancellation,
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+            let report = p4_report(&result);
+            assert!(report.risk.is_empty());
+            assert!(report.effective.is_empty());
+            let values: Vec<u32> = audit
+                .connection_mut()
+                .unwrap()
+                .query("SELECT MICROSECOND(v) FROM _p5_create")
+                .await
+                .unwrap();
+            assert_eq!(values, vec![501, 501]);
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_create")
+        .await
+        .unwrap();
+}
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p5_create_residue_after_ddl() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    for fault in [4, 14, 24, 1, 2, 3] {
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _p5_residue")
+            .await
+            .unwrap();
+        let token = CancellationToken::new();
+        let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+        let _fault = crate::loss_execution::faults::Guard::engage(fault);
+        let result = p4_execute(
+            &provider,
+            "_p5_residue",
+            WriteMode::Create,
+            MappingPolicy::Compatible,
+            false,
+            Box::new(VecBatchStream {
+                schema: batch.schema(),
+                batches: VecDeque::from([batch]),
+            }),
+            &token,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_ne!(
+            result.as_ref().unwrap_err().remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
+        assert!(p4_report(&result).effective.is_empty());
+        let count: u64 = audit
+            .connection_mut()
+            .unwrap()
+            .query_first("SELECT COUNT(*) FROM _p5_residue")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_residue")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+async fn live_p5_create_budget_keys_and_empty() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    for case in 0..5 {
+        audit
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _p5_budget")
+            .await
+            .unwrap();
+        let mut limits = ResourceLimits::default();
+        if case == 1 {
+            limits.rows = 1;
+        }
+        let budget = ResourceBudget::new(limits).unwrap();
+        let mut operation =
+            write_op_scalar(live_config().database(), "_p5_budget", WriteMode::Create);
+        if case == 2 {
+            operation.keys = vec!["id".into()];
+        }
+        operation.mapping_policy = MappingPolicy::Compatible;
+        let prepared = provider
+            .prepare_write(
+                &live_secret(),
+                &operation,
+                batch.schema(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let occupied = match case {
+            0 => Some(
+                budget
+                    .try_lease(
+                        plenora_database_core::resource::ResourceKind::MemoryBytes,
+                        budget
+                            .remaining(plenora_database_core::resource::ResourceKind::MemoryBytes)
+                            - 150_000,
+                    )
+                    .unwrap(),
+            ),
+            1 => Some(
+                budget
+                    .try_lease(plenora_database_core::resource::ResourceKind::Rows, 1)
+                    .unwrap(),
+            ),
+            _ => None,
+        };
+        let batches = match case {
+            0 => VecDeque::from([p4_batch(
+                vec![1; 1000],
+                vec![Some(946_684_800_000_501); 1000],
+            )]),
+            2 => VecDeque::from([batch.clone(), batch.clone()]),
+            3 => VecDeque::new(),
+            4 => VecDeque::from([p4_batch(vec![1], vec![Some(i64::MAX)])]),
+            _ => VecDeque::from([batch.clone()]),
+        };
+        let result = provider
+            .write(
+                &live_secret(),
+                prepared,
+                Box::new(VecBatchStream {
+                    schema: batch.schema(),
+                    batches,
+                }),
+                &budget,
+                &cancellation,
+                plenora_database_core::loss::LossConsent::Accept,
+            )
+            .await;
+        let count: u64 = audit.connection_mut().unwrap().query_first("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='_p5_budget'").await.unwrap().unwrap();
+        if case == 3 {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(count, 1);
+        } else {
+            let error = result.as_ref().unwrap_err();
+            if case <= 1 {
+                assert_eq!(
+                    error.category,
+                    plenora_database_core::ErrorCategory::ResourceLimit
+                );
+            }
+            assert_eq!(
+                error.remote_effect,
+                plenora_database_core::RemoteEffect::None
+            );
+            assert_eq!(count, 0);
+        }
+        drop(occupied);
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+#[allow(clippy::too_many_lines)]
+async fn live_p5_create_drift_and_lost_commit() {
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).unwrap();
+    let mut audit = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .unwrap();
+    let batch = p4_batch(vec![1], vec![Some(946_684_800_000_501)]);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _p5_drift")
+        .await
+        .unwrap();
+    {
+        let _fault = crate::loss_execution::faults::Guard::engage(34);
+        let result = p4_execute(
+            &provider,
+            "_p5_drift",
+            WriteMode::Create,
+            MappingPolicy::Compatible,
+            false,
+            Box::new(VecBatchStream {
+                schema: batch.schema(),
+                batches: VecDeque::from([batch.clone()]),
+            }),
+            &cancellation,
+        )
+        .await;
+        let error = result.as_ref().unwrap_err();
+        assert_eq!(
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::Partial
+        );
+        assert!(error.message.contains("tabella creata"));
+        assert!(p4_report(&result).effective.is_empty());
+        let count: u64 = audit
+            .connection_mut()
+            .unwrap()
+            .query_first("SELECT COUNT(*) FROM _p5_drift")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_drift")
+        .await
+        .unwrap();
+    let _delay = crate::session::DelayedCommitResponse::engage();
+    let writer = p4_execute(
+        &provider,
+        "_p5_drift",
+        WriteMode::Create,
+        MappingPolicy::Compatible,
+        false,
+        Box::new(VecBatchStream {
+            schema: batch.schema(),
+            batches: VecDeque::from([batch]),
+        }),
+        &cancellation,
+    );
+    let observe = async {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let count = audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_first::<u64, _>("SELECT COUNT(*) FROM _p5_drift")
+                    .await;
+                if matches!(count, Ok(Some(1))) {
+                    cancellation.cancel();
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+    };
+    let (result, ()) = tokio::join!(writer, observe);
+    let outcome = result.as_ref().unwrap();
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::OutcomeUnknown
+    );
+    assert!(outcome
+        .recovery
+        .as_ref()
+        .unwrap()
+        .verification_action
+        .as_ref()
+        .unwrap()
+        .contains("tabella creata"));
+    assert!(p4_report(&result).effective.is_empty());
+    let count: u64 = audit
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _p5_drift")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 1);
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p5_drift")
+        .await
+        .unwrap();
+}
+
+struct P6RuntimeHost {
+    provider: Arc<MysqlProvider>,
+    operation: WriteOperation,
+    batch: RecordBatch,
+}
+impl plenora_database_engine::runtime_binding::ConnectionResolver for P6RuntimeHost {
+    fn open<'a>(
+        &'a self,
+        target: &'a plenora_database_engine::runtime_binding::RuntimeTarget,
+    ) -> ProviderFuture<'a, plenora_database_engine::runtime_binding::RuntimeConnection> {
+        Box::pin(async move {
+            assert_eq!(target.provider, ProviderKind::Mysql);
+            Ok(
+                plenora_database_engine::runtime_binding::RuntimeConnection {
+                    provider: self.provider.clone(),
+                    secret: live_secret(),
+                },
+            )
+        })
+    }
+}
+impl plenora_database_engine::runtime_binding::ArtifactResolver for P6RuntimeHost {
+    fn read_document<'a>(&'a self, _: &'a str, _: usize) -> ProviderFuture<'a, Vec<u8>> {
+        Box::pin(async move { Ok(serde_json::to_vec(&self.operation).unwrap()) })
+    }
+    fn open_write_input<'a>(
+        &'a self,
+        _: &'a plenora_database_engine::runtime_binding::RuntimeRequest,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
+        Box::pin(async move {
+            Ok(Box::new(VecBatchStream {
+                schema: self.batch.schema(),
+                batches: VecDeque::from([self.batch.clone()]),
+            }) as Box<dyn BatchStream>)
+        })
+    }
+    fn open_read_sink<'a>(
+        &'a self,
+        _: &'a plenora_database_engine::runtime_binding::RuntimeRequest,
+    ) -> ProviderFuture<'a, Box<dyn plenora_database_engine::runtime_binding::ArrowSink>> {
+        Box::pin(async {
+            Err(DatabaseError::invalid_plan(
+                "sink non usato dalla scrittura",
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL della matrice"]
+#[allow(clippy::too_many_lines)]
+async fn live_p6_runtime_public_consent_and_outcomes() {
+    use plenora_database_engine::runtime_binding::{
+        RuntimeBinding, RuntimeBody, RuntimeInvocation,
+    };
+    let provider = Arc::new(MysqlProvider::new(live_config(), 2).unwrap());
+    let mut audit = MysqlSession::open(&live_config(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/surfaces.json"
+    ))
+    .unwrap();
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for case in vectors["cases"].as_array().unwrap() {
+            if case["name"] == "planned" {
+                continue;
+            }
+            for supplied in [false, true] {
+                if !supplied && case["accept_loss"] == true {
+                    continue;
+                }
+                audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop("DROP TABLE IF EXISTS _p6_runtime")
+                    .await
+                    .unwrap();
+                let closed = case["name"] == "closed";
+                audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_drop(if closed {
+                        "CREATE TABLE _p6_runtime (id BIGINT, v FLOAT(7,3)) ENGINE=InnoDB"
+                    } else {
+                        "CREATE TABLE _p6_runtime (id BIGINT, v DATETIME(3)) ENGINE=InnoDB"
+                    })
+                    .await
+                    .unwrap();
+                let mut operation =
+                    write_op_scalar(live_config().database(), "_p6_runtime", WriteMode::Append);
+                operation.mapping_policy = policy;
+                let batch = if closed {
+                    let schema = plenora_database_core::protocol::contract_schema(vec![
+                        Field::new("id", DataType::Int64, false),
+                        Field::new("v", DataType::Float32, true),
+                    ])
+                    .unwrap();
+                    RecordBatch::try_new(
+                        schema,
+                        vec![
+                            Arc::new(Int64Array::from(vec![1])),
+                            Arc::new(plenora_database_core::arrow::array::Float32Array::from(
+                                vec![0.0],
+                            )),
+                        ],
+                    )
+                    .unwrap()
+                } else {
+                    p4_batch(
+                        vec![1],
+                        vec![Some(if case["name"] == "exact" {
+                            1_000_000
+                        } else {
+                            1_000_501
+                        })],
+                    )
+                };
+                let host = P6RuntimeHost {
+                    provider: provider.clone(),
+                    operation,
+                    batch,
+                };
+                let mut payload = serde_json::json!({"provider":"mysql", "secret_environment":"P6_SECRET_SENTINEL",
+                    "operation_path":"artifact://p6/write"});
+                if supplied {
+                    payload["accept_loss"] = case["accept_loss"].clone();
+                }
+                let invocation = RuntimeInvocation::from_json(&serde_json::to_vec(&serde_json::json!({
+                    "content_type":"application/json", "payload":payload, "metadata":{
+                        "plenora.message.id":"018f3d84-7b2c-7f00-8000-000000000204",
+                        "plenora.capability.name":"plenora.database-tools", "plenora.capability.version":"1",
+                        "plenora.capability.operation":"database.write", "plenora.operation.version":"2",
+                        "plenora.input.contract":"plenora-database-write-input-v2",
+                        "plenora.trace.correlation_id":"018f3d84-7b2c-7f00-8000-000000000205"
+                    }})).unwrap()).unwrap();
+                let token = CancellationToken::new();
+                let _fault = (case["name"] == "rollback")
+                    .then(|| crate::loss_execution::faults::Guard::engage(2));
+                let _delay = (case["name"] == "uncertain")
+                    .then(crate::session::DelayedCommitResponse::engage);
+                let binding = RuntimeBinding::new(&host, &host);
+                let writer = binding.invoke(&invocation, &token);
+                let observe = async {
+                    if case["name"] != "uncertain" {
+                        return;
+                    }
+                    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                        loop {
+                            let count: Option<u64> = audit
+                                .connection_mut()
+                                .unwrap()
+                                .query_first("SELECT COUNT(*) FROM _p6_runtime")
+                                .await
+                                .unwrap();
+                            if count == Some(1) {
+                                token.cancel();
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                };
+                let (result, ()) = tokio::join!(writer, observe);
+                let RuntimeBody::Json(body) = &result.body else {
+                    panic!("JSON richiesto")
+                };
+                let success = matches!(case["name"].as_str(), Some("exact" | "committed"));
+                assert_eq!(!result.is_error(), success, "{body}");
+                let report = if success {
+                    &body["loss_report"]
+                } else if body["details"]["loss_report"].is_object() {
+                    &body["details"]["loss_report"]
+                } else {
+                    &body["details"]["write_outcome"]["loss_report"]
+                };
+                let mut expected = case["outcome"]["loss_report"].clone();
+                expected["policy"] = serde_json::to_value(policy).unwrap();
+                assert_eq!(*report, expected, "{}", case["name"]);
+                assert!(!body.to_string().contains("P6_SECRET_SENTINEL"));
+                let count: u64 = audit
+                    .connection_mut()
+                    .unwrap()
+                    .query_first("SELECT COUNT(*) FROM _p6_runtime")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(count, u64::from(success || case["name"] == "uncertain"));
+            }
+        }
+    }
+    audit
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _p6_runtime")
+        .await
+        .unwrap();
 }

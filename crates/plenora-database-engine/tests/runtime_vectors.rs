@@ -145,6 +145,7 @@ impl BatchStream for Batches {
 
 #[derive(Clone, Copy)]
 enum WriteScript {
+    MysqlSurface(usize),
     Committed,
     CommitOutcomeUnknown,
     CommitCause(ErrorCategory),
@@ -291,7 +292,7 @@ impl Provider for Scripted {
     ) -> ProviderFuture<'a, PreparedWrite> {
         self.calls.record("provider.prepare_write");
         Box::pin(async move {
-            Ok(PreparedWrite::new(
+            let prepared = PreparedWrite::new(
                 operation.clone(),
                 input_schema,
                 serde_json::from_value(
@@ -304,7 +305,17 @@ impl Provider for Scripted {
                 budget.clone(),
                 budget.try_lease(ResourceKind::ConcurrentOperations, 1)?,
                 budget.try_lease(ResourceKind::Columns, 1)?,
-            ))
+            );
+            if let WriteScript::MysqlSurface(index) = self.write {
+                let case = mysql_surface_vectors()["cases"][index].clone();
+                let mut report: plenora_database_core::execution_loss::ExecutionLossReport =
+                    serde_json::from_value(case["outcome"]["loss_report"].clone()).unwrap();
+                report.evaluation = plenora_database_core::execution_loss::Evaluation::default();
+                report.effective.clear();
+                Ok(prepared.with_execution_loss(report))
+            } else {
+                Ok(prepared)
+            }
         })
     }
 
@@ -316,12 +327,37 @@ impl Provider for Scripted {
         _: &'a ResourceBudget,
         _: &'a CancellationToken,
 
-        _consent: plenora_database_core::loss::LossConsent,
+        consent: plenora_database_core::loss::LossConsent,
     ) -> ProviderFuture<'a, WriteOutcome> {
         self.calls.record("provider.write");
+        if matches!(self.write, WriteScript::MysqlSurface(_)) {
+            self.calls.record(if consent.accepted() {
+                "consent.accept"
+            } else {
+                "consent.deny"
+            });
+        }
         let script = self.write;
         Box::pin(async move {
             match script {
+                WriteScript::MysqlSurface(index) => {
+                    let case = mysql_surface_vectors()["cases"][index].clone();
+                    let outcome: WriteOutcome =
+                        serde_json::from_value(case["outcome"].clone()).unwrap();
+                    if matches!(case["name"].as_str(), Some("denied" | "closed")) {
+                        let mut error = DatabaseError::new(
+                            ErrorCategory::DataMapping,
+                            ErrorPhase::Write,
+                            Some(ProviderKind::Mysql),
+                            "valore non autorizzato",
+                        );
+                        error.remote_effect = RemoteEffect::RolledBack;
+                        error.loss_report = outcome.loss_report.map(Box::new);
+                        Err(error)
+                    } else {
+                        Ok(outcome)
+                    }
+                }
                 WriteScript::CommitCause(category) => {
                     let mut outcome: WriteOutcome = serde_json::from_value(json!({
                         "schema_version": 2, "status": "outcome_unknown",
@@ -360,6 +396,7 @@ impl Provider for Scripted {
                 .expect("outcome")),
                 // L'esito che il vettore `database-write-error` descrive.
                 WriteScript::CommitOutcomeUnknown => Err(DatabaseError {
+                    read_loss: None,
                     category: ErrorCategory::Internal,
                     phase: ErrorPhase::Commit,
                     remote_effect: RemoteEffect::Unknown,
@@ -447,7 +484,7 @@ impl ConnectionResolver for Host {
         Box::pin(async move {
             assert!(matches!(
                 target.provider,
-                ProviderKind::Postgres | ProviderKind::Sqlserver
+                ProviderKind::Postgres | ProviderKind::Sqlserver | ProviderKind::Mysql
             ));
             assert_eq!(target.secret_environment, SECRET_REFERENCE);
             Ok(RuntimeConnection {
@@ -1718,6 +1755,69 @@ fn write_consent_is_checked_before_provider_execution_for_both_providers() {
                 assert_eq!(body["remote_effect"], "none");
                 assert!(body.get("loss_report").is_none());
             }
+        }
+    }
+}
+
+fn mysql_surface_vectors() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../tests/fixtures/mysql_permissive/surfaces.json"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn mysql_write_v2_preserves_consent_and_common_surface_vectors() {
+    let vectors = mysql_surface_vectors();
+    for (index, case) in vectors["cases"].as_array().unwrap().iter().enumerate() {
+        for supplied in [false, true] {
+            if !supplied && case["accept_loss"] == true {
+                continue;
+            }
+            let mut host = Host::new(WriteScript::MysqlSurface(index));
+            let mut operation: Value =
+                serde_json::from_slice(&host.documents[WRITE_REFERENCE]).unwrap();
+            operation["mapping_policy"] = json!("compatible");
+            host.documents.insert(
+                WRITE_REFERENCE.to_owned(),
+                serde_json::to_vec(&operation).unwrap(),
+            );
+            let metadata = request_metadata(
+                "database.write",
+                "plenora-database-write-input-v2",
+                "018f3d84-7b2c-7f00-8000-000000000204",
+                "018f3d84-7b2c-7f00-8000-000000000205",
+            );
+            let mut payload = with(
+                target_payload(),
+                &json!({"provider":"mysql","operation_path":WRITE_REFERENCE}),
+            );
+            if supplied {
+                payload["accept_loss"] = case["accept_loss"].clone();
+            }
+            let result = invoke(
+                &host,
+                &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &payload),
+            );
+            let body = json_body(&result);
+            let calls = host.calls.take();
+            assert!(calls.iter().any(|call| call
+                == if case["accept_loss"] == true {
+                    "consent.accept"
+                } else {
+                    "consent.deny"
+                }));
+            let success = matches!(case["name"].as_str(), Some("exact" | "committed"));
+            assert_eq!(!result.is_error(), success, "{body}");
+            let report = if success {
+                &body["loss_report"]
+            } else if matches!(case["name"].as_str(), Some("denied" | "closed")) {
+                &body["details"]["loss_report"]
+            } else {
+                &body["details"]["write_outcome"]["loss_report"]
+            };
+            assert_eq!(*report, case["outcome"]["loss_report"]);
+            assert!(!body.to_string().contains("P6_SECRET_SENTINEL"));
         }
     }
 }

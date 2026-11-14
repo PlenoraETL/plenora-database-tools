@@ -9,66 +9,59 @@ use plenora_database_core::arrow::{
     array::{Array, BinaryArray, StringArray, Time64MicrosecondArray, TimestampMicrosecondArray},
     RecordBatch,
 };
-use plenora_database_core::execution_loss::{Basis, ExecutionLossReport};
+use plenora_database_core::execution_loss::Basis;
+use plenora_database_core::execution_loss_context::ExecutionLossContext;
 use plenora_database_core::loss::LossConsent;
-use plenora_database_core::loss_ledger::{Classification, LossLedger};
-use plenora_database_core::loss_registry::{compile_instances, RuleId, RuleInstance};
+use plenora_database_core::loss_ledger::Classification;
+use plenora_database_core::loss_registry::{RuleId, RuleInstance};
 use plenora_database_core::plan::{ProviderKind, WriteMode, WriteOperation};
-use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
+use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::store_rewrite::{StoreRewrite, TextLengthUnit};
 use plenora_database_core::{DatabaseError, Result};
 
 pub(super) struct Evaluation {
-    pub ledger: LossLedger,
-    pub confirmed: ExecutionLossReport,
+    context: ExecutionLossContext,
     rules: Vec<RuleInstance>,
-    pub consent: LossConsent,
     operation: WriteOperation,
-    sequence: u64,
-    tracked: Vec<Vec<(u64, usize)>>,
-    budget: ResourceBudget,
-    lease: Option<ResourceLease>,
+}
+impl std::ops::Deref for Evaluation {
+    type Target = ExecutionLossContext;
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+impl std::ops::DerefMut for Evaluation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.context
+    }
 }
 impl Evaluation {
+    pub fn into_context(self) -> ExecutionLossContext {
+        self.context
+    }
+
     pub fn new(
         plan: &WritePlan,
         operation: &WriteOperation,
         consent: LossConsent,
         budget: &ResourceBudget,
     ) -> Result<Self> {
-        let (rules, report) = compile_instances(
+        let (context, rules) = ExecutionLossContext::new(
             ProviderKind::Sqlserver,
             operation.mapping_policy,
+            consent,
             plan.loss_instances(operation)?,
+            budget,
         )?;
         Ok(Self {
-            ledger: LossLedger::new(
-                report.clone(),
-                usize::try_from(budget.limits().output_bytes).unwrap_or(usize::MAX),
-                usize::try_from(budget.limits().memory_bytes / 192).unwrap_or(usize::MAX),
-            )?,
-            confirmed: report,
+            context,
             rules,
-            consent,
             operation: operation.clone(),
-            sequence: 0,
-            tracked: Vec::new(),
-            budget: budget.clone(),
-            lease: None,
         })
     }
     pub fn batch(&mut self, batch: &RecordBatch, plan: &WritePlan) -> Result<()> {
-        self.lease = None;
-        let bytes = (batch.num_rows() as u64)
-            .checked_mul(self.rules.len() as u64)
-            .and_then(|n| n.checked_mul(192))
-            .ok_or_else(invalid)?;
-        self.lease = (bytes > 0)
-            .then(|| self.budget.try_lease(ResourceKind::MemoryBytes, bytes))
-            .transpose()?;
-        self.sequence = self.sequence.checked_add(1).ok_or_else(invalid)?;
-        self.ledger.begin_batch(self.sequence)?;
-        self.tracked = vec![Vec::new(); batch.num_rows()];
+        self.context
+            .begin_batch(batch.num_rows(), self.rules.len())?;
         for row in 0..batch.num_rows() {
             // Codifica a secco: range, formato, chiavi e guardie indipendenti prima dell'invio.
             codec::bind_row(plan, batch, row)?;
@@ -94,52 +87,36 @@ impl Evaluation {
                     .and_then(|n| n.checked_add(index as u64))
                     .ok_or_else(invalid)?;
                 if classification != Classification::HardReject {
-                    self.ledger
-                        .observe(id, rule.field_id, rule.rule_id, classification)?;
-                    if !self.tracked[row].iter().any(|(old, _)| *old == id) {
-                        self.tracked[row].push((id, index));
-                    }
+                    self.context.track(row, id, index)?;
                 }
-                classification.authorize(self.operation.mapping_policy, self.consent, key)?;
+                self.context
+                    .observe(id, rule.field_id, rule.rule_id, classification, key)?;
             }
         }
         Ok(())
     }
     pub fn sent(&mut self, row: usize) -> Result<()> {
-        for &(id, _) in &self.tracked[row] {
-            self.ledger.sent(id)?;
-        }
-        Ok(())
+        self.context.sent(row)
     }
+
     pub fn applied(&mut self, row: usize, counts: MutationCounts, plan: &WritePlan) -> Result<()> {
         if counts.confirmed > 1 {
             return Err(invalid());
         }
-        for &(id, index) in &self.tracked[row] {
+        self.context.attributed(row, |index| {
             let column = &plan.columns[index];
             let assigned = counts.updated == 0
                 || self.operation.update_columns.is_empty()
                 || self.operation.update_columns.contains(&column.name);
-            if counts.confirmed == 1 && counts.deleted == 0 && assigned {
-                self.ledger.applied(id)?;
-            } else {
-                self.ledger.discard(id)?;
-            }
-        }
-        Ok(())
+            counts.confirmed == 1 && counts.deleted == 0 && assigned
+        })
     }
     pub fn discard(&mut self, row: usize) -> Result<()> {
-        for &(id, _) in &self.tracked[row] {
-            self.ledger.discard(id)?;
-        }
-        Ok(())
+        self.context.attributed(row, |_| false)
     }
+
     pub fn prepare_commit(&mut self) -> Result<()> {
-        self.ledger.complete();
-        let mut preview = self.ledger.clone();
-        preview.commit()?;
-        self.confirmed = preview.report();
-        self.confirmed.validate()
+        self.context.prepare_commit(true)
     }
 }
 fn invalid() -> DatabaseError {

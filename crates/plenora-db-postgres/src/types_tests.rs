@@ -25,6 +25,7 @@ fn geometry_column(spatial_type: Option<&str>, dimensions: Option<&str>) -> Colu
         collation: None,
         source: None,
         registered_field_id: None,
+        arrow_metadata: None,
         kind: ColumnKind::Geometry,
     }
 }
@@ -95,4 +96,62 @@ fn registered_identity_wins_over_provenance() {
         column.arrow_field().metadata()[protocol::FIELD_ID],
         "123456789012345678901234567890"
     );
+}
+
+#[test]
+fn registered_descriptor_and_ddl_share_the_typmod_decision() {
+    use crate::column_metadata::ColumnMetadata;
+    use crate::geometry_properties::PhysicalGeometry;
+    for (declaration, types, dimensions, physical_type, expected_sql) in [
+        (
+            "exact",
+            "point,polygon",
+            "xy",
+            Some("Geometry"),
+            "geometry(Geometry,0)",
+        ),
+        ("mixed", "point", "xy", Some("Point"), "geometry(point,0)"),
+        ("exact", "point", "unknown", None, "geometry"),
+    ] {
+        let mut column = geometry_column(physical_type, (dimensions != "unknown").then_some("XY"));
+        column.spatial_srid = None;
+        column.spatial_crs_id = None;
+        let field = column.arrow_field();
+        let mut metadata = field.metadata().clone();
+        metadata.insert(protocol::GEOMETRY_TYPES_DECLARATION, declaration);
+        metadata.insert(protocol::GEOMETRY_TYPES, types);
+        let field = field.with_metadata(metadata);
+        assert_eq!(PhysicalGeometry::declaration(&field).unwrap(), expected_sql);
+        let schema = contract_schema(vec![field.clone()]).unwrap();
+        let saved = ColumnMetadata::plan(schema.field(0), &schema).unwrap();
+        column.registered_field_id = Some(saved.id.clone());
+        column.arrow_metadata = Some(saved);
+        crate::geometry_properties::validate_catalog(&column).unwrap();
+        column.spatial_dimensions = Some("XYZ".into());
+        assert!(crate::geometry_properties::validate_catalog(&column).is_err());
+    }
+}
+
+#[test]
+fn schema_omissions_are_consistent_and_counted_once_after_projection() {
+    let mut columns = vec![geometry_column(Some("Point"), Some("XY")); 2];
+    columns[0].name = "left".to_owned();
+    columns[1].name = "right".to_owned();
+    let base = contract_schema(columns.iter().map(ColumnSpec::arrow_field).collect()).unwrap();
+    let mut metadata = base.metadata().clone();
+    metadata.insert("opaque", "x".repeat(crate::column_metadata::COLUMN_LIMIT));
+    let schema = arrow_schema::Schema::new_with_metadata(base.fields().clone(), metadata);
+    let plan = crate::geometry_properties::SchemaPlan::compile(&schema).unwrap();
+    for (column, saved) in columns.iter_mut().zip(plan.columns) {
+        column.registered_field_id = Some(saved.id.clone());
+        column.arrow_metadata = Some(saved);
+    }
+    crate::geometry_properties::read_schema(&columns).unwrap();
+    for projected in [&columns[..], &columns[1..]] {
+        let report = crate::geometry_properties::read_loss(projected);
+        assert_eq!(report.schema_version, 2);
+        assert_eq!(report.entries.len(), 1);
+    }
+    columns[1].arrow_metadata.as_mut().unwrap().omitted.clear();
+    assert!(crate::geometry_properties::read_schema(&columns).is_err());
 }

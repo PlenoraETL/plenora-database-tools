@@ -62,7 +62,7 @@ def count(targets):
     return total
 
 
-def sdk_counts():
+def sdk_counts(targets=None):
     """Conta ogni caso seguendo helper e fixture fino al requisito server.
 
     Gli unici punti terminali sono i guard del fixture; nessun nome di test
@@ -106,7 +106,8 @@ def sdk_counts():
         return found
 
     counts = Counter()
-    for path in sorted(SUITE.glob("test_*.py")):
+    paths = (SUITE / target for target in targets) if targets is not None else SUITE.glob("test_*.py")
+    for path in sorted(paths):
         for node, bindings in cases(path):
             found = dependencies(path.stem, node, {(path.stem, node.name)})
             for value in bindings.values():

@@ -232,6 +232,7 @@ fn commit_unknown_error(
     };
     diagnostics.validate()?;
     Ok(DatabaseError {
+        read_loss: None,
         category,
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,

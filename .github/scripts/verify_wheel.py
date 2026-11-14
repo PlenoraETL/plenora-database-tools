@@ -79,6 +79,11 @@ def main() -> int:
             "wheel installato: la verifica non direbbe niente sull'artefatto"
         )
 
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from check_python_version import installed_wheel_errors
+    if errors := installed_wheel_errors(PACKAGE):
+        return fail("; ".join(errors))
+
     declared = metadata.version(PACKAGE)
     native = p.version()
     if native != declared:

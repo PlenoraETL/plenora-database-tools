@@ -2,11 +2,22 @@
 from scripts.render_loss_registry import rules
 
 def validate(document):
+    if document['schema_version'] != (4 if any('subject' in r for r in document['risk']) else 3):
+        raise ValueError('versione rapporto incoerente')
     registry = {row[1]: row for row in rules()}
     risks = {}
+    metadata_keys = set()
     potential = 0
     for risk in document['risk']:
-        key = risk['field_id'], risk['rule_id']
+        key = risk['field_id'], risk['rule_id'], risk.get('subject', {}).get('index')
+        if (risk['rule_id'] == 'pg.metadata.key_not_preserved') != ('subject' in risk):
+            raise ValueError('metadata subject richiesto')
+        if 'subject' in risk:
+            subject = risk['subject']
+            identity = (risk['field_id'] if subject['scope'] == 'field' else None, subject['key_sha256'])
+            if identity in metadata_keys:
+                raise ValueError('chiave metadata duplicata')
+            metadata_keys.add(identity)
         if key in risks:
             raise ValueError('rischio duplicato')
         definition = registry[key[1]]
@@ -19,17 +30,19 @@ def validate(document):
         raise ValueError('troppi contatori potenziali')
     evaluations = {}
     for entry in document['evaluation']['entries']:
-        key = entry['field_id'], entry['rule_id'], entry['basis']
+        key = entry['field_id'], entry['rule_id'], entry.get('subject'), entry['basis']
         mode = registry[key[1]][6]
         bases = ['exact', 'conservative'] if mode == 'Mixed' else ['conservative' if mode == 'Conservative' else 'exact']
-        if key in evaluations or key[:2] not in risks or entry['would_change'] > entry['checked'] or key[2] not in bases:
+        if key in evaluations or key[:3] not in risks or entry['would_change'] > entry['checked'] or key[3] not in bases:
             raise ValueError('valutazione incoerente')
+        if entry.get('subject') is not None and entry['checked'] > 1:
+            raise ValueError('metadata valutato piu volte')
         evaluations[key] = entry
     seen = set()
     for entry in document['effective']:
-        key = entry['field_id'], entry['rule_id'], entry['basis']
+        key = entry['field_id'], entry['rule_id'], entry.get('subject'), entry['basis']
         total = entry['committed'] + entry['uncertain']
-        if key in seen or key not in evaluations or total == 0 or total > evaluations[key]['would_change'] or entry['category'] != risks[key[:2]]['category']:
+        if key in seen or key not in evaluations or total == 0 or total > evaluations[key]['would_change'] or entry['category'] != risks[key[:3]]['category']:
             raise ValueError('perdita effettiva incoerente')
         seen.add(key)
 
@@ -47,7 +60,7 @@ def validate_outcome(document):
     if status == 'outcome_unknown' and document['recovery']['automatic_retry_allowed']:
         raise ValueError('esito ignoto richiede recovery')
     report = document['loss_report']
-    if report['schema_version'] != 3:
+    if report['schema_version'] not in (3, 4):
         return
     validate(report)
     committed = {}
@@ -56,7 +69,7 @@ def validate_outcome(document):
             raise ValueError('rollback con perdite effettive')
         if status == 'committed' and entry['uncertain']:
             raise ValueError('commit con perdite incerte')
-        key = entry['field_id'], entry['rule_id']
+        key = entry['field_id'], entry['rule_id'], entry.get('subject')
         committed[key] = committed.get(key, 0) + entry['committed']
-        if committed[key] > rows['confirmed']:
+        if committed[key] > (1 if key[2] is not None else rows['confirmed']):
             raise ValueError('perdite oltre righe confermate')

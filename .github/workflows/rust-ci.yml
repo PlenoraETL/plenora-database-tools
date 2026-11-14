@@ -4,6 +4,7 @@ name: rust-ci
 # richiedono fixture. Le campagne live appartengono ai workflow dei provider.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -37,7 +38,7 @@ jobs:
           path: .plenora-contracts
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - name: Dipendenze del validatore
         run: python3 -m pip install -r requirements-self-tests.txt
       - name: Invarianti Rust/JSON del rapporto esecutivo
@@ -94,12 +95,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python: ['3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python }}
+          python-version-file: .python-version
       - name: Installa il type checker fissato
         run: python -m pip install -r requirements-sdk-typing.txt
       - name: Contratto PEP 561 2.0
@@ -120,7 +121,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       # Le dipendenze dei self-test sono dichiarate e pinnate separatamente.
       - name: dipendenze dei self-test
         run: python3 -m pip install -r requirements-self-tests.txt
@@ -186,6 +187,12 @@ jobs:
         run: python3 scripts/test_check_coverage.py
       # I test unitari restano moduli figli del codice che verificano, ma il
       # loro corpo vive in file dedicati per tenere leggibile il prodotto.
+      - name: Python version policy
+        run: |
+          python3 scripts/check_python_version.py --runtime
+          python3 -m unittest scripts.test_python_version
+      - name: SDK stream boundaries
+        run: python3 -m unittest scripts.test_sdk_stream_boundaries scripts.test_final_campaign_regressions
       - name: scripts/check_test_layout.py
         run: python3 scripts/check_test_layout.py
       - name: scripts/check_arrow_ingress.py
@@ -288,7 +295,7 @@ jobs:
       # per lui non varrebbe. Su entrambi i sistemi, come il binario.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - name: dipendenze dei gate Python
         run: python -m pip install -r requirements-self-tests.txt
       - name: Verifica catalogo pubblico Arrow dal lock
@@ -347,7 +354,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - name: Build wheel di debug
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -389,7 +396,7 @@ jobs:
       # Il test embedded FFI usa libpython su Windows; non richiede server.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - name: PyArrow per i buffer FFI malformati
         run: python -m pip install "pyarrow>=25,<26"
       # I test `live_*` richiedono le fixture e sono coperti dalle campagne dei
@@ -416,7 +423,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version-file: .python-version
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1
         with:
           toolchain: '1.98.1'

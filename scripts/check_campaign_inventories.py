@@ -71,6 +71,27 @@ def compiled_mysql():
 
 
 class InventoryRegressions(unittest.TestCase):
+    def test_postgres_matrix_runs_ignored_and_validates_actual_results(self):
+        from scripts import check_postgres_matrix as matrix
+        name = "live_added_geometry_case"
+        listing = f"qualification::{name}: test\n"
+        for result, succeeds in (("ok", True), ("ignored", False), ("FAILED", False)):
+            with self.subTest(result=result), patch.object(matrix, "run", side_effect=[
+                listing, f"test qualification::{name} ... {result}\n"
+            ]) as run, patch.object(matrix.reference, "live_test_inventory", return_value={name}), patch.object(
+                matrix.reference, "REQUIRED_LIVE_TESTS", frozenset()
+            ):
+                if succeeds:
+                    evidence = matrix.cargo_test("fixture")
+                    self.assertEqual(evidence["executed_live_tests"], [f"qualification::{name}"])
+                else:
+                    with self.assertRaises(RuntimeError):
+                        matrix.cargo_test("fixture")
+                command = run.call_args_list[-1].args[0]
+                self.assertIn("--include-ignored", command)
+                self.assertNotIn("--lib", command)
+                self.assertIn("CARGO_BUILD_JOBS=2", command)
+
     def test_repository(self):
         check()
 

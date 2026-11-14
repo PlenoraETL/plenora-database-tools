@@ -893,6 +893,7 @@ impl RowRejectionOutcome {
     ) -> Result<DatabaseError> {
         let (phase, remote_effect, retry) = self.axes();
         DatabaseError {
+            read_loss: None,
             category: ErrorCategory::DataMapping,
             phase,
             remote_effect,

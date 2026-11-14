@@ -38,6 +38,7 @@ pub(crate) fn commit_outcome_unknown(
         ProviderKind::Duckdb => "DuckDB",
     };
     DatabaseError {
+        read_loss: None,
         // La causa osservata dall'adapter (ERR-001); `internal` se non ce n'e
         // una dimostrabile. La classe Python resta
         // `PlenoraCommitOutcomeUnknownError`.

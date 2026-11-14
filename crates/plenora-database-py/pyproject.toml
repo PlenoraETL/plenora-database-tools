@@ -4,10 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "plenora-database"
-version = "10.0.0"
+version = "11.0.0"
 description = "Python SDK per plenora-database-tools (Postgres/PostGIS, MySQL, MariaDB, SQL Server, Oracle, IBM Db2 LUW)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 # Il confine Arrow dello SDK: `copy_from` accetta tabelle e stream PyCapsule,
 # `BatchReader` li produce. Stessa finestra di data-tools2 (`plenora-data`),
 # cosi i due SDK si installano insieme e si passano le tabelle senza
@@ -17,10 +17,6 @@ license = { text = "Proprietary" }
 authors = [{ name = "Plenora ETL" }]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "Topic :: Database",
@@ -41,4 +37,4 @@ include = [
     "python/plenora_database/py.typed",
     "python/plenora_database/*.pyi",
 ]
-# Con abi3-py310 basta un wheel per Python >= 3.10 per la stessa piattaforma.
+# Con abi3-py314 basta un wheel per Python >= 3.14 per la stessa piattaforma.

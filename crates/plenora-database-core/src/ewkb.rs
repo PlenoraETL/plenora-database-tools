@@ -83,6 +83,7 @@ struct TypePatch {
     offset: usize,
     little_endian: bool,
     type_word: u32,
+    coordinate_risk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,8 @@ enum DimensionMode {
     /// estesa (flag `0x80000000` e `0x40000000`): la forma che EWKB richiede
     /// accanto al flag SRID (GEO-009).
     ExtendedForm,
+    Serialization,
+    GeographySerialization,
 }
 
 struct Scanner<'a> {
@@ -178,9 +181,24 @@ impl Scanner<'_> {
         };
         let mut has_z = ewkb_z || iso_z;
         let has_m = ewkb_m || iso_m;
+        if matches!(
+            self.dimension_mode,
+            DimensionMode::Serialization | DimensionMode::GeographySerialization
+        ) {
+            self.type_patches.push(TypePatch {
+                coordinate_risk: false,
+                offset: type_offset,
+                little_endian,
+                type_word: base_type
+                    | if has_z { 0x8000_0000 } else { 0 }
+                    | if has_m { 0x4000_0000 } else { 0 }
+                    | if has_srid { 0x2000_0000 } else { 0 },
+            });
+        }
         if self.dimension_mode == DimensionMode::ForceUnmarkedZ && !has_z {
             has_z = true;
             self.type_patches.push(TypePatch {
+                coordinate_risk: false,
                 offset: type_offset,
                 little_endian,
                 type_word: type_word | 0x8000_0000,
@@ -188,6 +206,7 @@ impl Scanner<'_> {
         }
         if self.dimension_mode == DimensionMode::ExtendedForm && (iso_z || iso_m) {
             self.type_patches.push(TypePatch {
+                coordinate_risk: false,
                 offset: type_offset,
                 little_endian,
                 type_word: (type_word & 0xf000_0000)
@@ -207,15 +226,44 @@ impl Scanner<'_> {
         })
     }
 
-    fn coordinates(&mut self, points: u64, dimensions: u64) -> Result<()> {
+    fn coordinates(&mut self, points: u64, header: Header) -> Result<()> {
         self.add_components(points)?;
         let bytes = points
-            .checked_mul(dimensions)
+            .checked_mul(header.dimensions)
             .and_then(|value| value.checked_mul(8))
             .ok_or_else(|| resource_error("overflow nella dimensione coordinate EWKB"))?;
-        self.take(
+        let mode = self.dimension_mode;
+        let raw = self.take(
             usize::try_from(bytes).map_err(|_| resource_error("coordinate EWKB oltre usize"))?,
         )?;
+        if matches!(
+            mode,
+            DimensionMode::Serialization | DimensionMode::GeographySerialization
+        ) {
+            let risk = raw
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .enumerate()
+                .any(|(index, bytes)| {
+                    let bytes = *bytes;
+                    let value = if header.little_endian {
+                        f64::from_le_bytes(bytes)
+                    } else {
+                        f64::from_be_bytes(bytes)
+                    };
+                    !value.is_finite()
+                        || (mode == DimensionMode::GeographySerialization
+                            && match index as u64 % header.dimensions {
+                                0 => !(-180.0..=180.0).contains(&value),
+                                1 => !(-90.0..=90.0).contains(&value),
+                                _ => false,
+                            })
+                });
+            if let Some(patch) = self.type_patches.last_mut() {
+                patch.coordinate_risk |= risk;
+            }
+        }
         Ok(())
     }
 
@@ -239,12 +287,12 @@ impl Scanner<'_> {
         }
         let children = match header.base_type {
             1 => {
-                self.coordinates(1, header.dimensions)?;
+                self.coordinates(1, header)?;
                 0
             }
             2 | 8 => {
                 let points = u64::from(self.u32(header.little_endian)?);
-                self.coordinates(points, header.dimensions)?;
+                self.coordinates(points, header)?;
                 0
             }
             3 | 17 => {
@@ -252,7 +300,7 @@ impl Scanner<'_> {
                 self.add_components(rings)?;
                 for _ in 0..rings {
                     let points = u64::from(self.u32(header.little_endian)?);
-                    self.coordinates(points, header.dimensions)?;
+                    self.coordinates(points, header)?;
                 }
                 0
             }
@@ -289,6 +337,54 @@ pub fn inspect_ewkb_detailed(
 ) -> Result<EwkbInspection> {
     scan_ewkb(bytes, max_components, max_depth, DimensionMode::Strict)
         .map(|(inspection, _)| inspection)
+}
+
+/// Verifica il layout deterministico NDR con header ISO oppure EWKB.
+/// Attraversa anche i membri: l'ordine della sola radice non basta.
+/// # Errors
+/// Gli stessi limiti e rifiuti strutturali di `inspect_ewkb_detailed`.
+pub fn has_ndr_layout(
+    bytes: &[u8],
+    ewkb: bool,
+    srid: Option<u32>,
+    max_depth: u64,
+    geography: bool,
+) -> Result<bool> {
+    let (inspection, headers) = scan_ewkb(
+        bytes,
+        u64::MAX,
+        max_depth,
+        if geography {
+            DimensionMode::GeographySerialization
+        } else {
+            DimensionMode::Serialization
+        },
+    )?;
+    if ewkb && inspection.root.srid.filter(|s| *s != 0) != srid.filter(|s| *s != 0) {
+        return Ok(false);
+    }
+    for (index, header) in headers.into_iter().enumerate() {
+        let word = header.type_word;
+        let expected = if ewkb {
+            (word & !0x2000_0000)
+                | if index == 0 && srid.is_some_and(|s| s != 0) {
+                    0x2000_0000
+                } else {
+                    0
+                }
+        } else {
+            (word & 0x0fff_ffff)
+                + if word & 0x8000_0000 != 0 { 1000 } else { 0 }
+                + if word & 0x4000_0000 != 0 { 2000 } else { 0 }
+        };
+        if header.coordinate_risk
+            || !header.little_endian
+            || bytes[header.offset..header.offset + 4] != expected.to_le_bytes()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// WKB ISO con lo SRID dichiarato altrove: lo stesso valore in EWKB.

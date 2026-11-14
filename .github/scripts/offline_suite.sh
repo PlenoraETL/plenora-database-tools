@@ -23,9 +23,21 @@ staging="${RUNNER_TEMP:-/tmp}/plenora-sdk-offline"
 # percorso del report JUnit.
 if command -v cygpath >/dev/null 2>&1; then
     staging="$(cygpath -m "$staging")"
+    repository="$(cygpath -m "$repository")"
 fi
 
 python -m pip install -q -r "$repository/requirements-sdk-tests.txt"
+
+# All surface fixtures and executables are explicit: tests run outside the checkout.
+cd "$repository"
+cargo build --locked -p plenora-database-cli --features mysql --bin plenora-database --example postgres-surfaces
+artifact_root="$(cargo metadata --locked --offline --format-version 1 --no-deps | python -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+exe="$(python -c 'import os; print(".exe" if os.name == "nt" else "")')"
+export PLENORA_CLI_BIN="$artifact_root/debug/plenora-database$exe"
+export PLENORA_PG_SURFACE_BIN="$artifact_root/debug/examples/postgres-surfaces$exe"
+export PLENORA_PG_GEOMETRY_FIXTURES="$repository/tests/fixtures/postgres_geometry_qualification.json"
+export PLENORA_MYSQL_SURFACE_VECTORS="$repository/tests/fixtures/mysql_permissive/surfaces.json"
+
 
 rm -rf "$staging"
 mkdir -p "$staging"

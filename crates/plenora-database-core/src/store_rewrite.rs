@@ -571,6 +571,16 @@ impl RewriteGuard {
                 if array.is_null(row) {
                     continue;
                 }
+                if self.provider == ProviderKind::Mysql && column.target_type == "double(255,30)" {
+                    let value = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float64Array>()
+                        .ok_or_else(|| internal(self.provider, "tipo double incoerente"))?
+                        .value(row);
+                    if !crate::loss_registry::mysql_fixed_double_exact(value) {
+                        return Err(rewritten(self.provider, *key));
+                    }
+                }
                 if column.rewrites.iter().any(|rewrite| {
                     rewrite.rewrites_in_unit(
                         array.as_ref(),

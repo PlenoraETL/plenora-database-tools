@@ -436,6 +436,10 @@ pub async fn preflight(
             })
             .collect::<Result<Vec<_>>>()?;
         if !missing.is_empty() {
+            if plans.iter().any(|plan| plan.needs_complete_prevalidation()) {
+                return Err(crate::error::public_error(ErrorCategory::Unsupported, ErrorPhase::Validate, false,
+                    "schema geometrico unknown richiede una qualifica preventiva senza staging; modalita non prevalidabile"));
+            }
             let sql = format!(
                 "CREATE TEMPORARY TABLE {CREATED_TABLE} ({}) ON COMMIT DROP",
                 missing.join(", ")

@@ -3,6 +3,132 @@ use super::*;
 use arrow_array::TimestampMicrosecondArray;
 use arrow_schema::{DataType, Field};
 
+#[path = "../../../../tests/support/p1_snapshot.rs"]
+mod p1_snapshot;
+
+#[test]
+fn metadata_loss_is_evaluated_in_every_write_mode_before_any_rows() {
+    use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+    let base = plenora_database_core::protocol::contract_schema(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("owner", DataType::Utf8, true),
+    ])
+    .unwrap();
+    let mut metadata = base.metadata().clone();
+    metadata.insert("opaque", "x".repeat(crate::column_metadata::COLUMN_LIMIT));
+    let schema = std::sync::Arc::new(arrow_schema::Schema::new_with_metadata(
+        base.fields().clone(),
+        metadata,
+    ));
+    for mode in [
+        WriteMode::Create,
+        WriteMode::Append,
+        WriteMode::Replace,
+        WriteMode::TruncateInsert,
+        WriteMode::Update,
+        WriteMode::Upsert,
+        WriteMode::DeleteByKeys,
+    ] {
+        for policy in [
+            MappingPolicy::Strict,
+            MappingPolicy::Compatible,
+            MappingPolicy::Lossy,
+            MappingPolicy::Native,
+        ] {
+            let mut operation = crate::write_visibility_live_tests::operation("target", mode);
+            operation.mapping_policy = policy;
+            let prepared = super::super::prepare_state(&schema, &operation).unwrap();
+            for consent in [LossConsent::Deny, LossConsent::Accept] {
+                let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+                let mut evaluation = Evaluation::new(
+                    prepared.loss_instances.clone(),
+                    &operation,
+                    consent,
+                    &budget,
+                )
+                .unwrap();
+                assert!(evaluation.ledger.report().evaluation.entries.is_empty());
+                let result = evaluation.metadata(&prepared.metadata_plan, &schema, &operation);
+                let allowed = mode == WriteMode::DeleteByKeys
+                    || (policy != MappingPolicy::Strict && consent.accepted());
+                assert_eq!(result.is_ok(), allowed, "{mode:?}/{policy:?}/{consent:?}");
+                assert!(evaluation.ledger.report().effective.is_empty());
+                if allowed && mode != WriteMode::DeleteByKeys {
+                    evaluation.sent(0).unwrap();
+                    evaluation.applied(0, 1).unwrap();
+                    evaluation.ledger.complete();
+                    evaluation.prepare_commit().unwrap();
+                    assert_eq!(evaluation.confirmed.effective.len(), 1);
+                    assert_eq!(evaluation.confirmed.effective[0].committed, 1);
+                }
+                evaluation.ledger.rollback();
+                assert!(evaluation.ledger.report().effective.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn p1_adapter_report_baseline() {
+    use plenora_database_core::loss_registry::RuleParameters;
+    use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+    use std::sync::Arc;
+    let mut observed = Vec::new();
+    for consent in [LossConsent::Deny, LossConsent::Accept] {
+        for outcome in ["rollback", "commit", "uncertain", "no_match"] {
+            let p = plan(LeafClass::Padded { chars: 4 }, SessionShape::Scalar);
+            let mut op = crate::write_visibility_live_tests::operation("target", WriteMode::Append);
+            op.mapping_policy = MappingPolicy::Compatible;
+            let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+            let mut e = Evaluation::new(
+                vec![RuleInstance {
+                    subject: None,
+                    field_id: 0,
+                    rule_id: RuleId::PgPadText,
+                    parameters: RuleParameters::default(),
+                    source_type: None,
+                    target_type: None,
+                }],
+                &op,
+                consent,
+                &budget,
+            )
+            .unwrap();
+            let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+                "v",
+                DataType::Utf8,
+                true,
+            )]));
+            let batch =
+                RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a"]))]).unwrap();
+            let result = e.batch(&batch, &[p], &op);
+            let error = result.as_ref().err().map(|e| serde_json::json!({"category": e.category, "phase": e.phase, "message": e.message}));
+            if result.is_ok() {
+                e.sent(0).unwrap();
+                e.applied(0, u64::from(outcome != "no_match")).unwrap();
+                e.prepare_commit().unwrap();
+            }
+            let preview = e.confirmed.clone();
+            if result.is_err() || outcome == "rollback" {
+                e.ledger.rollback();
+            } else if outcome == "uncertain" {
+                e.ledger.uncertain().unwrap();
+            } else {
+                e.ledger.commit().unwrap();
+            }
+            observed.push(
+                serde_json::json!({"consent": format!("{consent:?}"), "outcome": outcome,
+                "error": error, "preview": preview, "report": e.ledger.report()}),
+            );
+        }
+    }
+    p1_snapshot::check(
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")),
+        "postgres_baseline",
+        &serde_json::json!(observed),
+    );
+}
+
 #[test]
 fn jsonb_numbers_preserve_decimal_precision_without_consent() {
     use plenora_database_core::store_rewrite::StoreRewrite;
@@ -52,6 +178,19 @@ fn enumerate_non_exact_registry_rules_against_ordinary_postgres_values() {
         }
         audited.push(id);
         let sample = match id {
+            RuleId::PgGeometryRepresentation => {
+                let mut bytes = vec![1_u8];
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&[0; 16]);
+                let mut p = plan(LeafClass::Jsonb, SessionShape::Scalar);
+                p.encoding = Some("wkb".to_owned()); p.target_srid = None;
+                let array = arrow_array::BinaryArray::from(vec![Some(bytes.as_slice())]);
+                assert_eq!(classify(id, &p, &array, 0).unwrap(), Classification::Exact(Basis::Exact));
+                bytes[0] = 0; bytes[1..5].copy_from_slice(&1_u32.to_be_bytes());
+                let array = arrow_array::BinaryArray::from(vec![Some(bytes.as_slice())]);
+                assert_eq!(classify(id, &p, &array, 0).unwrap(), Classification::WouldChange(Basis::Conservative));
+                None
+            }
             RuleId::PgJsonb => Some((LeafClass::Jsonb, "{\"a\":1.5}")),
             RuleId::PgNumeric => Some((LeafClass::Numeric { precision: 5, scale: 2 }, "1.50")),
             RuleId::PgTemporal => Some((LeafClass::Session { leaf: SessionLeaf::Timestamp, fraction: 3, reduced: true }, "1970-01-01 00:00:00.001000")),
@@ -88,7 +227,7 @@ fn enumerate_non_exact_registry_rules_against_ordinary_postgres_values() {
             }
         }
     }
-    assert_eq!(audited.len(), 12);
+    assert_eq!(audited.len(), 13);
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/ammissione_scrittura/postgres.json"
     ))
@@ -183,6 +322,7 @@ fn empty_batch_with_rules_releases_previous_lease_and_can_resume() {
     let available = budget.remaining(ResourceKind::MemoryBytes);
     let mut evaluation = Evaluation::new(
         vec![RuleInstance {
+            subject: None,
             field_id: 0,
             rule_id: RuleId::PgJsonb,
             parameters: RuleParameters::default(),
@@ -364,6 +504,7 @@ fn batch_consent_rollback_no_match_and_unused_columns() {
     op.mapping_policy = MappingPolicy::Compatible;
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
     let rules = vec![RuleInstance {
+        subject: None,
         field_id: 0,
         rule_id: RuleId::PgJsonb,
         parameters: RuleParameters::default(),
@@ -425,6 +566,7 @@ fn postgres_alias_conflicts_and_shared_truncation_are_rejected() {
     let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
     let mut evaluation = Evaluation::new(
         vec![RuleInstance {
+            subject: None,
             field_id: 0,
             rule_id: RuleId::PgPadText,
             parameters: RuleParameters::default(),

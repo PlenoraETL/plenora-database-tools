@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 fn mk_error(retry: RetryDisposition) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::Transient,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::RolledBack,

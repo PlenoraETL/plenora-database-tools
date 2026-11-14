@@ -53,6 +53,10 @@ pub async fn validated_batch(
 struct ValidatedInput(Box<dyn crate::provider::BatchStream>);
 
 impl crate::provider::BatchStream for ValidatedInput {
+    fn read_loss(&self) -> Option<crate::read_loss::ReadLossReport> {
+        self.0.read_loss()
+    }
+
     fn schema(&self) -> crate::arrow::SchemaRef {
         self.0.schema()
     }

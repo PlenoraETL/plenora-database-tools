@@ -190,6 +190,7 @@ impl RowScopedWriter for Db2RowWriter<'_> {
 
 fn row_error(message: &'static str) -> DatabaseError {
     DatabaseError {
+        read_loss: None,
         category: ErrorCategory::InvalidPlan,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,

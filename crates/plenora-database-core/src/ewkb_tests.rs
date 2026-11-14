@@ -174,3 +174,35 @@ fn iso_type_codes_become_extended_before_the_srid_flag() {
     let stamped = with_root_srid(&extended, 4326, 8).expect("forma estesa");
     assert_eq!(&stamped[1..5], &0xA000_0001_u32.to_le_bytes());
 }
+
+#[test]
+fn postgres_layout_checks_coordinates_and_nested_headers() {
+    fn point(x: f64, y: f64) -> Vec<u8> {
+        let mut bytes = vec![1, 1, 0, 0, 0];
+        bytes.extend(x.to_le_bytes());
+        bytes.extend(y.to_le_bytes());
+        bytes
+    }
+    for (x, y, geography, expected) in [
+        (1.0, 2.0, false, true),
+        (1.0, 2.0, true, true),
+        (181.0, 2.0, true, false),
+        (1.0, 91.0, true, false),
+        (181.0, 91.0, false, true),
+        (f64::NAN, f64::NAN, false, false),
+        (f64::INFINITY, 2.0, false, false),
+    ] {
+        assert_eq!(
+            has_ndr_layout(&point(x, y), false, None, 32, geography).unwrap(),
+            expected
+        );
+    }
+    let child = with_root_srid(&point(1.0, 2.0), 4326, 32).unwrap();
+    let mut collection = vec![1, 7, 0, 0, 0x20];
+    collection.extend(4326_u32.to_le_bytes());
+    collection.extend(1_u32.to_le_bytes());
+    collection.extend(child);
+    assert!(!has_ndr_layout(&collection, true, Some(4326), 32, false).unwrap());
+    assert!(has_ndr_layout(&point(1.0, 2.0), false, Some(4326), 32, false).unwrap());
+    assert!(!has_ndr_layout(&point(1.0, 2.0), true, Some(4326), 32, false).unwrap());
+}
