@@ -8,6 +8,13 @@ riassumono le note di quelle release.
 
 ## 11.0.0 — non pubblicata
 
+- Giro 2 della corsa finale: MySQL `double(255,30)` rifiuta anche i valori
+  non identici dopo la ricomposizione binaria del server; nessun consenso
+  abilita questa perdita non qualificata. Strict anticipa anche il rifiuto
+  dei non finiti. Corretta la normalizzazione della stringa `NULL` in Extra
+  delle tabelle temporanee. ORM legge le annotazioni differite di Python 3.14
+  e conserva i tipi dei bind. Le campagne verificano i contratti registrati
+  sui target esistenti senza sostituirli implicitamente dopo TRUNCATE.
 - Correzioni della corsa finale: gli input PostgreSQL scalari legacy senza
   metadati non richiedono ownership per COMMENT; staging MySQL creato prima
   della transazione e ricontrollato sotto lock; confronto Create normalizzato

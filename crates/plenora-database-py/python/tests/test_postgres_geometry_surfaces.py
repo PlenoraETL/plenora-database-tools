@@ -2,6 +2,7 @@
 import itertools
 import json
 import warnings
+import pytest
 
 import plenora_database as p
 
@@ -186,3 +187,89 @@ def test_live_postgres_metadata_loss_surface_matrix(tmp_path):
     expected = set(itertools.product(("field", "schema", "aggregate"), (False, True), SURFACES, POLICIES, CONSENTS))
     assert {tuple(row[:5]) for row in records} == expected
     assert len(records) == len(expected)
+
+
+EXISTING_MODES = ("append", "replace", "upsert", "update", "create")
+EXISTING_STATES = ("unregistered", "populated_unregistered", "compatible", "incompatible")
+
+
+def test_postgres_existing_target_surface_enumeration():
+    assert set(WRITERS) == set(READERS) == set(SURFACES)
+    assert len(set(itertools.product(EXISTING_MODES, EXISTING_STATES, SURFACES))) == 100
+
+
+@pytest.mark.parametrize("kind", ["scalar", "geometry"])
+def test_live_postgres_existing_target_metadata_matrix(tmp_path, kind):
+    import pyarrow as pa
+    harness = Harness(tmp_path, postgres_dsn_or_skip())
+    observed = set()
+    name = "db_b_existing"
+    schema = pa.schema([
+        pa.field("id", pa.int64(), nullable=False, metadata={"plenora.field_id": "1"}),
+        pa.field("v", pa.string(), metadata={"plenora.field_id": "2", "application.note": "original"}),
+    ], metadata={"plenora.contract.version": "1"})
+    native, sql_old = "text", "'old'"
+    values = pa.array(["new"])
+    if kind == "geometry":
+        field = fixtures()["fixtures"][0]["fields"][2]
+        metadata = {**field["metadata"], "plenora.field_id": "2",
+                    "plenora.geometry.axis_order": "xy", "application.note": "original"}
+        schema = schema.set(1, pa.field("v", pa.binary(), metadata=metadata))
+        values = pa.array([bytes.fromhex(field["values"][0])], type=pa.binary())
+        native, sql_old = "geometry(Point,4326)", "ST_SetSRID(ST_MakePoint(0,0),4326)"
+    original = pa.Table.from_arrays([pa.array([1]), values], schema=schema)
+    changed = schema.set(1, schema.field(1).with_metadata({
+        **schema.field(1).metadata, b"application.note": b"changed"}))
+    with connect_postgres() as admin:
+        try:
+            for mode, state in itertools.product(EXISTING_MODES, EXISTING_STATES):
+                reference = None
+                for surface in SURFACES:
+                    admin.execute_ddl(f"DROP TABLE IF EXISTS public.{name}")
+                    admin.execute_ddl(f"CREATE TABLE public.{name} (id bigint PRIMARY KEY, v {native})")
+                    if state in ("compatible", "incompatible"):
+                        admin.copy_from("public", name, original, mode="append")
+                    admin.execute_sql(f"DELETE FROM public.{name}")
+                    if mode in ("update", "upsert", "replace", "create") or state == "populated_unregistered":
+                        old_id = 0 if mode == "append" else 1
+                        admin.execute_sql(f"INSERT INTO public.{name} VALUES ({old_id}, {sql_old})")
+                    count = admin.execute_scalar(f"SELECT count(*) FROM public.{name}")
+                    before = admin.execute_scalar(
+                        f"SELECT string_agg(coalesce(col_description('public.{name}'::regclass, attnum), ''), '|' ORDER BY attnum) "
+                        f"FROM pg_attribute WHERE attrelid = 'public.{name}'::regclass AND attnum > 0 AND NOT attisdropped")
+                    incoming = original.cast(changed) if state == "incompatible" else original
+                    op = operation(name, "strict")
+                    op["mode"] = mode
+                    op["keys"] = ["id"] if mode in ("upsert", "update") else []
+                    op["update_columns"] = ["v"] if mode == "update" else []
+                    result = normalized(WRITERS[surface](harness, op, incoming, False))
+                    legacy_populated = kind == "geometry" and state in ("unregistered", "populated_unregistered") and count > 0 and mode in ("append", "update", "upsert")
+                    allowed = mode != "create" and state != "incompatible" and not legacy_populated
+                    assert result["ok"] == allowed, (mode, state, surface)
+                    if reference is None:
+                        reference = result
+                    assert result == reference, (mode, state, surface)
+                    if allowed:
+                        expected = original
+                        if mode == "append" and count:
+                            old = pa.Table.from_arrays([pa.array([0]), pa.array(["old"])], schema=schema)
+                            expected = pa.concat_tables([old, original])
+                        for reader in SURFACES:
+                            report, restored = READERS[reader](harness, read_operation(name))
+                            assert_original(restored, expected)
+                            assert report["status"] == "complete" and report["entries"] == []
+                    else:
+                        assert result["category"] == "conflict"
+                        assert result["phase"] == ("prepare" if mode == "create" else "write")
+                        assert result["remote_effect"] == ("none" if mode == "create" else "rolled_back")
+                        assert admin.execute_scalar(f"SELECT count(*) FROM public.{name}") == count
+                        if count:
+                            assert admin.execute_scalar(f"SELECT bool_and(v = {sql_old}) FROM public.{name}") is True
+                        after = admin.execute_scalar(
+                            f"SELECT string_agg(coalesce(col_description('public.{name}'::regclass, attnum), ''), '|' ORDER BY attnum) "
+                            f"FROM pg_attribute WHERE attrelid = 'public.{name}'::regclass AND attnum > 0 AND NOT attisdropped")
+                        assert before == after
+                    observed.add((mode, state, surface))
+        finally:
+            admin.execute_ddl(f"DROP TABLE IF EXISTS public.{name}")
+    assert observed == set(itertools.product(EXISTING_MODES, EXISTING_STATES, SURFACES))

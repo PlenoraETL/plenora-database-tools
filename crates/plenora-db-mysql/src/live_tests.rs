@@ -10059,8 +10059,7 @@ async fn live_a_double_m_d_non_arrotonda_in_silenzio() {
             regola_a_append(&hooks, table, Arc::new(Float64Array::from(vec![value]))).await,
         );
     }
-    // Con le altre politiche la scrittura non e qualificata su questo
-    // provider (`validate_operation`): rifiutata, mai `committed`.
+    // Il float a precisione fissa resta rifiutato per valore anche con consenso.
     let compatible = regola_a_write(
         &hooks,
         &regola_a_operation(
@@ -10081,7 +10080,7 @@ async fn live_a_double_m_d_non_arrotonda_in_silenzio() {
     )
     .await
     .expect_err("Compatible non e qualificata");
-    assert_eq!(compatible.category, ErrorCategory::Unsupported);
+    assert_eq!(compatible.category, ErrorCategory::DataMapping);
     assert_eq!(
         regola_a_count(&hooks, table).await,
         0,
@@ -15275,7 +15274,62 @@ async fn live_p3_loss_codec_boundaries() {
         1e225,
         -1e225,
     ] {
-        let converted = convert(&codec, &Float64Array::from(vec![input]));
+        let array = Float64Array::from(vec![input]);
+        if !plenora_database_core::loss_registry::mysql_fixed_double_exact(input) {
+            // The native rounding is observed independently; the provider must
+            // reject it for every policy/consent before delivering a bind.
+            let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+            for policy in [
+                MappingPolicy::Strict,
+                MappingPolicy::Compatible,
+                MappingPolicy::Lossy,
+                MappingPolicy::Native,
+            ] {
+                for consent in [LossConsent::Deny, LossConsent::Accept] {
+                    let (mut ctx, _) = ExecutionLossContext::new(
+                        ProviderKind::Mysql,
+                        policy,
+                        consent,
+                        codec.instances.clone(),
+                        &budget,
+                    )
+                    .unwrap();
+                    ctx.begin_source_batch(1, 1, codec.instances.len(), 256)
+                        .unwrap();
+                    assert!(codec.evaluate(&mut ctx, &array, 0, false).is_err());
+                    assert!(ctx.ledger.report().effective.is_empty());
+                }
+            }
+            session
+                .connection_mut()
+                .unwrap()
+                .query_drop(format!("DELETE FROM {}", names[0]))
+                .await
+                .unwrap();
+            session
+                .connection_mut()
+                .unwrap()
+                .exec_drop(
+                    format!("INSERT INTO {} VALUES (?)", names[0]),
+                    (Value::Double(input),),
+                )
+                .await
+                .unwrap();
+            let observed: f64 = session
+                .connection_mut()
+                .unwrap()
+                .exec_first(format!("SELECT v FROM {}", names[0]), ())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                input.to_bits(),
+                observed.to_bits(),
+                "native rounding qualification"
+            );
+            continue;
+        }
+        let converted = convert(&codec, &array);
         let Value::Double(number) = converted else {
             panic!("double")
         };

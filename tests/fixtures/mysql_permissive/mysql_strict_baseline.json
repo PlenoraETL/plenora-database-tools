@@ -7022,7 +7022,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "infinito"
       },
@@ -7036,7 +7042,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "meno_infinito"
       },
@@ -7050,7 +7062,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "nan"
       },
@@ -130523,7 +130541,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "infinito"
       },
@@ -130537,7 +130561,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "meno_infinito"
       },
@@ -130551,7 +130581,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "nan"
       },
@@ -254024,7 +254060,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "infinito"
       },
@@ -254038,7 +254080,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "meno_infinito"
       },
@@ -254052,7 +254100,13 @@
         },
         "per_eccesso": false,
         "strict": {
-          "ok": true
+          "category": "data_mapping",
+          "message": "scrittura rifiutata: il server riscriverebbe al salvataggio il valore in uno diverso (regola S): con Strict e una perdita",
+          "phase": "write",
+          "remote_effect": "none",
+          "retry": {
+            "kind": "never"
+          }
         },
         "vector": "nan"
       },

@@ -138,16 +138,23 @@ def busta(argv: list[str]) -> dict:
         controlli = documento.get("checks") if isinstance(documento, dict) else None
         controlli = controlli if isinstance(controlli, dict) else {}
         status = documento.get("status") if isinstance(documento, dict) else None
-        return {"exit": esito.returncode, "category": None, "code": None,
+        result = {"exit": esito.returncode, "category": None, "code": None,
                 "phase": None, "retry": None,
                 "remote_effect": {"dry_run": "none", "dry_run_offline": "none",
                                   "committed": "committed"}.get(status),
                 "catalog": controlli.get("catalog"),
                 "row_security": controlli.get("row_security")}
+        if isinstance(documento, dict) and "loss_report" in documento:
+            result["loss_report"] = documento["loss_report"]
+        return result
     retry = errore.get("retry")
-    return {"exit": esito.returncode, "category": errore.get("category"),
+    result = {"exit": esito.returncode, "category": errore.get("category"),
             "phase": errore.get("phase"), "remote_effect": errore.get("remote_effect"),
             "retry": retry.get("kind") if isinstance(retry, dict) else None}
+    report = (errore.get("details") or {}).get("loss_report")
+    if report is not None:
+        result["loss_report"] = report
+    return result
 
 
 class Postgres:
@@ -238,6 +245,23 @@ class Postgres:
                     difformi += 1
         return difformi
 
+    def byte_difformi(self, tabella: str, vettore: dict) -> int:
+        count = 0
+        rows = sorted(vettore["rows"], key=lambda row: row["id"])
+        for field in vettore["fields"]:
+            md = field.get("metadata") or {}
+            if md.get("ARROW:extension:name") != "geoarrow.wkb":
+                continue
+            function = "ST_AsEWKB" if md.get("plenora.geometry.encoding") == "ewkb" else "ST_AsBinary"
+            column = '"' + field["name"].replace('"', '""') + '"'
+            text = self.testo(f"SELECT string_agg(coalesce(encode({function}({column}::geometry, 'NDR'), 'hex'), 'NULL'), ',' ORDER BY id) FROM public.{tabella}")
+            actual = (text or "").split(",") if rows else []
+            expected = [row.get(field["name"]) or "NULL" for row in rows]
+            if len(actual) != len(expected):
+                raise RuntimeError("conteggio della rilettura binaria incoerente")
+            count += sum(a.lower() != b.lower() for a, b in zip(actual, expected))
+        return count
+
     def testo(self, sql: str) -> str | None:
         argv = [str(self.cli), "database-execute-scalar", "postgres", self.variabile, sql]
         esito = subprocess.run(argv, capture_output=True, text=True, timeout=120)
@@ -292,6 +316,23 @@ class Postgres:
             # assi sono scambiati anche se le ordinate rilette sono quelle
             # scritte (GEO-001).
             osservato["assi_scambiati"] = int("unsupported" in self.limiti_degli_assi(vettore))
+        if vettore["expect"] == "valid" and rifiuto_rappresentazione(osservato):
+            # Preserve the Strict verdict; prove the declared loss on the same
+            # input through a consented write and independent server readback.
+            op = json.loads(operazione.read_text(encoding="utf-8"))
+            op["mapping_policy"] = "compatible"
+            operazione.write_text(json.dumps(op), encoding="utf-8")
+            consentito = busta([str(self.cli), "write", "--input", str(richiesta), "--data", str(ingresso), "--accept-loss"])
+            report = consentito.get("loss_report") or {}
+            effective = report.get("effective", [])
+            osservato["normalizzazione_consentita"] = (
+                consentito["exit"] == 0 and bool(effective)
+                and all(e["rule_id"] == "pg.geometry.representation" for e in effective)
+                and self.srid_difformi(tabella, vettore) == 0
+                and self.coordinate_difformi(tabella, vettore) == 0
+                and self.byte_difformi(tabella, vettore) > 0)
+            op["mapping_policy"] = "strict"
+            operazione.write_text(json.dumps(op), encoding="utf-8")
         self.cancella(tabella)
         return osservato
 
@@ -363,6 +404,15 @@ def rej_003(operazione: str, osservato: dict, di_valore: bool) -> bool:
             and osservato.get("remote_effect") == "none")
 
 
+def rifiuto_rappresentazione(observed: dict) -> bool:
+    report = observed.get("loss_report") or {}
+    changed = [e for e in report.get("evaluation", {}).get("entries", []) if e.get("would_change", 0)]
+    return (observed.get("category") == "data_mapping"
+            and report.get("policy") == "strict" and not report.get("effective")
+            and bool(changed) and all(e["rule_id"] == "pg.geometry.representation" for e in changed)
+            and rej_003("write-postgres", observed, True))
+
+
 def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
              limite: str | set[str] | None) -> str:
     """`limite` e' la categoria, o l'insieme delle categorie, dei limiti
@@ -375,6 +425,9 @@ def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
             difforme = (osservato.get("srid_difformi") or osservato.get("coordinate_difformi")
                         or osservato.get("assi_scambiati"))
             return "accettazione-difforme" if difforme else "conforme"
+        if (operazione == "write-postgres" and rifiuto_rappresentazione(osservato)
+                and osservato.get("normalizzazione_consentita") is True):
+            return "rifiuto-di-supporto"
         if not supporto:
             return "rifiuto-indebito"
         return "rifiuto-di-supporto" if rej_003(operazione, osservato, False) else "assi-del-rifiuto"

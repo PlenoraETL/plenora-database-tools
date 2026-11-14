@@ -42,10 +42,10 @@ impl BatchStream for Buffer {
 fn invalid() -> plenora_database_core::DatabaseError {
     crate::write::mapping_error("catalogo Create diverso dai fatti congelati")
 }
-// MySQL bug #112275: temporary tables report SQL NULL for absent Extra,
+// MySQL bug #112275: temporary tables report the string NULL for absent Extra,
 // while permanent tables report an empty string. Nonempty Extra remains binding.
 fn normalize_extra(columns: &mut [Value]) {
-    if columns[6] == Value::NULL {
+    if columns[6] == Value::NULL || columns[6] == Value::Bytes(b"NULL".to_vec()) {
         columns[6] = Value::Bytes(Vec::new());
     }
 }

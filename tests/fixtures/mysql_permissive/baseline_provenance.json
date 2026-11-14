@@ -1,11 +1,31 @@
 {
   "base": "71b1271f6c4dfe020ac92316eb7aca2feff69266",
-  "scope": "offline outcomes of unchanged 10.0.0 production code; no live qualification",
+  "scope": "offline outcomes captured from 10.0.0 with explicitly enumerated 11.0.0 safety corrections; no live qualification",
   "snapshots": {
     "core_baseline.json": "2d7016d3083ca8cb4ecaf8c2138086ae37ed79ce95a1da00d87deab2fa02b205",
-    "mysql_strict_baseline.json": "62609d1cb090253f525479c3be9d9ed4ac5a2f2d1398ffc57ef8e87ab47bf35c",
+    "mysql_strict_baseline.json": "e7973aa97f0043b9be9408cb177f4d010032df352fde309877281d6aeb509d1e",
     "operation_baseline.json": "f7b1234125865bcf8c659144d0c4fa046a00d01fea6c13b35e95879c023a7b67",
     "postgres_baseline.json": "6cf9acbe18efe492db74547bd5863e6743da97f604930acb67abf30f13eaadbb",
     "sqlserver_baseline.json": "cdbc9f8dc3505733c72df41958e0349dd5bbe73d2d63fcb6dea205f4f7cfd9b1"
-  }
+  },
+  "adjustments": [
+    {
+      "base": "ab826f017649016c86bc5c032c14b6b4f2a0399c",
+      "snapshot": "mysql_strict_baseline.json",
+      "native": "double(255,30)",
+      "majors": [
+        "8.0",
+        "8.4",
+        "9.7"
+      ],
+      "vectors": [
+        "infinito",
+        "meno_infinito",
+        "nan"
+      ],
+      "changed_field": "strict",
+      "reason": "11.0.0 C9 fixed-point guard also refuses non-finite input before sending; nine cells change from ok to DataMapping/Write/None/Never; other cells unchanged",
+      "previous_sha256": "62609d1cb090253f525479c3be9d9ed4ac5a2f2d1398ffc57ef8e87ab47bf35c"
+    }
+  ]
 }

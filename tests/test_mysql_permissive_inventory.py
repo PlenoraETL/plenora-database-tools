@@ -1,6 +1,7 @@
 """Mutazioni negative del dominio P1, senza server."""
 import copy
 import hashlib
+import json
 import unittest
 from scripts.mysql_permissive_inventory import DIRECTORY, ROOT, generate, read, validate, verify_execution
 
@@ -18,6 +19,32 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(provenance["base"], self.declarations["base"])
         for name, digest in provenance["snapshots"].items():
             self.assertEqual(hashlib.sha256((DIRECTORY / name).read_bytes()).hexdigest(), digest, name)
+
+    def test_c9_adjustment_changes_only_nine_nonfinite_strict_cells(self):
+        provenance = read(DIRECTORY / "baseline_provenance.json")
+        adjustment, = provenance["adjustments"]
+        baseline = read(DIRECTORY / adjustment["snapshot"])
+        changed = set()
+        for cell in baseline:
+            if cell["key"]["nativo"] != adjustment["native"]:
+                continue
+            for row in cell["rows"]:
+                if row["vector"] not in adjustment["vectors"]:
+                    continue
+                self.assertTrue(row["fixture_refused"])
+                self.assertEqual(row["strict"]["category"], "data_mapping")
+                self.assertEqual(row["strict"]["phase"], "write")
+                self.assertEqual(row["strict"]["remote_effect"], "none")
+                self.assertEqual(row["strict"]["retry"], {"kind": "never"})
+                changed.add((cell["major"], row["vector"]))
+                row["strict"] = {"ok": True}
+        self.assertEqual(changed, {(major, vector) for major in adjustment["majors"]
+                                  for vector in adjustment["vectors"]})
+        self.assertEqual(len(changed), 9)
+        # The original serde snapshot had no trailing newline. Restoring only
+        # these cells must reproduce its exact digest, not just its shape.
+        restored = json.dumps(baseline, ensure_ascii=False, indent=2).encode("utf-8")
+        self.assertEqual(hashlib.sha256(restored).hexdigest(), adjustment["previous_sha256"])
 
     def test_negative_mutations(self):
         mutations = [

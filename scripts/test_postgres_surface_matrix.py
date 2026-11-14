@@ -54,9 +54,14 @@ class PostgresSurfaceMatrixTests(unittest.TestCase):
         self.assertIn('"tests/fixtures/postgres_geometry_qualification.json"', workflow)
         self.assertIn("python3 -m unittest discover -s scripts -p test_postgres_surface_matrix.py", workflow)
         self.assertIn("if: always()", workflow)
-        from python_test_inventory import sdk_counts
+        from collections import Counter
+        from python_test_inventory import sdk_counts, cases
         counts = sdk_counts(["test_postgres_geometry_surfaces.py"])
-        self.assertEqual(counts, {"offline": 2, "postgres": 2})
+        declared = Counter("postgres" if node.name.startswith("test_live_") else "offline"
+                           for node, _ in cases(SUITE / "test_postgres_geometry_surfaces.py"))
+        self.assertEqual(counts, declared)
+        self.assertTrue(counts["offline"] and counts["postgres"])
+        self.assertIn("CORRELATION_ID", runtime)
 
     def test_evidence_rejects_missing_duplicate_or_unexecuted_cells(self):
         import copy

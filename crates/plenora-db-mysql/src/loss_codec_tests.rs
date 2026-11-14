@@ -159,7 +159,7 @@ fn codec_uses_common_consent_and_replay_does_not_recount() {
 fn negative_zero_is_explicit_and_conservative_floats_stay_closed() {
     let c = codec("double(255,30)", StoreRewrite::NegativeZero);
     for consent in [LossConsent::Accept, LossConsent::Deny] {
-        for value in [-0.0, 0.0, 1e-10, -1e-10, 1e225] {
+        for value in [-0.0, 0.0, 1e-10, -0.5, -1.0, 1e225] {
             let mut ctx = context(&c, MappingPolicy::Compatible, consent, 1);
             let result = c.evaluate(&mut ctx, &Float64Array::from(vec![value]), 0, false);
             if value.to_bits() == (-0.0_f64).to_bits() && consent == LossConsent::Deny {
@@ -179,6 +179,9 @@ fn negative_zero_is_explicit_and_conservative_floats_stay_closed() {
             }
         }
         for value in [
+            -1e-10,
+            (-1e-10_f64).next_down(),
+            -0.1,
             f64::from_bits(1),
             f64::MIN_POSITIVE,
             1e-10_f64.next_down(),
@@ -296,5 +299,31 @@ fn double_rules_compose_in_both_fixture_orders() {
                 .sum::<u64>(),
             2
         );
+    }
+}
+
+#[test]
+fn fixed_double_bit_instability_is_never_consentable() {
+    let codec = codec("double(255,30)", StoreRewrite::NegativeZero);
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for consent in [LossConsent::Deny, LossConsent::Accept] {
+            for value in [
+                -1e-10_f64,
+                (-1e-10_f64).next_up(),
+                (-1e-10_f64).next_down(),
+                -0.1,
+            ] {
+                let mut ctx = context(&codec, policy, consent, 1);
+                assert!(codec
+                    .evaluate(&mut ctx, &Float64Array::from(vec![value]), 0, false)
+                    .is_err());
+                assert!(ctx.ledger.report().effective.is_empty());
+            }
+        }
     }
 }

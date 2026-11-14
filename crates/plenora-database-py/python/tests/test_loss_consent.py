@@ -70,9 +70,9 @@ def empty_sources(provider):
     yield sink.getvalue().to_pybytes()
 
 
-def check_empty_error(error):
+def check_empty_error(error, provider):
     assert error.category == "invalid_plan"
-    assert error.remote_effect == "none"
+    assert error.remote_effect == ("rolled_back" if provider == "mysql" else "none")
     check_empty_report(error.loss_report)
 
 
@@ -161,7 +161,7 @@ def test_live_loss_consent_sync(provider):
                     warnings.simplefilter("always", p.MappingLossWarning)
                     with pytest.raises(p.PlenoraInvalidPlanError) as caught:
                         session.copy_from(schema, table, source, mapping_policy=policy)
-                    check_empty_error(caught.value)
+                    check_empty_error(caught.value, provider)
                     assert not emitted
                 assert session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
             for source in [loss_table(provider, [1001]), loss_stream(provider)]:
@@ -255,7 +255,7 @@ async def test_live_loss_consent_async(provider):
                     warnings.simplefilter("always", p.MappingLossWarning)
                     with pytest.raises(p.PlenoraInvalidPlanError) as caught:
                         await session.acopy_from(schema, table, source, mapping_policy=policy)
-                    check_empty_error(caught.value)
+                    check_empty_error(caught.value, provider)
                     assert not emitted
                 assert await session.execute_scalar(f"SELECT COUNT(*) FROM {target}") == 0
             for source in [loss_table(provider, [1001]), loss_stream(provider)]:
@@ -422,7 +422,7 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
                         if batches == [[]]:
                             assert result.returncode == 2
                             assert "invalid_plan" in result.stdout
-                            assert "none" in result.stdout
+                            assert ("rolled_back" if provider == "mysql" else "none") in result.stdout
                         elif not success:
                             assert "rolled_back" in result.stdout
                             assert "data_mapping" in result.stdout
@@ -431,7 +431,7 @@ def test_live_cli_loss_consent(provider, command, tmp_path):
                             if batches == [[]]:
                                 error = document["error"]
                                 assert error["category"] == "invalid_plan"
-                                assert error["remote_effect"] == "none"
+                                assert error["remote_effect"] == ("rolled_back" if provider == "mysql" else "none")
                                 check_empty_report(error["details"]["loss_report"])
                             elif success:
                                 report = check_outcome(document.get("result", document), changed=accept)

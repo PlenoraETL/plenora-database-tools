@@ -114,40 +114,64 @@ def test_live_b13_sync_midstream(condition):
 @pytest.mark.parametrize("condition", CONDITIONS)
 @pytest.mark.asyncio
 async def test_live_b13_async_midstream(condition):
-    # All blocking admin work is outside the event loop.
-    admin = await asyncio.to_thread(connect_postgres)
-    session = await aconnect_postgres()
-    lock_session = await asyncio.to_thread(connect_postgres)
-    source = None
-    task = None
-    locker = None
+    # All synchronous handles, including their final references, belong to one thread.
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import ExitStack
+    from functools import partial
+    worker = ThreadPoolExecutor(max_workers=1)
+    owned = {}
+
+    async def blocking(function, *args):
+        return await asyncio.get_running_loop().run_in_executor(worker, partial(function, *args))
+
+    def open_owner():
+        stack = owned["stack"] = ExitStack()
+        admin = owned["admin"] = stack.enter_context(connect_postgres())
+        lock_session = stack.enter_context(connect_postgres())
+        install(admin)
+        stack.callback(cleanup, admin)
+        locker = owned["locker"] = lock_session.begin()
+        stack.callback(lambda: locker.rollback() if locker.is_active else None)
+        locker.execute_scalar("SELECT pg_advisory_xact_lock($1) IS NULL", [LOCK])
+
+    def close_owner():
+        try:
+            if "stack" in owned:
+                owned["stack"].close()
+        finally:
+            owned.clear()
+
+    source = task = session = None
     try:
-        await asyncio.to_thread(install, admin)
-        locker = await asyncio.to_thread(lock_session.begin)
-        await asyncio.to_thread(locker.execute_scalar, "SELECT pg_advisory_xact_lock($1) IS NULL", [LOCK])
+        await blocking(open_owner)
+        session = await aconnect_postgres()
         source = await session.aread("public", "_b13_stream")
         adapted = p.AsyncArrowStreamReader(source)
         assert (await adapted.__anext__()).num_rows > 0
         task = asyncio.create_task(adapted.read_all())
-        pid = await asyncio.to_thread(blocked_pid, admin)
+        pid = await blocking(lambda: blocked_pid(owned["admin"]))
         if condition == "interrupt":
             task.cancel()
         else:
-            await asyncio.to_thread(trigger, admin, locker, pid, condition)
+            await blocking(lambda: trigger(owned["admin"], owned["locker"], pid, condition))
         with pytest.raises(p.PlenoraError) as raised:
             await asyncio.wait_for(task, TIMEOUT)
         verify(source, raised.value, condition)
         await source.aclose()
-        assert await asyncio.to_thread(admin.execute_scalar, "SELECT 1") == 1
+        assert await blocking(lambda: owned["admin"].execute_scalar("SELECT 1")) == 1
     finally:
-        if source is not None:
-            await source.aclose()
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        if locker is not None and locker.is_active:
-            await asyncio.to_thread(locker.rollback)
-        await asyncio.to_thread(cleanup, admin)
-        await asyncio.to_thread(lock_session.close)
-        await asyncio.to_thread(admin.close)
-        await session.aclose()
+        try:
+            if source is not None:
+                await source.aclose()
+        finally:
+            try:
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                if session is not None:
+                    await session.aclose()
+            finally:
+                try:
+                    await blocking(close_owner)
+                finally:
+                    await asyncio.to_thread(worker.shutdown, wait=True)

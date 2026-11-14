@@ -5,8 +5,8 @@ use super::{
 use plenora_database_engine::runtime_binding::{
     ArrowSink, ArtifactResolver, ConnectionResolver, RuntimeBinding, RuntimeBody,
     RuntimeConnection, RuntimeInvocation, RuntimeRequest, RuntimeTarget, CAPABILITY_NAME,
-    CAPABILITY_NAME_KEY, CAPABILITY_VERSION, INPUT_CONTRACT, JSON_CONTENT_TYPE, MESSAGE_ID,
-    OPERATION, OPERATION_VERSION,
+    CAPABILITY_NAME_KEY, CAPABILITY_VERSION, CORRELATION_ID, INPUT_CONTRACT, JSON_CONTENT_TYPE,
+    MESSAGE_ID, OPERATION, OPERATION_VERSION,
 };
 use serde_json::{json, Value};
 use std::io::Write;
@@ -98,6 +98,7 @@ pub async fn invoke(
         content_type: JSON_CONTENT_TYPE.to_owned(),
         metadata: serde_json::from_value(json!({
             (MESSAGE_ID): "018f3d84-7b2c-7f00-8000-000000000101",
+            (CORRELATION_ID): "018f3d84-7b2c-7f00-8000-000000000102",
             (CAPABILITY_NAME_KEY): CAPABILITY_NAME,
             (CAPABILITY_VERSION): "1", (OPERATION): operation,
             (OPERATION_VERSION): if write {"2"} else {"1"}, (INPUT_CONTRACT): contract,

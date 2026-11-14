@@ -36,6 +36,47 @@ DI_SCHEMA = {"expect": "invalid", "category": "schema"}
 
 
 class Verdetti(unittest.TestCase):
+    def test_normalization_requires_strict_axes_report_and_readback(self):
+        import copy
+        good = rifiuto("data_mapping", "write", "rolled_back", tabella_rimasta=False,
+            loss_report={"policy": "strict", "effective": [], "evaluation": {"entries": [
+                {"rule_id": "pg.geometry.representation", "would_change": 1}]}},
+            normalizzazione_consentita=True)
+        self.assertEqual(self.verdetto(VALIDO, good), "rifiuto-di-supporto")
+        for key, value in [("category", "schema"), ("phase", "read"), ("exit", 5),
+                           ("remote_effect", "unknown"), ("retry", "after"),
+                           ("tabella_rimasta", True), ("normalizzazione_consentita", False)]:
+            self.assertNotEqual(self.verdetto(VALIDO, {**good, key: value}), "rifiuto-di-supporto")
+        for report in ({}, {"policy": "compatible"}, {"effective": [{"committed": 1}]},
+                       {"evaluation": {"entries": []}},
+                       {"evaluation": {"entries": [{"rule_id": "other", "would_change": 1}]}},
+                       {"evaluation": {"entries": [{"rule_id": "pg.geometry.representation", "would_change": 0}]}}):
+            changed = copy.deepcopy(good)
+            changed["loss_report"] = {**changed["loss_report"], **report} if report else {}
+            self.assertNotEqual(self.verdetto(VALIDO, changed), "rifiuto-di-supporto")
+
+    def test_normalization_runs_independent_readback_checks(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        strict = rifiuto("data_mapping", "write", "rolled_back", loss_report={
+            "policy": "strict", "effective": [], "evaluation": {"entries": [
+                {"rule_id": "pg.geometry.representation", "would_change": 1}]}})
+        success = {"exit": 0, "category": None, "loss_report": {"effective": [
+            {"rule_id": "pg.geometry.representation", "committed": 1, "uncertain": 0}]}}
+        for srid, coordinate, binary, allowed in [(0, 0, 1, True), (1, 0, 1, False),
+                                                (0, 1, 1, False), (0, 0, 0, False)]:
+            with TemporaryDirectory() as directory:
+                pg = runner.Postgres.__new__(runner.Postgres)
+                pg.lavoro = Path(directory)
+                pg.cli, pg.variabile = Path("cli"), "DSN"
+                with patch.object(pg, "cancella"), patch.object(pg, "esiste", return_value=False), \
+                     patch.object(pg, "srid_difformi", return_value=srid), \
+                     patch.object(pg, "coordinate_difformi", return_value=coordinate), \
+                     patch.object(pg, "byte_difformi", return_value=binary), \
+                     patch.object(runner, "busta", side_effect=[strict.copy(), success]):
+                    result = pg.scrivi("fixture", Path("input"), VALIDO)
+                    self.assertEqual(result["normalizzazione_consentita"], allowed)
+
     def test_pg14_view_keeps_rls_under_the_restricted_owner(self) -> None:
         sql = next(row[1] for row in runner.SCENARI if row[0] == "regola-r-vista-rls-delete")
         old = runner.prepara_vista_rls(sql, 140_000)

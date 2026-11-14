@@ -132,13 +132,15 @@ class Harness:
                 result["document"] = result["document"].get("error", result["document"])
                 # CLI-2.0 contract, not a second provider decision.
                 expected_exit = {"invalid_plan": 2, "invalid_configuration": 2, "schema": 3,
-                                 "data_mapping": 3, "crs": 3, "unsupported": 3, "resource_limit": 4}
+                                 "data_mapping": 3, "crs": 3, "unsupported": 3, "resource_limit": 4, "conflict": 5}
                 assert completed.returncode == expected_exit[result["document"]["category"]]
         else:
             completed = process([self.helper, json_file(self.path("json"), request)], self.environment)
             assert completed.returncode == 0, "qualification host failed, not a provider refusal"
             result = json.loads(completed.stdout)
-        if action == "read" and result["ok"]:
+        if action == "read":
+            assert result["ok"], {key: result["document"].get(key) for key in
+                                  ("category", "phase", "remote_effect", "retry")}
             opener = pa.ipc.open_file if surface == "cli" else pa.ipc.open_stream
             with opener(output) as reader:
                 return result["document"]["read_loss"], reader.read_all()
@@ -150,7 +152,8 @@ def sync_write(harness, op, source, accept):
     try:
         try:
             result = session.copy_from("public", op["target"]["object"], source, mode=op["mode"],
-                                       mapping_policy=op["mapping_policy"], accept_loss=accept)
+                                       mapping_policy=op["mapping_policy"], accept_loss=accept,
+                                       keys=op["keys"], update_columns=op["update_columns"])
             return {"ok": True, "document": result}
         except PlenoraError as error:
             return {"ok": False, "document": error_document(error)}
@@ -163,7 +166,8 @@ async def async_write(op, source, accept):
     try:
         try:
             result = await session.acopy_from("public", op["target"]["object"], source, mode=op["mode"],
-                                              mapping_policy=op["mapping_policy"], accept_loss=accept)
+                                              mapping_policy=op["mapping_policy"], accept_loss=accept,
+                                       keys=op["keys"], update_columns=op["update_columns"])
             return {"ok": True, "document": result}
         except PlenoraError as error:
             return {"ok": False, "document": error_document(error)}

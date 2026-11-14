@@ -257,3 +257,47 @@ fn padding_uses_target_units_for_supplementary_and_multibyte_text() {
         assert!(StoreRewrite::PadText { chars: length + 1 }.rewrites_in_unit(&emoji, 0, unit));
     }
 }
+
+#[test]
+fn mysql_fixed_double_strict_and_key_paths_refuse_unstable_bits() {
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for keys in [&[][..], &["f"][..]] {
+            let guard = RewriteGuard::new(
+                ProviderKind::Mysql,
+                &schema(),
+                &operation(WriteMode::Append, policy, keys),
+                vec![ColumnRewrites {
+                    field: 3,
+                    target_type: "double(255,30)".into(),
+                    rewrites: vec![
+                        StoreRewrite::NegativeZero,
+                        StoreRewrite::Underflow { min_abs: 1e-10 },
+                    ],
+                }],
+            )
+            .unwrap();
+            for value in [
+                -1e-10_f64,
+                (-1e-10_f64).next_down(),
+                -0.1,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ] {
+                assert_eq!(
+                    guard.check(&batch(None, None, Some(value))).is_err(),
+                    policy == MappingPolicy::Strict || !keys.is_empty()
+                );
+            }
+            for value in [0.0, 1e-10, -0.5, -1.0, 0.5, 1.0] {
+                guard.check(&batch(None, None, Some(value))).unwrap();
+            }
+            guard.check(&batch(None, None, None)).unwrap();
+        }
+    }
+}

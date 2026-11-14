@@ -318,6 +318,21 @@ pub fn resolve_rewrite(
     };
     Ok(id)
 }
+/// Fixed-scale MySQL DOUBLE must be a fixed point of `Field_real::truncate`.
+/// This is an independent hard guard, never a consented numeric conversion.
+#[must_use]
+pub fn mysql_fixed_double_exact(value: f64) -> bool {
+    if !value.is_finite() {
+        return false;
+    }
+    if value == 0.0 {
+        return true;
+    }
+    let integer = value.floor();
+    let fraction = ((value - integer) * 1e30).round_ties_even() / 1e30;
+    (integer + fraction).to_bits() == value.to_bits()
+}
+
 /// Predicato unico della rewrite contestuale; Strict continua a usare la guardia S.
 /// # Errors
 /// Rifiuta tipi, indici e contesti non classificabili, senza includere dati.
@@ -332,6 +347,16 @@ pub fn classify_rewrite(
     use crate::loss_ledger::Classification;
     let id = resolve_rewrite(provider, array.data_type(), native, rewrite)?;
     let classification = rewrite.classify(array, row, unit)?;
+    if provider == ProviderKind::Mysql && native == "double(255,30)" && !array.is_null(row) {
+        let value = array
+            .as_any()
+            .downcast_ref::<arrow_array::Float64Array>()
+            .ok_or_else(crate::execution_loss::invalid)?
+            .value(row);
+        if !mysql_fixed_double_exact(value) {
+            return Ok(Classification::HardReject);
+        }
+    }
     if classification == Classification::HardReject {
         return Ok(classification);
     }

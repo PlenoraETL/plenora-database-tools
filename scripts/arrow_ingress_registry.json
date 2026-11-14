@@ -76,7 +76,7 @@
     "crates/plenora-database-core/src/store_rewrite.rs::check#1": {
       "classification": "ingresso guardato",
       "reason": "Il corpo revisionato attraversa la guardia strutturale prima di consumare dati Arrow.",
-      "review_sha256": "0df763cf44b9ff283cd4e3cddadb27748fb78dc2de138b33c6dfc70f9e1591a9",
+      "review_sha256": "2f3d09658b5adebcb31419b9783f2ecdc5bc516ba774c19ae6f03a1866267260",
       "required": [
         "validate_batch("
       ],
@@ -9604,7 +9604,7 @@
     "crates/plenora-database-core/src/loss_registry.rs::classify_rewrite#1": {
       "classification": "ingresso guardato",
       "reason": "API core: delega StoreRewrite::classify, che valida integralmente ArrayData prima di accedere alle celle.",
-      "review_sha256": "9c11aac571e9624ac35873133d2c9f5478f076f2b0c436a6348502e5f31903ad",
+      "review_sha256": "a6184eceb7fb497ae98c3173edc6f876964b866aebd5858c4c1fe0f0cf507a4c",
       "signature": "pub fn classify_rewrite( provider: ProviderKind, native: &str, rewrite: crate::store_rewrite::StoreRewrite, array: &dyn arrow_array::Array, row: usize, unit: crate::store_rewrite::TextLengthUnit, ) -> crate::Result<crate::loss_ledger::Classification>",
       "required": [
         "rewrite.classify("
@@ -10316,7 +10316,7 @@
       "reason": "Corpo e deleghe private della catena operativa revisionati."
     },
     "crates/plenora-database-core/src/store_rewrite.rs": {
-      "review_sha256": "ee3e53aa700ceec4d33119973acbb67dca2f808521674947138b9a7ce7428f9c",
+      "review_sha256": "14a771dbf605743b3f52b0cfd8de3de48119b83b19a327a1534f78bae22e7ab3",
       "reason": "RewriteGuard::check valida il batch; StoreRewrite::classify valida ArrayData full prima dei valori. Il consenso non sostituisce la validazione."
     },
     "crates/plenora-database-core/src/write_keys.rs": {
@@ -10544,7 +10544,7 @@
       "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
     },
     "crates/plenora-database-py/python/plenora_database/orm.py": {
-      "review_sha256": "db07c42c9b6521b93868c0a5d0ab9734b266dc2673970a1d7e80515c3cd131d9",
+      "review_sha256": "32dd2581052fd9d75471c62999902b04f4c5224e5e87a65f1948894a1b3710a4",
       "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
     },
     "crates/plenora-database-py/python/plenora_database/protocols.py": {
@@ -10596,7 +10596,7 @@
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/create_buffer.rs": {
-      "review_sha256": "26c764c98e736ffdd85e46de82f7aa39117de5af5ded529f92b0a9d1f9e0a089",
+      "review_sha256": "527d0e90371d14b6371b207277fe9a979ef38fd212404d1917d1eb31264b831d",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/lib.rs": {
@@ -10646,7 +10646,7 @@
       "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     },
     "crates/plenora-database-py/python/tests/test_stream_live.py": {
-      "review_sha256": "3190904ac65dbeb20536787ffb184f04ee6d47f4755af73cdb4d5f3e64701074",
+      "review_sha256": "874edf38f4414dc72d3126fa68b9b103ebdbcfae0d5dba5979e0ef56cd1f307d",
       "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     },
     "scripts/test_sdk_stream_boundaries.py": {

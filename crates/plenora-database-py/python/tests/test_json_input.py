@@ -391,6 +391,10 @@ def test_json_geoarrow_batches_land_in_postgis() -> None:
     )
     try:
         for encoding in ["wkb", "ewkb"]:
+            # Each round-trip starts with an unregistered SQL column. TRUNCATE
+            # does not erase the registered Arrow representation of a column.
+            session.execute_ddl("DROP TABLE _plenora_json_places")
+            session.execute_ddl("CREATE TABLE _plenora_json_places (id BIGINT PRIMARY KEY, shape geometry(Point, 4326) NOT NULL)")
             ingress = p.JsonInput(
                 p.JsonSchema(
                     [

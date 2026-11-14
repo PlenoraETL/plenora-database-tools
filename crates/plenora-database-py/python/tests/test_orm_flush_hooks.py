@@ -26,6 +26,13 @@ class HookItem(p.DeclarativeBase):
     audit: p.Mapped[str] = p.mapped_column(nullable=False)
 
 
+def test_deferred_annotations_keep_bind_types_without_future_import():
+    assert callable(HookItem.__annotate__)
+    assert HookItem.__mapper__.attribute("id").type_ is int
+    assert HookItem.__mapper__.attribute("name").type_ is str
+    assert HookItem.__mapper__.attribute("audit").type_ is str
+
+
 async def call(operation, *args):
     result = operation(*args)
     return await result if inspect.isawaitable(result) else result
