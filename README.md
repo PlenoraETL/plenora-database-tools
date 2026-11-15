@@ -342,6 +342,8 @@ Prima di consegnare si esegue `python scripts/ci_locale.py --esegui --profilo pr
 e si allega la ricevuta in `target/ci-locale/`, dichiarando verde soltanto i
 passi `PASS`. `--piano` stampa il piano derivato; `--job` seleziona un job.
 Le regole di esecuzione sono in [`AGENTS.md`](AGENTS.md#prima-di-dire-fatto).
+Per avvio, dipendenze e schema della ricevuta seguire il
+[contratto comune CI locale](docs/ci-locale.md).
 
 Lo sweep resta disponibile come percorso offline. I gate live sono separati per
 provider: un risultato verde su un database non qualifica gli altri.

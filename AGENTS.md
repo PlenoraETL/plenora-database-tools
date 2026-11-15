@@ -55,7 +55,7 @@ Il profilo PR include tutti i filtri PR potenziali: non consulta GitHub ne
 deduce i required checks della branch protection. Conserva shell, ambiente e
 piattaforma dei workflow; un prerequisito assente resta `NON ESEGUITO`.
 L'exit code 1 indica fallimenti, 2 copertura incompleta. Le toolchain richieste
-devono essere gia installate; la corsa usa dipendenze disponibili offline.
+devono essere gia installate; la rete e abilitata salvo `--offline` esplicito.
 
 I comandi stanno in [`README.md`](README.md), sezione «Cosa fa girare le
 prove», e nei workflow sotto `.github/workflows/`: sono la fonte, e ricopiarli

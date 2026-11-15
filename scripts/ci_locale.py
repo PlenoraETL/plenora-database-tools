@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Deriva la verifica PR dai workflow; nessun comando di gate duplicato.
 
-Python 3.14 e PyYAML da requirements-self-tests.txt. La lettura del piano
-funziona anche con 3.11 per diagnosticare un host non ancora predisposto.
+La versione Python e dichiarata in .python-version; PyYAML in
+requirements-ci-locale.txt. Il piano diagnostica anche host non predisposti.
 Exit 1: almeno un fallimento; 2: copertura incompleta; 0: tutti i gate PASS.
-Non installa toolchain e non accede a GitHub. I filtri PR sono conservati:
+Non installa toolchain. I checkout esterni online possono usare HTTPS. I filtri PR sono conservati:
 senza un evento remoto il profilo pr e il sovrainsieme di tutte le PR.
 """
 from __future__ import annotations
@@ -24,9 +24,14 @@ import subprocess
 import sys
 import time
 import tomllib
+import uuid
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    print("CI locale: manca PyYAML. Installare: python -m pip install -r requirements-ci-locale.txt", file=sys.stderr)
+    raise SystemExit(2) from None
 
 ROOT = Path(__file__).resolve().parents[1]
 # Adattamenti infrastrutturali, mai comandi di test. Nessuna installazione.
@@ -41,10 +46,94 @@ SHELLS = {
     "sh": ["sh", "-e"],
     "pwsh": ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-File"],
     "powershell": ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-File"],
+    "python": [sys.executable],
 }
-POLICY_ENV = {"CARGO_BUILD_JOBS": "4", "CARGO_INCREMENTAL": "0",
-              "CARGO_NET_OFFLINE": "true", "PIP_NO_INDEX": "1",
-              "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+PRECONDITIONS = (
+    (r"\b(?:sudo|apt-get|brew|choco)\b", "provisioning", "provisioning di sistema riservato alla CI"),
+    (r"\bgdal-config\b|--features[ =]+gdal-backend|--require-filegdb", "tool", "gdal-config"),
+    (r"\bdocker\b", "tool", "docker"),
+    (r"\bpwsh\b", "tool", "pwsh"),
+    (r"\bcargo\b", "tool", "cargo"),
+    (r"\bgit\b", "tool", "git"),
+    (r"scripts/compare_historical_readers\.py.*--old", "historical", "scripts/compare_historical_readers.py"),
+)
+
+
+def policy_env(offline):
+    return {"CARGO_BUILD_JOBS": "4", "CARGO_INCREMENTAL": "0",
+            "CARGO_NET_OFFLINE": "true" if offline else "false",
+            "PIP_NO_INDEX": "1" if offline else "0", "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+
+
+def preconditions(job, step, root, command, offline):
+    """Controlli prima del gate. Nessuna reinterpretazione del suo exit code."""
+    step = dict(step)
+    step["mapping"] = ACTIONS.get(step.get("uses", "").split("@")[0])
+    step.setdefault("with", {})
+    if step["mapping"] == "python":
+        wanted = str(step["with"].get("python-version", ""))
+        if "python-version-file" in step["with"]:
+            wanted = local_path(root, step["with"]["python-version-file"]).read_text(encoding="utf-8").strip()
+        step["toolchain"] = {"python": wanted}
+    direct = step.get("run") or ""
+    if offline:
+        # Una wheelhouse deve essere esplicita e locale; la sola cache pip non basta.
+        for line in command.splitlines():
+            if re.search(r"\bpip(?:3)?\s+install\b", line):
+                links = re.search(r"--find-links(?:=|\s+)([\w./-]+)", line)
+                local = links and local_path(root, links[1]).is_dir()
+                if not ("--no-index" in line and local and "http" not in line):
+                    return "offline: pip install senza wheelhouse locale esplicita"
+        if re.search(r"\b(?:curl|wget)\b|urlretrieve\(|urlopen\(|requests\.(?:get|post)\(|\bgit\s+(?:fetch|clone|pull)\b", command):
+            return "offline: download richiesto dal comando/script"
+        if re.search(r"\bcargo\s+(?:\+\S+\s+)?(?:build|test|check|clippy|run|fetch|metadata|install|update|bench)\b", command):
+            return "offline: risoluzione Cargo; completezza della cache non certificata"
+    for pattern, kind, value in PRECONDITIONS:
+        if not re.search(pattern, direct, re.S):
+            continue
+        if kind == "provisioning":
+            return value
+        if kind == "tool" and not shutil.which(value):
+            return f"strumento di sistema assente: {value}"
+        if kind == "historical":
+            source = local_path(root, value)
+            if not source.is_file():
+                return f"precondizione storica assente: {value}"
+            pin = re.search(r"BASELINE_REVISION\s*=\s*['\"]([^'\"]+)", source.read_text(encoding="utf-8"))
+            if not pin:
+                return "revisione storica non dichiarata"
+            try:
+                git(root, "rev-parse", "--verify", pin[1] + "^{commit}")
+            except (OSError, subprocess.SubprocessError):
+                return f"storia/tag git richiesti assenti: {pin[1]}"
+            for name in re.findall(r"--(?:old|new)\s+([^\s]+)", direct):
+                if not local_path(root, name).is_file():
+                    return f"binario storico/corrente assente: {name}"
+    if step.get("mapping") == "checkout" and not step["with"].get("path") and str(step["with"].get("fetch-depth")) == "0":
+        if git(root, "rev-parse", "--is-shallow-repository") == "true":
+            return "storia git completa richiesta; clone shallow"
+    if step.get("mapping") == "python":
+        wanted = step["toolchain"].get("python", "")
+        if re.fullmatch(r"\d+\.\d+(?:\.\d+)?", wanted) and tuple(map(int, wanted.split('.'))) != sys.version_info[:len(wanted.split('.'))]:
+            return f"Python {wanted} richiesto; host {platform.python_version()}"
+    if step.get("mapping") == "rust":
+        if not shutil.which("rustup"):
+            return "strumento di sistema assente: rustup"
+        wanted = step["with"].get("toolchain", "")
+        try:
+            installed = subprocess.check_output(["rustup", "toolchain", "list"], text=True, stderr=subprocess.PIPE)
+            if not any(line.split()[0] == wanted or line.startswith(wanted + "-") for line in installed.splitlines()):
+                return f"toolchain Rust assente: {wanted}"
+            components = [c.strip().removesuffix("-preview") for c in step["with"].get("components", "").split(",") if c.strip()]
+            if components:
+                present = subprocess.check_output(["rustup", "component", "list", "--installed", "--toolchain", wanted],
+                                                  text=True, stderr=subprocess.PIPE)
+                for component in components:
+                    if not any(line == component or line.startswith(component + "-") for line in present.splitlines()):
+                        return f"componente Rust assente: {component} ({wanted})"
+        except (OSError, subprocess.SubprocessError):
+            return "toolchain Rust non verificabile"
+    return ""
 EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 
 
@@ -163,7 +252,7 @@ def expand_steps(root: Path, steps: list, context: dict, env: dict,
 
 def build_plan(root: Path = ROOT) -> dict:
     """Scopre tutti i workflow: anche i job fuori profilo restano nel piano."""
-    plan = {"schema": 1, "profile": "pr", "jobs": [], "documents": {}}
+    plan = {"schema": 2, "profile": "pr", "jobs": [], "documents": {}}
     def visit(path, prefix="", inherited=None, chain=()):
         document = read_yaml(path)
         relative = path.relative_to(root).as_posix()
@@ -270,20 +359,78 @@ def host_os() -> str:
     return {"Darwin": "macOS"}.get(platform.system(), platform.system())
 
 
-def action_command(step: dict, root: Path) -> tuple[list[str] | None, str]:
+def checkout(root, destination, source, ref):
+    """Clone indipendente: non modifica la sorgente e non sovrascrive destinazioni."""
+    root = Path(root)
+    target = local_path(root, destination)
+    if target == root:
+        raise ValueError("destinazione checkout non separata")
+    existing = target.exists()
+    if existing:
+        if not (target / ".git").is_dir() or git(target, "remote", "get-url", "origin") != source:
+            raise ValueError("destinazione checkout non appartenente alla sorgente")
+        if git(target, "status", "--porcelain"):
+            raise ValueError("destinazione checkout modificata")
+    else:
+        clone_env = os.environ.copy()
+        if Path(source).is_dir():
+            # La sorgente locale e esplicitamente configurata dall'operatore.
+            # upload-pack e un processo figlio: -c sul clone non basta.
+            trusted = [Path(source).resolve().as_posix(),
+                       git(Path(source), "rev-parse", "--absolute-git-dir").replace("\\", "/")]
+            offset = int(clone_env.get("GIT_CONFIG_COUNT", "0"))
+            for index, directory in enumerate(trusted, offset):
+                clone_env[f"GIT_CONFIG_KEY_{index}"] = "safe.directory"
+                clone_env[f"GIT_CONFIG_VALUE_{index}"] = directory
+            clone_env["GIT_CONFIG_COUNT"] = str(offset + len(trusted))
+        subprocess.run(["git", "clone", "--no-hardlinks", "--no-checkout", "--", source, str(target)],
+                       check=True, env=clone_env)
+    expected = git(target, "rev-parse", "--verify", ref + "^{commit}")
+    if re.fullmatch(r"[0-9a-fA-F]{40}", ref) and expected.lower() != ref.lower():
+        raise ValueError("SHA richiesto non corrispondente")
+    if not existing:
+        subprocess.run(["git", "-C", str(target), "checkout", "--detach", expected], check=True)
+    actual = git(target, "rev-parse", "HEAD")
+    if actual != expected:
+        raise ValueError("SHA checkout non corrispondente")
+    print(json.dumps({"requested_ref": ref, "expected_sha": expected, "actual_sha": actual}))
+
+
+def action_command(step: dict, root: Path, offline: bool = False) -> tuple[list[str] | None, str]:
     """Le azioni setup verificano il tool presente; non simulano installazioni."""
     use = step.get("uses", "").split("@")[0]
     kind = ACTIONS.get(use)
     inputs = step.get("with", {})
     if kind == "checkout":
-        if inputs:
+        if any(k in inputs for k in ("repository", "ref", "path")):
+            if set(inputs) - {"repository", "ref", "path", "fetch-depth"}:
+                return None, "input checkout non mappati"
+            repository, ref, destination = (str(inputs.get(k, "")) for k in ("repository", "ref", "path"))
+            if (repository and not re.fullmatch(r"[\w.-]+/[\w.-]+", repository)) or not re.fullmatch(r"[\w./-]+", ref) or ref.startswith("-") or not destination:
+                return None, "repository/ref/path checkout non risolti"
+            target = local_path(root, destination)
+            if target == root:
+                return None, "destinazione checkout non separata"
+            key = "CI_LOCALE_SORGENTE_" + re.sub(r"[^A-Z0-9]", "_", repository.rsplit("/", 1)[-1].upper())
+            source = os.environ.get(key) if repository else str(root)
+            if source:
+                source = str(Path(source).resolve())
+                if not Path(source).is_dir():
+                    return None, "sorgente checkout locale assente: " + key
+            elif offline:
+                return None, "offline: checkout senza sorgente locale " + key
+            else:
+                source = "https://github.com/" + repository + ".git"
+            return [sys.executable, "-c", "import runpy,sys; runpy.run_path(sys.argv[1])['checkout'](*sys.argv[2:])",
+                    str(Path(__file__).resolve()), str(root), destination, source, ref], ""
+        if set(inputs) - {"fetch-depth"}:
             return None, "checkout con input: richiede ambiente Actions o checkout separato"
         return ["git", "-c", f"safe.directory={root.as_posix()}", "rev-parse", "HEAD"], ""
     if kind == "python":
         wanted = str(inputs.get("python-version", ""))
         if "python-version-file" in inputs:
             wanted = local_path(root, inputs["python-version-file"]).read_text(encoding="utf-8").strip()
-        if wanted != f"{sys.version_info.major}.{sys.version_info.minor}":
+        if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", wanted) or tuple(map(int, wanted.split('.'))) != sys.version_info[:len(wanted.split('.'))]:
             return None, f"Python {wanted} richiesto; host {platform.python_version()}"
         return [sys.executable, "--version"], ""
     if kind == "rust":
@@ -306,7 +453,7 @@ def native_command(script: str) -> list[str] | None:
     return argv
 
 
-def assess(entry: dict, item: dict, root: Path, live: bool = False) -> tuple[str, str, list | None]:
+def assess(entry: dict, item: dict, root: Path, live: bool = False, offline: bool = False) -> tuple[str, str, list | None]:
     """Classifica senza avviare processi; nessuna esclusione elimina un passo."""
     step = item["step"]
     if "release" in entry["events"] or re.search(
@@ -317,28 +464,33 @@ def assess(entry: dict, item: dict, root: Path, live: bool = False) -> tuple[str
         return "NON ESEGUIBILE", "workflow senza evento pull_request", None
     if entry["reason"]:
         return "NON ESEGUIBILE", entry["reason"], None
+    try:
+        script = step.get("run", "")
+        for name in re.findall(r"(?:scripts|\.github/scripts)/[\w/.-]+\.(?:py|sh|ps1)", script):
+            path = local_path(root, name)
+            if path.is_file():
+                script += "\n" + path.read_text(encoding="utf-8")
+        missing = preconditions(entry, step, root, script, offline)
+        if missing:
+            return "NON ESEGUIBILE", missing, None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return "NON ESEGUIBILE", "precondizione locale non verificabile", None
     needs = resources(entry, root)
     if needs and not live:
         return "NON ESEGUIBILE", "; ".join(needs) + ": richiede --servizi-live", None
     if needs and not shutil.which("docker"):
-        return "SALTATO", "servizio Docker assente dal PATH", None
+        return "NON ESEGUIBILE", "servizio Docker assente dal PATH", None
     if entry["services"] or entry["job"].get("container"):
         return "NON ESEGUIBILE", "provisioning services/container Actions non mappato", None
     runner = str(entry["job"].get("runs-on", ""))
     target = next((os_name for token, os_name in (("windows", "Windows"), ("ubuntu", "Linux"), ("macos", "macOS")) if token in runner), None)
-    portable = native_command(step.get("run", "")) is not None or step.get("uses", "").split("@")[0] in ACTIONS
-    # Le celle della matrice OS non sono intercambiabili. I gate a runner
-    # fisso con una singola invocazione portabile possono invece misurare
-    # l'host locale, registrandolo senza attribuirsi una prova dell'altro OS.
-    matrix_runner = "matrix." in str(entry["raw"].get("runs-on", ""))
     if target != host_os():
-        if target is None or matrix_runner or not portable:
-            return "SALTATO", f"piattaforma richiesta {runner}; host {host_os()}", None
+        return "NON ESEGUIBILE", f"piattaforma richiesta {runner}; host {host_os()}", None
     step_if = step.get("if", True)
     if not any(word in str(step_if) for word in ("success()", "failure()", "always()", "cancelled()")):
         decision = condition(step_if, host_os())
         if decision is False:
-            return "SALTATO", "condizione passo falsa", None
+            return "NON ESEGUIBILE", "condizione passo falsa", None
         if decision is None:
             return "NON ESEGUIBILE", "condizione passo non risolvibile", None
     for cond in [entry["job"].get("if", True), *item.get("parent_conditions", [])]:
@@ -349,27 +501,28 @@ def assess(entry: dict, item: dict, root: Path, live: bool = False) -> tuple[str
         return "NON ESEGUIBILE", item["reason"], None
     if "${{" in json.dumps([step, item["env"], item["working_directory"]]):
         return "NON ESEGUIBILE", "espressione Actions non risolvibile", None
-    if any("GITHUB_" in str(value) for value in [step.get("run", ""), item["env"]]):
+    if any(re.search(r"GITHUB_(?!OUTPUT\b)\w+", str(value)) for value in [step.get("run", ""), item["env"]]):
         return "NON ESEGUIBILE", "file/variabili di contesto GitHub non riprodotti", None
     try:
-        local_path(root, item["working_directory"])
+        if not local_path(root, item["working_directory"]).is_dir():
+            return "NON ESEGUIBILE", "working-directory assente", None
         if "uses" in step:
-            command, reason = action_command(step, root)
+            command, reason = action_command(step, root, offline)
             return ("ESEGUIBILE", "", command) if command else ("NON ESEGUIBILE", reason, None)
     except (OSError, ValueError):
         return "NON ESEGUIBILE", "input/percorso locale non disponibile", None
     shell = item["shell"]
     name = shell.split()[0]
-    # Una singola invocazione nativa non richiede la shell. Nessun glob,
-    # espansione, pipeline o blocco viene tradotto in argv.
+    # Anche i comandi portabili conservano la precondizione sulla shell.
+    # Nessun glob, espansione, pipeline o blocco viene tradotto in argv.
     script = step.get("run", "")
     argv = native_command(script)
-    if name in SHELLS and argv:
-        return "ESEGUIBILE", "invocazione nativa singola, senza espansioni shell", argv
-    if name not in SHELLS or not shutil.which(name):
+    if name not in SHELLS or not shutil.which(SHELLS[name][0]):
         return "NON ESEGUIBILE", "shell non disponibile o non mappata: " + shell, None
     if shell != name and "{0}" not in shell:
         return "NON ESEGUIBILE", "shell personalizzata senza placeholder {0}", None
+    if shell == name and argv:
+        return "ESEGUIBILE", "invocazione nativa singola, senza espansioni shell", argv
     if re.search(r"\b(?:sudo|apt-get|brew|choco)\b", step.get("run", "")):
         return "NON ESEGUIBILE", "provisioning di sistema riservato al runner CI", None
     return "ESEGUIBILE", "", None
@@ -378,17 +531,19 @@ def assess(entry: dict, item: dict, root: Path, live: bool = False) -> tuple[str
 def subprocess_result(command: list[str], cwd: Path, env: dict, log: Path, timeout: float) -> dict:
     """Il returncode e l'unica fonte del PASS; log completi fuori dai messaggi."""
     start = time.monotonic()
-    result = {"command": command, "duration_seconds": 0, "outcome": "NON ESEGUITO",
-              "reason": "", "returncode": None, "log": str(log)}
+    result = {"command": command, "duration_seconds": 0, "status": "NON ESEGUITO",
+              "reason": "", "exit_code": None, "log": None}
     try:
         with log.open("w", encoding="utf-8") as stream:
             process = subprocess.run(command, cwd=cwd, env=env, stdout=stream,
                                      stderr=subprocess.STDOUT, timeout=timeout, check=False)
-        result.update(returncode=process.returncode, outcome="PASS" if process.returncode == 0 else "FAIL")
+        result.update(log=str(log), exit_code=process.returncode, status="PASS" if process.returncode == 0 else "FAIL")
+        if process.returncode == 0 and re.search(r"\b(?:skipping|skipped|NON ESEGUITO)\b", log.read_text(encoding="utf-8", errors="replace"), re.I):
+            result.update(status="NON ESEGUITO", reason="il log dichiara prove saltate; consultare il log")
         if process.returncode:
             result["reason"] = "processo terminato con codice non zero; vedere log"
     except subprocess.TimeoutExpired:
-        result.update(outcome="FAIL", reason="timeout del passo")
+        result.update(status="FAIL", reason="timeout del passo", log=str(log))
     except OSError:
         result["reason"] = "processo non avviabile; verificare eseguibile e directory"
     result["duration_seconds"] = round(time.monotonic() - start, 3)
@@ -399,14 +554,29 @@ def shell_command(item: dict, directory: Path, index: int) -> list[str]:
     """Il programma run intero vive in un file, senza traduzioni della shell."""
     shell = item["shell"]
     name = shell.split()[0]
-    path = directory / f"step-{index}.{'ps1' if name in {'pwsh', 'powershell'} else 'sh'}"
+    suffix = "ps1" if name in {"pwsh", "powershell"} else "py" if name == "python" else "sh"
+    path = directory / f"step-{index}.{suffix}"
     script = item["step"]["run"]
+    if name in {"bash", "sh"}:
+        interpreter = shlex.quote(Path(sys.executable).as_posix())
+        prefix = f'python() {{ {interpreter} "$@"; }}\npython3() {{ {interpreter} "$@"; }}\n'
+        script = prefix + ("export -f python python3\n" if name == "bash" else "") + script
     if name in {"pwsh", "powershell"}:
-        script = "$ErrorActionPreference = 'Stop'\n" + script + "\nif (Test-Path variable:LASTEXITCODE) { exit $LASTEXITCODE }\n"
+        interpreter = sys.executable.replace("'", "''")
+        script = ("$ErrorActionPreference = 'Stop'\n" +
+                  f"function python {{ & '{interpreter}' @args }}\nfunction python3 {{ & '{interpreter}' @args }}\n" +
+                  script + "\nif (Test-Path variable:LASTEXITCODE) { exit $LASTEXITCODE }\n")
     path.write_text(script, encoding="utf-8", newline="\n")
     if shell == name:
-        return [*SHELLS[name], path.as_posix()]
-    return [part.replace("{0}", path.as_posix()) for part in shlex.split(shell)]
+        command = [*SHELLS[name], path.as_posix()]
+    else:
+        command = [part.replace("{0}", path.as_posix()) for part in shlex.split(shell)]
+    command[0] = shutil.which(command[0]) or command[0]
+    return command
+
+
+def git(root, *args):
+    return subprocess.check_output(["git", "-c", f"safe.directory={root.as_posix()}", *args], cwd=root, text=True, stderr=subprocess.PIPE).strip()
 
 
 def git_state(root: Path) -> dict:
@@ -443,14 +613,15 @@ def ordered_jobs(jobs: list[dict]) -> list[dict]:
     return result
 
 
-def execute(plan: dict, root: Path, output: Path, selected: list[str], live: bool) -> tuple[dict, int]:
+def execute(plan: dict, root: Path, output: Path, selected: list[str], live: bool, offline: bool = False, timeout: float = 1800) -> tuple[dict, int]:
     """Raccoglie tutti gli esiti; un prerequisito mancante blocca i dipendenti."""
+    policy = policy_env(offline)
     output.mkdir(parents=True, exist_ok=True)
-    receipt = {"schema": 1, **git_state(root), "host": platform.platform(),
-               "python": platform.python_version(), "profile": "pr", "selected": selected,
+    receipt = {"schema": 2, **git_state(root), "host": platform.platform(),
+               "python": platform.python_version(), "profile": "pr", "selected_jobs": selected, "network_mode": "offline" if offline else "online", "overrides": policy, "jobs": [],
                "services_opt_in": live, "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-               "workflow_sha256": {p: hashlib.sha256(local_path(root, p).read_bytes()).hexdigest() for p in plan["documents"]},
-               "results": []}
+               "sources": {p: hashlib.sha256(local_path(root, p).read_bytes()).hexdigest() for p in plan["documents"]},
+               "steps": []}
     # Solo ambiente minimo: DSN e credenziali della sessione non entrano nei test.
     base = {k: v for k, v in os.environ.items() if k.upper() in {
         "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "HOME", "USERPROFILE",
@@ -459,7 +630,20 @@ def execute(plan: dict, root: Path, output: Path, selected: list[str], live: boo
         "WINDOWSSDKDIR", "WINDOWSSDKVERSION"}}
     temp = output / "tmp"
     temp.mkdir(exist_ok=True)
-    base.update(POLICY_ENV, TMP=str(temp), TEMP=str(temp), TMPDIR=str(temp), RUNNER_TEMP=str(temp))
+    base.update(policy, TMP=str(temp), TEMP=str(temp), TMPDIR=str(temp), RUNNER_TEMP=str(temp))
+    # Include composite definitions as well as workflow documents.
+    for entry in plan["jobs"]:
+        for item in entry["steps"]:
+            use = item["step"].get("uses", "")
+            if use.startswith("./"):
+                for name in ("action.yml", "action.yaml"):
+                    source = local_path(root, use) / name
+                    if source.is_file():
+                        receipt["sources"][source.relative_to(root).as_posix()] = hashlib.sha256(source.read_bytes()).hexdigest()
+    def save():
+        receipt["counts"] = {status: sum(row["status"] == status for row in receipt["steps"])
+                             for status in {row["status"] for row in receipt["steps"]}}
+        (output / "ricevuta.json").write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     completed = {}
     for entry in ordered_jobs(plan["jobs"]):
         job_base = base.copy()
@@ -478,22 +662,44 @@ def execute(plan: dict, root: Path, output: Path, selected: list[str], live: boo
         if entry["job"].get("uses") and not entry["steps"]:
             entry = {**entry, "steps": [{"source": entry["key"], "step": {"uses": entry["job"]["uses"]},
                      "raw": {}, "env": {}, "shell": "", "working_directory": ".", "reason": entry["reason"]}]}
+        job_record = {"id": entry["id"], "matrix": entry["matrix"], "needs": needs, "reason": entry["reason"]}
+        receipt["jobs"].append(job_record)
+        records = []
+        toolchain = {}
+        context = {}
         for item in entry["steps"]:
+            item = {**item, "step": expand(item["step"], context), "env": expand(item["env"], context),
+                    "working_directory": expand(item["working_directory"], context)}
             step = item["step"]
-            status, reason, command = assess(entry, item, root, live)
+            status, reason, command = assess(entry, item, root, live, offline)
+            mapping = ACTIONS.get(step.get("uses", "").split("@")[0])
+            if mapping == "rust":
+                toolchain["rust"] = step.get("with", {})
+            elif mapping == "python":
+                inputs = step.get("with", {})
+                toolchain["python"] = str(inputs.get("python-version", ""))
+                if "python-version-file" in inputs:
+                    try:
+                        toolchain["python"] = local_path(root, inputs["python-version-file"]).read_text(encoding="utf-8").strip()
+                    except (OSError, ValueError):
+                        pass  # assess has recorded the missing prerequisite.
             row = {"job": entry["id"], "source": item["source"], "matrix": entry["matrix"],
                    "declared_runner": entry["job"].get("runs-on"), "actual_host": host_os(),
                    "run": step.get("run"), "uses": step.get("uses"), "shell": item["shell"],
-                   "working_directory": item["working_directory"], "toolchains": entry["toolchains"],
+                   "working_directory": item["working_directory"], "toolchain": dict(toolchain),
                    "services": entry["services"], "resources": resources(entry, root),
-                   "env": {**item["env"], **POLICY_ENV}, "command": command,
-                   "duration_seconds": 0, "outcome": "NON ESEGUITO", "reason": reason,
-                   "eligibility": status, "returncode": None}
+                   "env": item["env"], "command": step.get("run") or step.get("uses"),
+                   "duration_seconds": 0, "status": "NON ESEGUITO", "reason": reason,
+                   "eligibility": status, "exit_code": None, "log": None,
+                   "raw": item.get("raw", {}), "name": step.get("name", item["source"]),
+                   "with": step.get("with", {}), "if": step.get("if", "success()"),
+                   "continue_on_error": step.get("continue-on-error", False),
+                   "container": entry["job"].get("container"), "environment": {**item["env"], **policy}, "condition_false": False}
             infrastructure = step.get("uses", "").split("@")[0] == "Swatinem/rust-cache" or item.get("structural", False)
             if selected and not any(s in (entry["id"], entry["key"], entry["key"].rsplit("/", 1)[-1]) for s in selected):
                 row["reason"] = "job non selezionato"
-            elif status == "SALTATO":
-                row["outcome"] = "SALTATO"
+            elif condition(step.get("if", "success()"), host_os(), failed) is False:
+                row.update(reason="condizione passo falsa", condition_false=True)
             elif status == "ESEGUIBILE":
                 verdict = condition(step.get("if", "success()"), host_os(), failed)
                 if blocked:
@@ -501,26 +707,40 @@ def execute(plan: dict, root: Path, output: Path, selected: list[str], live: boo
                 elif verdict is not True:
                     row["reason"] = "condizione passo falsa" if verdict is False else "condizione passo non risolvibile"
                 else:
-                    index = len(receipt["results"])
+                    index = len(receipt["steps"])
                     command = command or shell_command(item, output, index)
-                    env = {**job_base, **{k: str(v) for k, v in item["env"].items()}, **POLICY_ENV}
+                    env = {**job_base, **{k: str(v) for k, v in item["env"].items()}, **policy}
+                    output_file = output / f"step-{index}.outputs"
+                    output_file.write_text("", encoding="utf-8")
+                    env["GITHUB_OUTPUT"] = output_file.as_posix()
                     if step.get("uses", "").split("@")[0] == "dtolnay/rust-toolchain":
                         job_base["RUSTUP_TOOLCHAIN"] = str(step["with"]["toolchain"])
-                    row["env"] = env
+                    row["environment"] = env
                     row.update(subprocess_result(command, local_path(root, item["working_directory"]), env,
-                               output / f"step-{index}.log", float(step.get("timeout-minutes", entry["job"].get("timeout-minutes", 360))) * 60))
-            if row["outcome"] == "FAIL" and step.get("continue-on-error") is not True:
+                               output / f"step-{index}.log", min(timeout, float(step.get("timeout-minutes", entry["job"].get("timeout-minutes", 360))) * 60)))
+                    if row["status"] == "PASS" and step.get("id"):
+                        for line in output_file.read_text(encoding="utf-8-sig").splitlines():
+                            key, separator, value = line.partition("=")
+                            if not separator or not re.fullmatch(r"[\w-]+", key):
+                                row.update(status="FAIL", reason="formato GITHUB_OUTPUT non supportato", exit_code=1)
+                                break
+                            context[f"steps.{step['id']}.outputs.{key}"] = value
+            if row["status"] == "FAIL" and step.get("continue-on-error") is not True:
                 failed = True
-            elif row["outcome"] in {"NON ESEGUITO", "SALTATO"} and not infrastructure and row["reason"] != "condizione passo falsa":
+            elif row["status"] in {"NON ESEGUITO", "SALTATO"} and not infrastructure and row["reason"] != "condizione passo falsa":
                 blocked = "prerequisito non eseguito: " + item["source"]
-            receipt["results"].append(row)
-            print(f"{row['outcome']}: {entry['id']} / {step.get('name', item['source'])}: {row['reason']}", flush=True)
-        completed[entry["key"]] = completed.get(entry["key"], True) and not failed and not blocked
-    receipt["end_state"] = git_state(root)
-    outcomes = [row["outcome"] for row in receipt["results"]]
-    code = 1 if "FAIL" in outcomes else 2 if any(o != "PASS" for o in outcomes) else 0
+            receipt["steps"].append(row)
+            records.append(row)
+            save()
+            print(f"{row['status']}: {entry['id']} / {step.get('name', item['source'])}: {row['reason']}", flush=True)
+        job_record["status"] = "FAIL" if any(r["status"] == "FAIL" for r in records) else "PASS" if records and all(r["status"] == "PASS" for r in records) else "NON ESEGUITO"
+        completed[entry["key"]] = completed.get(entry["key"], True) and job_record["status"] == "PASS"
+    final = git_state(root)
+    receipt.update(final_sha=final["sha"], final_dirty=final["dirty"], finished_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    outcomes = [row["status"] for row in receipt["steps"]]
+    code = 1 if "FAIL" in outcomes else 2 if not receipt["jobs"] or any(j["status"] != "PASS" for j in receipt["jobs"]) else 0
     receipt["exit_code"] = code
-    (output / "ricevuta.json").write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    save()
     return receipt, code
 
 
@@ -532,21 +752,26 @@ def main(argv=None) -> int:
     parser.add_argument("--job", action="append", default=[])
     parser.add_argument("--profilo", choices=["pr"], default="pr")
     parser.add_argument("--servizi-live", action="store_true", help="abilita i servizi richiesti (mai release)")
+    parser.add_argument("--offline", action="store_true", help="non eseguire passi che richiedono rete")
+    parser.add_argument("--timeout", type=int, default=1800, help="secondi per passo")
     args = parser.parse_args(argv)
-    plan = build_plan()
+    plan = build_plan(ROOT)
+    plan["network_mode"] = "offline" if args.offline else "online"
     known = {s for j in plan["jobs"] for s in (j["id"], j["key"], j["key"].rsplit("/", 1)[-1])}
     if any(job not in known for job in args.job):
         parser.error("--job non presente nel piano")
     if args.piano:
         for entry in plan["jobs"]:
             for item in entry["steps"]:
-                status, reason, command = assess(entry, item, ROOT, args.servizi_live)
-                item.update(eligibility=status, reason_local=reason, command_local=command)
+                status, reason, command = assess(entry, item, ROOT, args.servizi_live, args.offline)
+                if args.job and not any(j in (entry["id"], entry["key"], entry["key"].rsplit("/", 1)[-1]) for j in args.job):
+                    status, reason = "NON ESEGUIBILE", "job non selezionato"
+                item.update(availability=status, availability_reason=reason, command_local=command)
         print(json.dumps(plan, indent=2, ensure_ascii=False))
         return 0
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    output = ROOT / "target/ci-locale" / stamp
-    _, code = execute(plan, ROOT, output, args.job, args.servizi_live)
+    output = ROOT / "target/ci-locale" / (stamp + "-" + uuid.uuid4().hex[:8])
+    _, code = execute(plan, ROOT, output, args.job, args.servizi_live, args.offline, args.timeout)
     print("Ricevuta: " + str(output / "ricevuta.json"))
     return code
 

@@ -7,4 +7,4 @@
 
 # I test dei workflow usano un parser YAML vero; la dipendenza appartiene al
 # packaging del gate statico.
-PyYAML==6.0.3
+-r requirements-ci-locale.txt
