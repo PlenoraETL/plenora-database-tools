@@ -332,7 +332,10 @@ impl Value {
     fn deserialize_datetime(buf: &mut ParseBuf<'_>) -> io::Result<Self> {
         let len = buf.checked_eat_u8().ok_or_else(unexpected_buf_eof)?;
         if ![0, 4, 7, 11].contains(&len) {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid temporal length"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid temporal length",
+            ));
         }
 
         let mut year = 0u16;
@@ -367,7 +370,10 @@ impl Value {
     fn deserialize_time(buf: &mut ParseBuf<'_>) -> io::Result<Self> {
         let len = buf.checked_eat_u8().ok_or_else(unexpected_buf_eof)?;
         if ![0, 8, 12].contains(&len) {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid temporal length"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid temporal length",
+            ));
         }
 
         let mut is_negative = false;
@@ -383,7 +389,12 @@ impl Value {
 
         if len >= 8u8 {
             let sign = buf.eat_u8();
-            if sign > 1 { return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid temporal sign")); }
+            if sign > 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid temporal sign",
+                ));
+            }
             is_negative = sign == 1;
             days = buf.eat_u32_le();
             hours = buf.eat_u8();
@@ -454,7 +465,10 @@ impl Value {
             | ColumnType::MYSQL_TYPE_DATETIME => Self::deserialize_datetime(buf),
             ColumnType::MYSQL_TYPE_TIME => Self::deserialize_time(buf),
             ColumnType::MYSQL_TYPE_NULL => Ok(NULL),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported binary column type")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported binary column type",
+            )),
         }
     }
 }
