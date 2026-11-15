@@ -4,7 +4,7 @@ use plenora_database_core::ErrorPhase;
 
 #[test]
 fn temporal_timezone_rejects_local_calendar_overflow() {
-    let value = OracleTimestamp::with_timezone(9999, 12, 31, 23, 59, 59, 999999, 14, 0);
+    let value = OracleTimestamp::with_timezone(9999, 12, 31, 23, 59, 59, 999_999, 14, 0);
     assert!(decode_timestamp_tz(value, ErrorPhase::Read).is_err());
     let value = OracleTimestamp::with_timezone(9999, 12, 31, 0, 0, 0, 0, -12, 0);
     assert_eq!(

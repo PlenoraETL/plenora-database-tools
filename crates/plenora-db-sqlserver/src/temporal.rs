@@ -1,13 +1,13 @@
 //! Controllo dei campi TDS prima delle conversioni chrono del driver.
 use tiberius::{ColumnData, FromSql};
 
-pub(crate) struct Checked<T>(pub(crate) T);
+pub struct Checked<T>(pub T);
 
 fn invalid() -> tiberius::error::Error {
     tiberius::error::Error::Conversion("valore temporale TDS fuori dominio".into())
 }
 
-fn date(days: u32) -> bool {
+const fn date(days: u32) -> bool {
     days <= 3_652_058
 }
 

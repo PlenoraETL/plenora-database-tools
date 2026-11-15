@@ -2,7 +2,7 @@
 use mysql_async::Value;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 
-pub(crate) fn validate(value: &Value) -> Result<()> {
+pub fn validate(value: &Value) -> Result<()> {
     let valid = match value {
         Value::Date(y, mo, d, h, mi, s, us) => {
             (1..=9999).contains(y)

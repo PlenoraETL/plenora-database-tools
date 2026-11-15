@@ -21,16 +21,24 @@ fn temporal_tds_raw_fields() {
     for scale in [0, 3, 7, 8, 255] {
         for ticks in [0, 1, 864_000_000_000, u64::MAX] {
             let value = ColumnData::Time(Some(Time::new(ticks, scale)));
-            let expected = scale <= 7 && ticks < 86400 * 10_u64.pow(u32::from(scale));
+            let expected = scale <= 7 && ticks < 86_400 * 10_u64.pow(u32::from(scale));
             assert_eq!(Checked::<NaiveTime>::from_sql(&value).is_ok(), expected);
         }
     }
-    for days in [i32::MIN, -53691, -53690, 0, 2958463, 2958464, i32::MAX] {
+    for days in [
+        i32::MIN,
+        -53_691,
+        -53_690,
+        0,
+        2_958_463,
+        2_958_464,
+        i32::MAX,
+    ] {
         for ticks in [0, 25_919_999, 25_920_000, u32::MAX] {
             let value = ColumnData::DateTime(Some(tiberius::time::DateTime::new(days, ticks)));
             assert_eq!(
                 Checked::<NaiveDateTime>::from_sql(&value).is_ok(),
-                (-53690..=2958463).contains(&days) && ticks < 25_920_000
+                (-53_690..=2_958_463).contains(&days) && ticks < 25_920_000
             );
         }
     }

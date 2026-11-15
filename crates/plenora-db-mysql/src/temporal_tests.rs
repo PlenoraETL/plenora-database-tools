@@ -30,11 +30,11 @@ fn temporal_mysql_wire_dates() {
     use ColumnType::MYSQL_TYPE_DATETIME as DT;
     for (year, month, day, seconds, micros, valid) in [
         (0_u16, 0, 0, 0, 0_u32, false),
-        (2024, 2, 29, 59, 999999, true),
+        (2024, 2, 29, 59, 999_999, true),
         (2023, 2, 29, 0, 0, false),
         (65535, 1, 1, 0, 0, false),
-        (9999, 12, 31, 59, 999999, true),
-        (2024, 1, 1, 59, 1000000, false),
+        (9999, 12, 31, 59, 999_999, true),
+        (2024, 1, 1, 59, 1_000_000, false),
         (2024, 1, 1, 59, u32::MAX, false),
         (2024, 1, 1, 60, 0, false),
     ] {
@@ -63,10 +63,10 @@ fn temporal_mysql_wire_dates() {
 fn temporal_mysql_wire_time() {
     use ColumnType::MYSQL_TYPE_TIME as TM;
     for (days, hours, micros, valid) in [
-        (0_u32, 0, 999999_u32, true),
+        (0_u32, 0, 999_999_u32, true),
         (34, 22, 0, true),
         (34, 22, 1, false),
-        (34, 22, 999999, false),
+        (34, 22, 999_999, false),
         (34, 23, 0, false),
         (u32::MAX, 0, 0, false),
         (0, 255, 0, false),

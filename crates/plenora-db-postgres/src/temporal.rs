@@ -1,14 +1,14 @@
 //! Validazione temporale prima del decoder chrono: TIME non deve avvolgere.
 use tokio_postgres::types::{FromSql, Type};
 
-pub(crate) fn interval_nanoseconds(micros: i64) -> plenora_database_core::Result<i64> {
+pub fn interval_nanoseconds(micros: i64) -> plenora_database_core::Result<i64> {
     micros.checked_mul(1000).ok_or_else(|| {
         crate::arrow::read_mapping_error("interval PostgreSQL oltre il range Arrow nanosecond")
     })
 }
 
 #[derive(Debug)]
-pub(crate) struct CheckedTime(pub(crate) chrono::NaiveTime);
+pub struct CheckedTime(pub chrono::NaiveTime);
 
 impl<'a> FromSql<'a> for CheckedTime {
     fn from_sql(

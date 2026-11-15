@@ -856,6 +856,7 @@ fn a_diverging_profile_changes_timeout_classification_and_spatial() {
 /// La lista e confrontata con le dichiarazioni `mod` di `lib.rs`, quindi
 /// le guardie strutturali non possono omettere nuovi moduli in silenzio.
 const GUARDED_MODULES: &[(&str, &str)] = &[
+    ("temporal.rs", include_str!("temporal.rs")),
     ("conditional_json.rs", include_str!("conditional_json.rs")),
     ("arrow.rs", include_str!("arrow.rs")),
     ("catalog.rs", include_str!("catalog.rs")),
