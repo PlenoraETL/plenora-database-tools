@@ -8,6 +8,31 @@ use plenora_database_core::transaction::{AccessMode, IsolationLevel, Transaction
 use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
 
 #[test]
+fn temporal_statement_timeout_validates_before_io_on_every_target() {
+    for ms in [
+        999,
+        1001,
+        (u64::from(u32::MAX) + 1) * 1000,
+        u64::MAX / 1000 * 1000,
+    ] {
+        let options = TransactionOptions {
+            statement_timeout_ms: Some(ms),
+            ..TransactionOptions::default()
+        };
+        assert_eq!(
+            validate_options(&options).unwrap_err().category,
+            ErrorCategory::InvalidPlan
+        );
+    }
+    assert!(validate_options(&TransactionOptions::default()).is_ok());
+    let options = TransactionOptions {
+        statement_timeout_ms: Some(1000),
+        ..TransactionOptions::default()
+    };
+    assert!(validate_options(&options).is_ok());
+}
+
+#[test]
 fn db2_isolation_levels_map_to_their_native_semantics() {
     for (level, expected) in [
         (

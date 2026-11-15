@@ -1,0 +1,15 @@
+{
+  "reason": "Costruttori preesistenti: giorni Arrow i32 e costanti di calendario; ogni nuova espressione richiede conversione checked. Cardinalita esatta, nessuna esclusione per file.",
+  "reviewed": {
+    "crates/plenora-database-engine/src/arrow_write.rs::Duration::days(i64::from(days))))": 1,
+    "crates/plenora-database-testkit/src/parameter_fidelity.rs::Duration::days(i64::from(days))))": 1,
+    "crates/plenora-database-testkit/src/parameter_fidelity.rs::Duration::seconds(1),": 1,
+    "crates/plenora-database-testkit/src/parameter_sweep.rs::Duration::days(i64::from(days))))": 1,
+    "crates/plenora-database-testkit/src/write_probe_direct.rs::from_ymd_opt(1970, 1, 1).expect(": 1,
+    "crates/plenora-db-mysql/src/write.rs::Duration::days(i64::from(days))))": 1,
+    "crates/plenora-db-postgres/src/write/prepared_codec.rs::Duration::days(i64::from(typed.value(row))))": 1,
+    "crates/plenora-db-postgres/src/write/value_codec.rs::Duration::days(i64::from(typed!(Date32Array).value(row))))": 1,
+    "crates/plenora-db-sqlserver/src/arrow.rs::Duration::milliseconds(i64::from(millis)))": 1,
+    "crates/plenora-db-sqlserver/src/write/codec.rs::Duration::days(i64::from(days)))": 1
+  }
+}

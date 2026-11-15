@@ -11,9 +11,9 @@
 //! Il helper è **cancellation-aware**: interrompe attesa e retry se il
 //! `CancellationToken` viene cancellato.
 
+use plenora_database_core::temporal;
 use plenora_database_core::{CancellationToken, DatabaseError, Result, RetryDisposition};
 use std::future::Future;
-use std::time::Duration;
 
 /// Politica retry: parametri di alto livello.
 #[derive(Debug, Clone, Copy)]
@@ -74,6 +74,9 @@ where
             "RetryPolicy.max_attempts deve essere >= 1",
         ));
     }
+    if let Some(cap) = policy.max_delay_ms {
+        temporal::retry_ms(cap)?;
+    }
     let mut last_error: Option<DatabaseError> = None;
     let mut attempt = 0_u32;
     // `loop` e non `for`: ogni uscita restituisce il proprio esito, e
@@ -96,7 +99,7 @@ where
                     }
                     RetryDisposition::After(ms) => {
                         let ms = policy.max_delay_ms.map_or(ms, |cap| ms.min(cap));
-                        if sleep_cancellable(cancellation, ms).await {
+                        if sleep_cancellable(cancellation, ms).await? {
                             return Err(interrupted_error(Some(&error), cancellation));
                         }
                     }
@@ -118,14 +121,15 @@ where
 /// Sleeps for `ms` milliseconds unless the cancellation token fires first.
 ///
 /// Returns `true` se lo sleep è stato interrotto dalla cancellation.
-async fn sleep_cancellable(cancellation: &CancellationToken, ms: u64) -> bool {
+async fn sleep_cancellable(cancellation: &CancellationToken, ms: u64) -> Result<bool> {
     if ms == 0 {
-        return cancellation.is_cancelled();
+        return Ok(cancellation.is_cancelled());
     }
-    let sleep = tokio::time::sleep(Duration::from_millis(ms));
+    let deadline = temporal::deadline(temporal::retry_ms(ms)?)?;
+    let sleep = tokio::time::sleep_until(deadline.into());
     tokio::select! {
-        () = sleep => cancellation.is_cancelled(),
-        _ = cancellation.cancelled() => true,
+        () = sleep => Ok(cancellation.is_cancelled()),
+        _ = cancellation.cancelled() => Ok(true),
     }
 }
 

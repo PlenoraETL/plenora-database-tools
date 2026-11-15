@@ -165,6 +165,11 @@ impl Db2Config {
     /// Restituisce `InvalidConfiguration` per campi vuoti o di controllo,
     /// timeout e porta non validi, oppure configurazioni TLS incoerenti.
     pub fn validate(&self) -> Result<()> {
+        plenora_database_core::temporal::timeout(self.connect_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+        plenora_database_core::temporal::timeout(self.operation_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+
         for (value, message) in [
             (&self.host, "configurazione Db2 senza host"),
             (&self.database, "configurazione Db2 senza database"),
@@ -181,6 +186,9 @@ impl Db2Config {
         }
         if self.port == 0 {
             return Err(invalid_configuration("configurazione Db2 con porta zero"));
+        }
+        if self.connect_timeout.subsec_nanos() != 0 || self.operation_timeout.subsec_nanos() != 0 {
+            return Err(invalid_configuration("timeout Db2 richiede secondi interi"));
         }
         if self.connect_timeout.as_secs() == 0 || self.operation_timeout.as_secs() == 0 {
             return Err(invalid_configuration(
@@ -242,3 +250,7 @@ fn invalid_configuration(message: &'static str) -> DatabaseError {
         message,
     )
 }
+
+#[cfg(test)]
+#[path = "temporal_config_tests.rs"]
+mod temporal_config_tests;

@@ -115,7 +115,8 @@ impl SqlServerColumnBuffer {
                         value.map(parse_date).transpose()?
                     }
                     SqlServerWireEncoding::Native => {
-                        let value: Option<NaiveDate> = get(row, index)?;
+                        let value =
+                            get::<crate::temporal::Checked<NaiveDate>>(row, index)?.map(|v| v.0);
                         value.map(date32).transpose()?
                     }
                 };
@@ -129,7 +130,8 @@ impl SqlServerColumnBuffer {
                         value.map(parse_time).transpose()?
                     }
                     SqlServerWireEncoding::Native => {
-                        let value: Option<NaiveTime> = get(row, index)?;
+                        let value =
+                            get::<crate::temporal::Checked<NaiveTime>>(row, index)?.map(|v| v.0);
                         value.map(time_micros).transpose()?
                     }
                 };
@@ -143,7 +145,8 @@ impl SqlServerColumnBuffer {
                         value.map(parse_timestamp).transpose()?
                     }
                     SqlServerWireEncoding::Native => {
-                        let value: Option<NaiveDateTime> = get(row, index)?;
+                        let value = get::<crate::temporal::Checked<NaiveDateTime>>(row, index)?
+                            .map(|v| v.0);
                         value
                             .map(|value| native_timestamp(value, *legacy))
                             .transpose()?
@@ -162,7 +165,9 @@ impl SqlServerColumnBuffer {
                         builder.append_option(value);
                     }
                     SqlServerWireEncoding::Native => {
-                        let value: Option<DateTime<FixedOffset>> = get(row, index)?;
+                        let value =
+                            get::<crate::temporal::Checked<DateTime<FixedOffset>>>(row, index)?
+                                .map(|v| v.0);
                         let encoded = value
                             .map(|value| format_timestamp_tz(value, *scale))
                             .transpose()?;

@@ -1758,7 +1758,7 @@
       ],
       "license": "MIT OR Apache-2.0",
       "name": "mysql_async",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "source": "vendor/mysql_async",
       "version": "0.37.1"
     },
     "mysql_common-0.37.3": {
@@ -1776,7 +1776,7 @@
       ],
       "license": "MIT OR Apache-2.0",
       "name": "mysql_common",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "source": "vendor/mysql_common",
       "version": "0.37.3"
     },
     "num-bigint-0.4.8": {
@@ -3540,8 +3540,8 @@
     }
   },
   "inputs": {
-    "Cargo.lock": "3fbdf1e1c5700137ac40afa541fd49d2ced27e0bfada6ba2b68bd6ea0cdfd0fa",
-    "Cargo.toml": "ad1f9c5e0bfd1a9c95a52864876548b127fe80a5585527763602e353455e3757",
+    "Cargo.lock": "cdcc4c7a8f5751ee39761252127e93dee40d1974c457c8a2833ea162d96c9595",
+    "Cargo.toml": "f9bba91275615b223e086c9fe3f284cebf6d6a9553061e85dcd3e5efc304faab",
     "crates/plenora-database-cli/Cargo.toml": "0107ee7dcb5324889086a010b936328627a0cdc65ba101554b82e469a544efd8",
     "crates/plenora-database-core/Cargo.toml": "26df9dea18ec176868371c43c512018a8960733100128ba8bb0caa4735d33262",
     "crates/plenora-database-engine/Cargo.toml": "3842feb711364c1af54db42be113848c1e8a53ec51f3d50d173fca6eeac73e42",
@@ -3553,6 +3553,8 @@
     "crates/plenora-db-oracle/Cargo.toml": "9a3262b8059441cefd9bada55c17388b78043c6128f39e4f9639a782819a033b",
     "crates/plenora-db-postgres/Cargo.toml": "fc33f782d5e64107b1b35363979d75d59402363af5ec12658af1e40a80708fb4",
     "crates/plenora-db-sqlserver/Cargo.toml": "664398cc9e5357552758ca85ad056737ac90d4bf5cf953bfd636825c015c497f",
+    "vendor/mysql_async/Cargo.toml": "5f83a9d257184469c3c9f61f5ccd94d1a66527faa26e834d0937e11c43cb6dd3",
+    "vendor/mysql_common/Cargo.toml": "1e5ee6e13e04c9539575c859a55f6f8c3ebd7aa63ab70f8da8655cbb9e5ea854",
     "vendor/odbc-api/Cargo.toml": "983282da8b1bcf4a0f70721c71aef6c1e0b8dc7b2bc67e71f70a4f6cafba1c1b",
     "vendor/oracle-rs/Cargo.toml": "67e1a7b17193b702c9d8229de91a35b3b1ce129a0c5ad481ecf764c20c4dd959"
   },

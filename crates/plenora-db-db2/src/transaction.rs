@@ -66,6 +66,7 @@ impl Db2Transaction {
         cancellation: &CancellationToken,
     ) -> Result<Self> {
         validate_options(options)?;
+        let statement_timeout = statement_timeout(options)?;
         if cancellation.is_cancelled() {
             return Err(interruption_error(cancellation, ErrorPhase::Prepare));
         }
@@ -92,7 +93,7 @@ impl Db2Transaction {
             #[cfg(test)]
             panic_read_worker,
             connection: Some(opened.0),
-            timeout: statement_timeout(options).unwrap_or(opened.1),
+            timeout: statement_timeout.unwrap_or(opened.1),
             native_query_policy: options.native_query_policy,
             sent: SendMarker::default(),
             open: true,
@@ -369,13 +370,12 @@ pub fn validate_options(options: &TransactionOptions) -> Result<()> {
             "timeout Db2 deve essere espresso in secondi interi positivi",
         ));
     }
+    statement_timeout(options)?;
     Ok(())
 }
 
-fn statement_timeout(options: &TransactionOptions) -> Option<usize> {
-    options
-        .statement_timeout_ms
-        .and_then(|timeout| usize::try_from(timeout / 1_000).ok())
+fn statement_timeout(options: &TransactionOptions) -> Result<Option<usize>> {
+    plenora_database_core::temporal::odbc_timeout_ms(options.statement_timeout_ms)
 }
 
 pub fn isolation_statement(options: &TransactionOptions) -> Option<&'static str> {
@@ -991,7 +991,10 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
         DataType::Numeric { .. } | DataType::Decimal { .. } => {
             Ok(ParameterValue::Decimal(text.to_owned()))
         }
-        DataType::Date => Ok(ParameterValue::Date(text.to_owned())),
+        DataType::Date => {
+            crate::read::parse_date(text)?;
+            Ok(ParameterValue::Date(text.to_owned()))
+        }
         DataType::Timestamp { .. } => Ok(ParameterValue::Timestamp(canonical_timestamp(text)?)),
         DataType::Binary { .. } | DataType::Varbinary { .. } | DataType::LongVarbinary { .. } => {
             decode_hex_binary(value).map(ParameterValue::Bytes)
@@ -1035,6 +1038,11 @@ pub fn canonical_timestamp(value: &str) -> Result<String> {
     let timestamp = chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d %H:%M:%S")
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d-%H.%M.%S"))
         .map_err(|_| invalid())?;
+    if !(1..=9999).contains(&chrono::Datelike::year(&timestamp))
+        || chrono::Timelike::nanosecond(&timestamp) >= 1_000_000_000
+    {
+        return Err(invalid());
+    }
     Ok(format!(
         "{}.{fraction:0<6}",
         timestamp.format("%Y-%m-%dT%H:%M:%S")

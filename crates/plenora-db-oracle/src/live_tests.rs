@@ -5273,3 +5273,56 @@ async fn live_duplicate_result_names_preserve_positions() {
         .contains("alias"));
     tx.rollback(&cancellation).await.expect("rollback");
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture reale del provider; corpus temporale"]
+async fn live_temporal_decoder_boundaries() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    let result = tx
+        .query(
+            &Statement::new("SELECT TIMESTAMP '9999-12-31 23:59:59.999999' AS T FROM DUAL"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::Timestamp(
+            "9999-12-31T23:59:59.999999".to_owned()
+        ))
+    );
+    let result = tx
+        .query(
+            &Statement::new("SELECT DATE '1582-10-04' AS T FROM DUAL"),
+            &cancellation,
+        )
+        .await;
+    assert_eq!(
+        result.expect_err("rifiuto temporale").category,
+        plenora_database_core::ErrorCategory::DataMapping
+    );
+    let result = tx
+        .query(
+            &Statement::new("SELECT TIMESTAMP '2024-01-01 00:00:00.000000001' AS T FROM DUAL"),
+            &cancellation,
+        )
+        .await;
+    assert_eq!(
+        result.expect_err("rifiuto temporale").category,
+        plenora_database_core::ErrorCategory::DataMapping
+    );
+    // La query rifiutata non ha effetti; il lease resta non riusabile.
+    drop(tx);
+}

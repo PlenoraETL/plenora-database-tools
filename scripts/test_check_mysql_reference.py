@@ -320,7 +320,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool;
         # Operandi geometrici e semantica delle scritture conservano tutte le prove.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 94)
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 95)
+        self.assertIn("live_tests::live_temporal_decoder_boundaries", gate.EXPECTED_LIVE_REFERENCE_TESTS)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,

@@ -87,3 +87,6 @@ mod catalog_tests;
 
 #[cfg(test)]
 mod write_probe_tests;
+
+#[cfg(test)]
+mod temporal_tests;

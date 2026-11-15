@@ -1,0 +1,19 @@
+{
+  "upstream": {
+    "mysql_common": "0.37.3",
+    "mysql_async": "0.37.1"
+  },
+  "delta": {
+    "mysql_common": "Rifiuto InvalidData per lunghezze temporali fuori formato e segno TIME diverso da 0/1; nessun payload nel messaggio. Tag binari non supportati (inclusi TIMESTAMP2/DATETIME2/TIME2) restituiscono InvalidData, mai unimplemented!.",
+    "mysql_async": "Solo dipendenza mysql_common per path; il consumer esterno eredita il decoder corretto.",
+    "oracle-rs": "RowDataDecoder: campo troncato senza byte di lunghezza rifiutato, non NULL; calendario e frazioni mantengono i decoder checked gia presenti."
+  },
+  "reviewed_files": {
+    "vendor/mysql_common/src/value/mod.rs": "6b26d011e03d868ba8dbce0986420acc8c3dc4b736c5b899d5e480f163a1bf11",
+    "vendor/mysql_common/Cargo.toml": "1e5ee6e13e04c9539575c859a55f6f8c3ebd7aa63ab70f8da8655cbb9e5ea854",
+    "vendor/mysql_async/Cargo.toml": "5f83a9d257184469c3c9f61f5ccd94d1a66527faa26e834d0937e11c43cb6dd3",
+    "vendor/oracle-rs/src/types/date.rs": "c4135a6de5cebc6ccf978d023fbdfd80cf84ebd7132daab766037454f224f2f7",
+    "vendor/oracle-rs/src/row.rs": "755c4f431ab1062b1142944bdecbe02830dd917522e40891a1fc9d595274b2a5"
+  },
+  "hash_normalization": "UTF-8, LF"
+}

@@ -183,6 +183,9 @@ impl MysqlTransaction {
         //    scoprire che una chiave non era scrivibile: il chiamante
         //    riceveva `InvalidPlan` con una transazione gia aperta sulla
         //    connessione, che il pool avrebbe poi dovuto ripulire.
+        if let Some(ms) = options.statement_timeout_ms {
+            plenora_database_core::temporal::timeout_ms(ms)?;
+        }
         validate_context_keys(options)?;
 
         // 1. Isolation level (SET TRANSACTION prima di START).
@@ -617,6 +620,7 @@ fn convert_value(
     kind: ProviderKind,
     spec: (ColumnType, u16),
 ) -> Result<ParameterValue> {
+    crate::temporal::validate(&value)?;
     Ok(match value {
         Value::NULL => ParameterValue::Null {
             type_name: "unknown".to_owned(),
@@ -701,7 +705,7 @@ fn convert_value(
             // TIME MySQL può eccedere 24h; rappresentazione canonica:
             // "[-]HHH:MM:SS.uuuuuu"
             let sign = if is_neg { "-" } else { "" };
-            let total_hours = u32::from(h) + days * 24;
+            let total_hours = u64::from(h) + u64::from(days) * 24;
             ParameterValue::String(format!("{sign}{total_hours:03}:{mi:02}:{s:02}.{us:06}"))
         }
     })

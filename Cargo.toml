@@ -13,7 +13,7 @@ members = [
     "crates/plenora-database-cli",
     "crates/plenora-database-py",
 ]
-exclude = ["vendor/oracle-rs", "vendor/odbc-api"]
+exclude = ["vendor/mysql_async", "vendor/mysql_common", "vendor/oracle-rs", "vendor/odbc-api"]
 
 # `default-members` mantiene leggero il percorso ordinario; adapter opzionali e
 # binding restano selezionabili esplicitamente. La scelta governa la build, non
@@ -93,15 +93,17 @@ tokio-postgres = { version = "=0.7.18", features = ["with-chrono-0_4", "with-ser
 # Driver TDS dell'adapter SQL Server (`tiberius-ng`, fork di tiberius), con
 # TLS rustls e senza native-tls.
 tiberius = { package = "tiberius-ng", version = "=0.13.1", default-features = false, features = ["chrono", "rustls", "tds73"] }
+# Fork MySQL: rifiuta lunghezze e segni temporali malformati prima di perdere
+# i byte. Il path di mysql_async conserva il fork anche nei consumer esterni.
 # Driver dell'adapter MySQL/MariaDB, solo Rust (`minimal-rust`) e TLS rustls
 # con `ring`: niente OpenSSL nella wheel.
-mysql_async = { version = "=0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12", "chrono"] }
+mysql_async = { path = "vendor/mysql_async", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12", "chrono"] }
 # Solo dev-dependency di `plenora-db-mysql`: `mysql_async` riesporta il tipo
 # `Row` ma non il costruttore `row::new_row`, quindi i test offline del
 # batching non potrebbero fabbricare righe senza server. E la stessa versione
 # gia risolta come dipendenza transitiva di `mysql_async`: nessuna superficie
 # supply-chain aggiuntiva.
-mysql_common = { version = "=0.37.3", default-features = false }
+mysql_common = { path = "vendor/mysql_common", default-features = false }
 # DB2 usa il driver manager ODBC dinamico. Niente feature `prompt` (UI) e
 # niente unixODBC statico: il runtime IBM resta un prerequisito separato.
 # Fork locale di odbc-api 29.0.0, approvato dal titolare: gli avvisi di
