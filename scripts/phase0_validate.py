@@ -709,6 +709,9 @@ def validate_public_operation_contracts() -> int:
 
 
 def validate_adoption_source() -> int:
+    from scripts.public_contract_semantics import validate_pins
+
+    validate_pins(REPO_ROOT)
     source = load_json(REPO_ROOT / "contracts" / "adoption-source.json")
     if source.get("schema_version") != 1:
         raise ValidationError("adoption source con schema_version non valida")
@@ -739,6 +742,7 @@ def validate_adoption_source() -> int:
         raise ValidationError("contratti v2 non adottati")
     requirements = source.get("requirements", [])
     required = {"CAT-001", "CAT-002", "CAT-003", "DB-ABS-001", "DB-ABS-002", "DB-ABS-003", "DB-RT-003", "ERR-016"}
+    required.update({"ARROW-003", "DEC-0022-MIXED"})
     required.update(f"RT-{number:03d}" for number in range(16, 28))
     required.update(f"INTEROP-{number:03d}" for number in range(1, 6))
     # Arrow Geometry Semantics 1.0 e reclamato: ogni sua regola ha uno stato.

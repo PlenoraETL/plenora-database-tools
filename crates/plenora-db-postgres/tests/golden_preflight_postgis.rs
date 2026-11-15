@@ -35,7 +35,7 @@
 )]
 
 use plenora_database_core::provider::{Provider, SecretString};
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory};

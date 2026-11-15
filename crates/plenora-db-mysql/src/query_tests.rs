@@ -5,7 +5,7 @@ use plenora_database_core::arrow::schema::DataType;
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::plan::{ComparisonOperator, ObjectRef, SortDirection};
 use plenora_database_core::protocol;
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, CommonTableExpression, JoinKind, QueryDerivedSource, QueryJoin, QueryLock,
     QueryLockStrength, QueryLockWait, QueryProjection, QuerySetOperation, QuerySetOperator,
     SpatialFunction,

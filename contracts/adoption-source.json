@@ -3,7 +3,7 @@
   "component": "plenora-database-tools",
   "contracts_source": {
     "repository": "https://github.com/PlenoraETL/plenora-contracts.git",
-    "revision": "3aec9f724f5a0ad21366f293895b4d0dbcd0aad1"
+    "revision": "38d68b402389855edbcecb7ce57c31e91282cb4e"
   },
   "profile": "plenora-database-tools-profile-v2",
   "contracts": [
@@ -185,6 +185,13 @@
       "surface": "rust",
       "observed_behavior": "A plenora.field_id registered in a PostgreSQL column comment by earlier versions with leading zeros (00<n>) is read and published in canonical form (<n>); new input with leading zeros stays a schema defect, and new registrations are canonical. Hazard: the published id text differs from the registered one, the identity is the same. Reentry: no comment registered by earlier versions remains.",
       "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "ARROW-003",
+      "surface": "rust",
+      "observed_behavior": "Decision 0022: PostgreSQL persists incoming field ids. MySQL/MariaDB, SQL Server, Oracle and Db2 rebuild schemas with protocol::contract_schema without persisting incoming identities, across Rust/CLI/SDK. Hazard: unchanged fields may get different ids after write/read. Reentry: qualify persisted identities and metadata parity on every surface per provider. This update does not attest live round trips.",
+      "tracking": "contracts/ADOPTION.md",
       "detectable_before_invocation": true
     }
   ],
@@ -513,6 +520,18 @@
       "status": "implemented",
       "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
       "evidence": "scripts/vettori_arrow_data.py (arrow-data-v1, inspect-dataset, PostgreSQL write with the written coordinates, and the bulk-write dry run with the DSN, which must agree with the write on every vector: exit, category, phase and retry, remote_effect none, and the target catalog read on acceptance; the same agreement on the target scenarios: privileges including SELECT on the columns an upsert reads, missing schema or schema without USAGE, upsert without an immediate unique index, lossy mapping with a column missing from the target, field id registration without LOCK or ownership, row-level security, generated and IDENTITY ALWAYS columns in the input, non-updatable views, NOT NULL columns without default missing from the input, a COPY refused after the DELETE of a replace with the rows of the target unchanged, and rule R: replace, delete_by_keys and update refused before any effect when a row-level security policy, also restrictive or under a view, an ON DELETE rule or a BEFORE DELETE row trigger can hide rows from the destructive statement, with an AFTER trigger as the positive control); CI job public-contract and the release manifest run it."
+    },
+    {
+      "rule": "ARROW-003",
+      "status": "deviation",
+      "scope": "Decision 0022: unchanged field identities across database write/read",
+      "evidence": "See registered deviation; PostgreSQL field_identity and column_metadata tests cover persistence locally, other provider hops need coordinated qualification."
+    },
+    {
+      "rule": "DEC-0022-MIXED",
+      "status": "implemented",
+      "scope": "Arrow vocabulary ingress",
+      "evidence": "The pinned arrow-v1 mixed-without-types and invalid-mixed-empty-types vectors are executed by core/tests/arrow_interchange_vectors.rs."
     }
   ],
   "runtime_limits": {

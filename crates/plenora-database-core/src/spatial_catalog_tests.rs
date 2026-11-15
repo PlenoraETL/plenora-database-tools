@@ -6,7 +6,7 @@ fn embedded_catalog_is_unique_and_complete() {
     assert_eq!(catalog.schema_version, 1);
     assert_eq!(
         catalog.functions.len(),
-        crate::query::SpatialFunction::ALL.len()
+        crate::relational::SpatialFunction::ALL.len()
     );
     let unique = catalog
         .functions
@@ -61,7 +61,7 @@ fn two_geometries_in_means_the_frame_is_not_derivable() {
 ///
 /// Serve a due prove, e nessuna delle due può fidarsi dell'ordine: `ALL` e
 /// `functions` sono elenchi scritti a mano in due file diversi.
-fn spec_of(function: crate::query::SpatialFunction) -> &'static SpatialFunctionSpec {
+fn spec_of(function: crate::relational::SpatialFunction) -> &'static SpatialFunctionSpec {
     let catalog = spatial_function_catalog().expect("catalog fixture");
     let wire = serde_json::to_value(function)
         .expect("serialize spatial function")
@@ -78,7 +78,7 @@ fn spec_of(function: crate::query::SpatialFunction) -> &'static SpatialFunctionS
 #[test]
 fn geometry_returning_functions_match_the_versioned_catalog() {
     // La copertura dei test deve corrispondere al catalogo spatial del contratto.
-    let disagreeing = crate::query::SpatialFunction::ALL
+    let disagreeing = crate::relational::SpatialFunction::ALL
         .iter()
         .filter(|function| {
             (spec_of(**function).returns == "geometry") != function.returns_geometry()
@@ -92,7 +92,7 @@ fn geometry_returning_functions_match_the_versioned_catalog() {
 
 #[test]
 fn crs_rules_match_the_versioned_catalog() {
-    let disagreeing = crate::query::SpatialFunction::ALL
+    let disagreeing = crate::relational::SpatialFunction::ALL
         .iter()
         .filter(|function| spec_of(**function).crs_rule() != function.crs_rule())
         .collect::<Vec<_>>();
@@ -110,7 +110,7 @@ fn spatial_function_wire_names_match_the_versioned_catalog() {
         .iter()
         .map(|function| function.id.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let wire_ids = crate::query::SpatialFunction::ALL
+    let wire_ids = crate::relational::SpatialFunction::ALL
         .iter()
         .map(|function| {
             serde_json::to_value(function)

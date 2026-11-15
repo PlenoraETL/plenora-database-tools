@@ -4,7 +4,7 @@ use plenora_database_core::capabilities::TransactionScope;
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{Provider, SecretString};
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
 };

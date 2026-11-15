@@ -1,6 +1,6 @@
 use super::*;
 use plenora_database_core::plan::ObjectRef;
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, CommonTableExpression, QueryProjection, QuerySource, ScalarFunction,
 };
 
@@ -357,7 +357,7 @@ fn typed_wkb_retains_its_frame_after_admission() {
     let original = ParameterBag::new([("p".into(), value.clone())].into());
     let typed = QueryExpression::TypedParameter {
         name: "p".into(),
-        parameter_type: plenora_database_core::query::QueryParameterType::Binary,
+        parameter_type: plenora_database_core::relational::QueryParameterType::Binary,
     };
     for argument in [
         typed.clone(),

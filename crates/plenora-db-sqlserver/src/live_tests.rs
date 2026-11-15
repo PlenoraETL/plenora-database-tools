@@ -20,7 +20,7 @@ use plenora_database_core::protocol;
 use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
 };
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, CommonTableExpression, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin,
     QueryLock, QueryLockStrength, QueryLockWait, QueryOperation, QueryOrdering, QueryProjection,
     QuerySetOperation, QuerySetOperator, QuerySource, ScalarFunction, SpatialFunction,
@@ -317,7 +317,7 @@ async fn system_view_operands(session: &mut SqlServerSession, cancellation: &Can
         if let Some(QueryExpression::Compare { right, .. }) = &mut operation.filter {
             **right = QueryExpression::TypedParameter {
                 name: "p".to_owned(),
-                parameter_type: plenora_database_core::query::QueryParameterType::Integer,
+                parameter_type: plenora_database_core::relational::QueryParameterType::Integer,
             };
         }
         let number = ParameterBag::new(BTreeMap::from([("p".to_owned(), ParameterValue::I64(1))]));
@@ -2105,7 +2105,7 @@ const DECLARED_SPATIAL_EXCLUSIONS: &[(SpatialFunction, &str)] = &[
 #[ignore = "richiede SQL Server live esplicito per le funzioni geometry-only"]
 async fn live_geometry_only_functions_run_on_geometry_and_are_refused_on_geography() {
     use plenora_database_core::plan::ObjectRef;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
     };
     use plenora_database_core::resource::ResourceBudget;

@@ -12,7 +12,10 @@ l'unico posto in cui sono scritte.
    la sostiene.** `not_measured` non e un `no`, ma non apre niente lo stesso.
    Vale per il documento capability dei provider e per ogni default: un campo
    assente e una capability non dichiarata, quindi negata.
-2. **Una modifica incompatibile del contratto richiede una nuova major**, non
+2. **Nessuna compatibilita con release Plenora precedenti** (decisione del
+   titolare, 15/11/2026). I protocolli condivisi correnti si ritirano soltanto
+   insieme ai consumatori; il supporto ai database esterni resta corrente.
+   **Una modifica incompatibile del contratto richiede una nuova major**, non
    una nota di rilascio. Se un allineamento si puo ottenere rendendo il codice
    piu tollerante invece del contratto piu severo, si sceglie la prima strada.
 3. **I documenti non ripetono fatti che vivono nel codice**: o li generano da

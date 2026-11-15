@@ -6,14 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.check_relational_ir import CANONICAL, COMPATIBILITY, SQL_RENDERER, violations
+from scripts.check_relational_ir import CANONICAL, SQL_RENDERER, violations
 
 
 RELATIONAL = """
 pub enum QueryExpression { Literal }
 pub struct QueryOperation;
 """
-FACADE = "pub use crate::relational::*;\n"
 RENDERER = """
 use plenora_database_core::relational::QueryOperation;
 fn render_query() {}
@@ -34,7 +33,6 @@ class RelationalIrGuardTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         for relative, content in (
             (CANONICAL, RELATIONAL),
-            (COMPATIBILITY, FACADE),
             (SQL_RENDERER, RENDERER),
         ):
             path = self.root / relative
@@ -46,6 +44,11 @@ class RelationalIrGuardTests(unittest.TestCase):
 
     def test_accepts_one_ir_and_two_lowering_adapters(self) -> None:
         self.assertEqual(violations(self.root), [])
+
+    def test_rejects_an_alternative_facade(self) -> None:
+        facade = self.root / "crates/plenora-database-core/src/query.rs"
+        facade.write_text("pub use crate::relational::*;\n", encoding="utf-8")
+        self.assertTrue(any("facciata" in item for item in violations(self.root)))
 
     def test_rejects_a_second_query_operation(self) -> None:
         duplicate = self.root / "crates/provider/src/query.rs"

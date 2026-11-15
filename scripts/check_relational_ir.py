@@ -10,7 +10,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = Path("crates/plenora-database-core/src/relational.rs")
-COMPATIBILITY = Path("crates/plenora-database-core/src/query.rs")
 SQL_RENDERER = Path("crates/plenora-database-sql/src/lib.rs")
 
 
@@ -68,9 +67,8 @@ def violations(root: Path) -> list[str]:
 
     problems: list[str] = []
     canonical = root / CANONICAL
-    compatibility = root / COMPATIBILITY
     renderer = root / SQL_RENDERER
-    for path in (canonical, compatibility, renderer):
+    for path in (canonical, renderer):
         if not path.is_file():
             problems.append(f"file obbligatorio assente: {path.relative_to(root)}")
     if problems:
@@ -84,11 +82,10 @@ def violations(root: Path) -> list[str]:
                 f"{declaration}: attesa una sola definizione in {CANONICAL}; trovate {rendered}"
             )
 
-    facade = compatibility.read_text(encoding="utf-8")
-    if "pub use crate::relational::*;" not in facade:
-        problems.append("core::query non riesporta integralmente core::relational")
-    if re.search(r"(?m)^pub\s+(?:enum|struct)\s+", facade):
-        problems.append("core::query contiene tipi propri invece di essere una facciata")
+    for path in rust_product_sources(root):
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"pub\s+use\s+(?:crate|plenora_database_core)::relational::\*", source):
+            problems.append(f"facciata alternativa dell'IR: {path.relative_to(root)}")
 
     sql = renderer.read_text(encoding="utf-8")
     if "plenora_database_core::relational" not in sql:

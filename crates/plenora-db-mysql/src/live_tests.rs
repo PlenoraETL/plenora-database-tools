@@ -1184,7 +1184,7 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
     use plenora_database_core::plan::{ComparisonOperator, SortDirection};
     use plenora_database_core::protocol;
     use plenora_database_core::provider::ParameterValue;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
     };
     use std::collections::BTreeMap;
@@ -1515,7 +1515,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
     use plenora_database_core::plan::{ComparisonOperator, SortDirection};
     use plenora_database_core::protocol;
     use plenora_database_core::provider::ParameterValue;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
         ScalarFunction,
     };
@@ -1807,7 +1807,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
     use plenora_database_core::plan::{ComparisonOperator, SortDirection};
     use plenora_database_core::protocol;
     use plenora_database_core::provider::ParameterValue;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, JoinKind, QueryExpression, QueryJoin, QueryOperation, QueryOrdering,
         QueryProjection, QuerySource,
     };
@@ -2236,7 +2236,7 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
     use plenora_database_core::plan::{ComparisonOperator, SortDirection};
     use plenora_database_core::protocol;
     use plenora_database_core::provider::ParameterValue;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
         ScalarFunction, WindowFrame, WindowFrameBound, WindowFrameUnits,
     };
@@ -2465,7 +2465,7 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
 #[allow(clippy::too_many_lines)]
 async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded() {
     use plenora_database_core::plan::SortDirection;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
     };
     use plenora_database_core::resource::ResourceKind;
@@ -2658,7 +2658,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
 #[allow(clippy::too_many_lines)]
 async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() {
     use plenora_database_core::plan::SortDirection;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
     };
     use plenora_database_core::resource::ResourceKind;
@@ -3755,11 +3755,11 @@ async fn live_geographic_axis_order_round_trips_and_derived_srid_is_verified() {
     // `x` e `y` del contratto sono la prima e la seconda ordinata del WKB:
     // longitudine e latitudine, come su PostGIS, anche se `ST_X` di `MySQL`
     // su EPSG:4326 renderebbe la latitudine.
-    let coordinate = |function| plenora_database_core::query::QueryProjection {
-        expression: plenora_database_core::query::QueryExpression::Spatial {
+    let coordinate = |function| plenora_database_core::relational::QueryProjection {
+        expression: plenora_database_core::relational::QueryExpression::Spatial {
             function,
-            arguments: vec![plenora_database_core::query::QueryExpression::Column {
-                column: plenora_database_core::query::ColumnRef {
+            arguments: vec![plenora_database_core::relational::QueryExpression::Column {
+                column: plenora_database_core::relational::ColumnRef {
                     relation: None,
                     field: "geom".to_owned(),
                 },
@@ -3767,10 +3767,10 @@ async fn live_geographic_axis_order_round_trips_and_derived_srid_is_verified() {
         },
         alias: None,
     };
-    let query = plenora_database_core::query::QueryOperation {
+    let query = plenora_database_core::relational::QueryOperation {
         declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
-        source: Some(plenora_database_core::query::QuerySource {
+        source: Some(plenora_database_core::relational::QuerySource {
             object: ObjectRef {
                 catalog: None,
                 schema: Some("dataflow_test".to_owned()),
@@ -3780,8 +3780,8 @@ async fn live_geographic_axis_order_round_trips_and_derived_srid_is_verified() {
         }),
         derived_source: None,
         projection: vec![
-            coordinate(plenora_database_core::query::SpatialFunction::X),
-            coordinate(plenora_database_core::query::SpatialFunction::Y),
+            coordinate(plenora_database_core::relational::SpatialFunction::X),
+            coordinate(plenora_database_core::relational::SpatialFunction::Y),
         ],
         joins: Vec::new(),
         filter: None,
@@ -5637,7 +5637,7 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
 async fn live_v12_every_verified_spatial_function_executes() {
     use plenora_database_core::plan::ObjectRef;
     use plenora_database_core::provider::{ParameterBag, ParameterValue};
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
     };
     use plenora_database_core::resource::ResourceBudget;
@@ -5906,7 +5906,7 @@ async fn live_v12_a_computed_geometry_carries_the_declared_frame_and_refuses_a_l
     use plenora_database_core::arrow::array::Array;
     use plenora_database_core::plan::{DeclaredCrs, ObjectRef};
     use plenora_database_core::provider::ParameterBag;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
     };
     use plenora_database_core::resource::ResourceBudget;
@@ -5965,7 +5965,7 @@ async fn live_v12_a_computed_geometry_carries_the_declared_frame_and_refuses_a_l
         derived_source: None,
         projection: vec![QueryProjection {
             expression: QueryExpression::Spatial {
-                function: plenora_database_core::query::SpatialFunction::Envelope,
+                function: plenora_database_core::relational::SpatialFunction::Envelope,
                 arguments: vec![QueryExpression::Column {
                     column: ColumnRef {
                         relation: None,
@@ -5979,7 +5979,7 @@ async fn live_v12_a_computed_geometry_carries_the_declared_frame_and_refuses_a_l
         filter: None,
         group_by: Vec::new(),
         having: None,
-        order_by: vec![plenora_database_core::query::QueryOrdering {
+        order_by: vec![plenora_database_core::relational::QueryOrdering {
             expression: QueryExpression::Column {
                 column: ColumnRef {
                     relation: None,
@@ -6117,7 +6117,7 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
     use plenora_database_core::arrow::array::Array;
     use plenora_database_core::plan::{ObjectRef, SortDirection};
     use plenora_database_core::provider::ParameterBag;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
         SpatialFunction,
     };
@@ -6311,7 +6311,7 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
     use plenora_database_core::arrow::array::Int64Array;
     use plenora_database_core::plan::{ObjectRef, SortDirection};
     use plenora_database_core::provider::{ParameterBag, ParameterValue};
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
         SpatialFunction,
     };
@@ -10445,7 +10445,7 @@ fn geometry_operand_provider() -> Box<dyn Provider> {
 /// projection, il resto dal chiamante.
 fn geometry_operand_query(
     extra: &serde_json::Value,
-) -> plenora_database_core::query::QueryOperation {
+) -> plenora_database_core::relational::QueryOperation {
     let mut operation = serde_json::json!({
         "source": {
             "object": {"catalog": null, "schema": "dataflow_test", "object": "_geo_operando"},
@@ -10467,7 +10467,7 @@ fn geometry_operand_query(
 
 async fn geometry_operand_rows(
     provider: &dyn Provider,
-    operation: &plenora_database_core::query::QueryOperation,
+    operation: &plenora_database_core::relational::QueryOperation,
     parameters: &ParameterBag,
 ) -> plenora_database_core::Result<usize> {
     let cancellation = CancellationToken::new();
@@ -10728,7 +10728,7 @@ async fn live_unresolved_geometry_operands_are_refused_before_the_server() {
         for (key, value) in extra.as_object().expect("oggetto") {
             operation[key] = value.clone();
         }
-        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+        serde_json::from_value::<plenora_database_core::relational::QueryOperation>(operation)
             .expect("piano")
     };
     let table = "_geo_operandi_r9";
@@ -10884,7 +10884,7 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
         }
         operation
     };
-    let plan = |value: Value| -> plenora_database_core::query::QueryOperation {
+    let plan = |value: Value| -> plenora_database_core::relational::QueryOperation {
         serde_json::from_value(value).expect("piano")
     };
     let none = ParameterBag::default();
@@ -11164,7 +11164,7 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
         for (key, value) in extra.as_object().expect("oggetto") {
             operation[key] = value.clone();
         }
-        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+        serde_json::from_value::<plenora_database_core::relational::QueryOperation>(operation)
             .expect("piano")
     };
     let equal_to = |field: &str, parameter_type: &str| {
@@ -12099,7 +12099,7 @@ async fn live_server_computed_binary_columns_are_judged_geometric() {
         for (key, value) in extra.as_object().expect("oggetto") {
             operation[key] = value.clone();
         }
-        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+        serde_json::from_value::<plenora_database_core::relational::QueryOperation>(operation)
             .expect("piano")
     };
     let equal_to = |field: &str, right: Value| json!({"filter": {"kind": "compare", "left": column(field), "operator": "eq", "right": right}});
@@ -12309,7 +12309,7 @@ async fn live_text_columns_compared_with_binary_values_are_refused() {
         for (key, value) in extra.as_object().expect("oggetto") {
             operation[key] = value.clone();
         }
-        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+        serde_json::from_value::<plenora_database_core::relational::QueryOperation>(operation)
             .expect("piano")
     };
     let compare = |left: Value, right: Value| json!({"filter": {"kind": "compare", "left": left, "operator": "eq", "right": right}});
@@ -12529,7 +12529,7 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
     assert_eq!(deleted, 1, "il CAST confronta il testo");
     tx.rollback(&cancellation).await.expect("rollback");
     // Il path query del provider.
-    let operation: plenora_database_core::query::QueryOperation = serde_json::from_value(json!({
+    let operation: plenora_database_core::relational::QueryOperation = serde_json::from_value(json!({
         "source": {"object": {"catalog": null, "schema": database, "object": "_tipi_t"}, "alias": "t"},
         "projection": [{"expression": {"kind": "column", "column": {"relation": "t", "field": "id"}}, "alias": "id"}],
         "filter": filter, "having": null, "row_limit": null
@@ -12672,7 +12672,7 @@ async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
         |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
     let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
     let compare = |left: Value, right: Value| json!({"kind": "compare", "left": left, "operator": "eq", "right": right});
-    let plan = |filter: Value| -> plenora_database_core::query::QueryOperation {
+    let plan = |filter: Value| -> plenora_database_core::relational::QueryOperation {
         serde_json::from_value(json!({
             "source": {"object": {"catalog": null, "schema": database, "object": "_r15_t"}, "alias": "t"},
             "projection": [{"expression": column("id"), "alias": "id"}],
@@ -12892,7 +12892,7 @@ async fn live_rilettura_sedici_cast_a_testo_e_collation() {
     let typed = || json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
     let compare = |left: Value, right: Value| json!({"kind": "compare", "left": left, "operator": "eq", "right": right});
     let cast = |expression: Value, target: &str| json!({"kind": "cast", "expression": expression, "target_type": target});
-    let plan = |filter: Value| -> plenora_database_core::query::QueryOperation {
+    let plan = |filter: Value| -> plenora_database_core::relational::QueryOperation {
         serde_json::from_value(json!({
             "source": {"object": {"catalog": null, "schema": database, "object": "_r16_t"}, "alias": "t"},
             "projection": [{"expression": column("id"), "alias": "id"}],

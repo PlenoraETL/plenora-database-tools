@@ -49,7 +49,7 @@ use plenora_database_core::plan::{
 };
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{ParameterBag, ParameterValue, Provider};
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
 };
 use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
@@ -2105,7 +2105,7 @@ async fn streaming_read_probes(
             "filtro spatial",
             "provider.profile_read_filter_closed_spatial",
             FilterExpression::Spatial {
-                function: plenora_database_core::query::SpatialFunction::Intersects,
+                function: plenora_database_core::relational::SpatialFunction::Intersects,
                 field: "label".to_owned(),
                 geometry_parameter: Some("punto".to_owned()),
                 distance_parameter: None,
@@ -6201,10 +6201,10 @@ async fn crs_rule_probe(recorder: &mut Recorder, connection: &mut mysql_async::C
 /// massimo di vertici, `ST_Simplify` una tolleranza — e `1` va bene per quasi
 /// tutte, ma non per chi si aspetta un SRID.
 fn scalar_argument_for(
-    function: plenora_database_core::query::SpatialFunction,
+    function: plenora_database_core::relational::SpatialFunction,
     srid: u32,
 ) -> String {
-    use plenora_database_core::query::SpatialFunction as F;
+    use plenora_database_core::relational::SpatialFunction as F;
     match function {
         // Chi nomina un sistema di riferimento di destinazione. Lo stesso
         // dell'ingresso: la sonda chiede se la funzione **esiste**, e un
@@ -6232,7 +6232,7 @@ fn scalar_argument_for(
 /// la linea sorgente. La sonda non apre automaticamente capability.
 #[allow(clippy::too_many_lines)]
 async fn geometry_function_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
-    use plenora_database_core::query::SpatialFunction;
+    use plenora_database_core::relational::SpatialFunction;
     use plenora_database_sql::{spatial_function_name, Dialect};
 
     let table = "plenora_driver_evidence_geometry_functions";
@@ -6393,7 +6393,7 @@ async fn geometry_function_probe(recorder: &mut Recorder, connection: &mut mysql
 /// arieta errata (1582). La presenza non qualifica la funzione: occorre
 /// verificarne firma, risultato e percorso del provider.
 async fn scalar_function_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
-    use plenora_database_core::query::SpatialFunction;
+    use plenora_database_core::relational::SpatialFunction;
 
     let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()
         .expect("catalogo spatial incorporato");
@@ -7317,11 +7317,11 @@ async fn spatial_function_probe(
 /// della sonda invece che del prodotto.
 async fn cross_spatial_function(
     provider: &MysqlProvider,
-    function: plenora_database_core::query::SpatialFunction,
+    function: plenora_database_core::relational::SpatialFunction,
     schema_name: &str,
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
     };
 
@@ -7416,7 +7416,7 @@ async fn cross_spatial_function(
 /// Apre lo stream e lo attraversa, riducendo l'esito a un `Ok` o a una ragione.
 async fn drain_spatial_function(
     provider: &MysqlProvider,
-    operation: &plenora_database_core::query::QueryOperation,
+    operation: &plenora_database_core::relational::QueryOperation,
     parameters: &ParameterBag,
     cancellation: &CancellationToken,
 ) -> Result<(), String> {

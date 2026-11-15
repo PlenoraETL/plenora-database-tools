@@ -271,7 +271,7 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// condiviso con il renderer, cosi promessa e piano ammesso coincidono.
     fn verified_spatial_functions(
         &self,
-    ) -> &'static [plenora_database_core::query::SpatialFunction];
+    ) -> &'static [plenora_database_core::relational::SpatialFunction];
 
     /// La dichiarazione DDL di una colonna geometrica con il CRS dichiarato.
     ///
@@ -752,7 +752,7 @@ impl ProductProfile for MysqlProfile {
 
     fn verified_spatial_functions(
         &self,
-    ) -> &'static [plenora_database_core::query::SpatialFunction] {
+    ) -> &'static [plenora_database_core::relational::SpatialFunction] {
         crate::query::VERIFIED_SPATIAL_FUNCTIONS
     }
 
@@ -991,7 +991,7 @@ impl ProductProfile for MariadbProfile {
 
     fn verified_spatial_functions(
         &self,
-    ) -> &'static [plenora_database_core::query::SpatialFunction] {
+    ) -> &'static [plenora_database_core::relational::SpatialFunction] {
         crate::query::MARIADB_VERIFIED_SPATIAL_FUNCTIONS
     }
 
@@ -1868,7 +1868,7 @@ impl ProductProfile for SecondProductProfile {
 
     fn verified_spatial_functions(
         &self,
-    ) -> &'static [plenora_database_core::query::SpatialFunction] {
+    ) -> &'static [plenora_database_core::relational::SpatialFunction] {
         MYSQL_PROFILE.verified_spatial_functions()
     }
 

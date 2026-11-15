@@ -443,14 +443,14 @@ fn append_crs_checks(
         });
         checked
             .projection
-            .push(plenora_database_core::query::QueryProjection {
+            .push(plenora_database_core::relational::QueryProjection {
                 // Senza alias, come sul path di lettura: un nome la farebbe
                 // sembrare una colonna del risultato.
                 alias: None,
                 expression: QueryExpression::Spatial {
                     function: SpatialFunction::Srid,
                     arguments: vec![QueryExpression::Column {
-                        column: plenora_database_core::query::ColumnRef {
+                        column: plenora_database_core::relational::ColumnRef {
                             relation: None,
                             field: geometry.source_column.clone(),
                         },

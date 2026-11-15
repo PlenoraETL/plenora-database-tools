@@ -16,7 +16,7 @@
 
 use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ComparisonOperator, ObjectRef, SortDirection};
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, JoinKind, QueryExpression, QueryJoin, QueryOperation, QueryOrdering,
     QueryProjection, QuerySource, ScalarFunction, SpatialFunction,
 };
