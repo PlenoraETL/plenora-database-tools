@@ -15,10 +15,33 @@ import json
 
 
 class AdoptionManifestTests(unittest.TestCase):
+    def test_only_one_contract_pin_in_manifests_and_ci(self) -> None:
+        from scripts.public_contract_semantics import validate_pins
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "contracts/upstream").mkdir(parents=True)
+            (root / ".github/workflows").mkdir(parents=True)
+            source = {"repository": "https://github.com/PlenoraETL/plenora-contracts.git", "revision": "a" * 40}
+            (root / "contracts/adoption-source.json").write_text(json.dumps({"contracts_source": source}))
+            copy = root / "contracts/upstream/source.json"
+            copy.write_text(json.dumps(source))
+            workflow = root / ".github/workflows/test.yml"
+            workflow.write_text("      - uses: actions/checkout\n        with:\n          repository: PlenoraETL/plenora-contracts\n          ref: " + "a" * 40 + "\n")
+            validate_pins(root)
+            copy.write_text(json.dumps({**source, "revision": "b" * 40}))
+            with self.assertRaisesRegex(ValueError, "secondo pin"):
+                validate_pins(root)
+            copy.write_text(json.dumps(source))
+            workflow.write_text(workflow.read_text().replace("a" * 40, "b" * 40))
+            with self.assertRaisesRegex(ValueError, "secondo pin"):
+                validate_pins(root)
+
     def test_new_requirement_cannot_disappear_or_lose_its_deviation(self) -> None:
         declared = strict_json.loads(SOURCE.read_text(encoding="utf-8"))
         validate_adoption_source()
-        for key, rule in (("requirements", "RT-024"), ("deviations", "DB-RT-003")):
+        for key, rule in (("requirements", "RT-024"), ("deviations", "DB-RT-003"),
+                          ("requirements", "DEC-0022-MIXED"), ("deviations", "ARROW-003")):
             document = json.loads(json.dumps(declared))
             document[key] = [item for item in document[key] if item["rule"] != rule]
             with patch("scripts.phase0_validate.load_json", return_value=document):

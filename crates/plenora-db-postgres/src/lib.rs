@@ -692,13 +692,6 @@ impl PostgresProvider {
         Self::new(batch_rows).with_tls_mode(PostgresTlsMode::Disabled)
     }
 
-    /// Alias deprecato di [`Self::default`], con TLS obbligatorio.
-    #[must_use]
-    #[deprecated(since = "1.2.0", note = "usa Self::default(), con TLS obbligatorio")]
-    pub fn default_secure() -> Self {
-        Self::default()
-    }
-
     /// Costruisce il provider con un profilo prestazionale misurato.
     ///
     /// I setter successivi possono ancora sovrascrivere le singole scelte.

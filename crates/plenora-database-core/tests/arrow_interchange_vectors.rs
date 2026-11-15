@@ -137,10 +137,10 @@ fn ogni_vettore_arrow_v1_ha_l_esito_dichiarato() {
         }
     }
     // Un elenco vuoto o tutto da una parte proverebbe solo meta del
-    // contratto: il pin ne ha due per lato.
+    // contratto: il pin ne ha tre per lato.
     assert_eq!(
         outcomes,
-        (2, 2),
-        "vettori arrow-v1 attesi: 2 validi e 2 invalidi"
+        (3, 3),
+        "vettori arrow-v1 attesi: 3 validi e 3 invalidi"
     );
 }

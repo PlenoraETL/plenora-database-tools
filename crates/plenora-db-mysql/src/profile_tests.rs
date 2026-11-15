@@ -13,7 +13,7 @@ use plenora_database_core::plan::{
     ComparisonOperator, ObjectRef, TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
 };
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
@@ -177,13 +177,13 @@ fn the_renderer_wraps_a_computed_geometry_as_the_profile_wraps_a_column() {
         .0
         .to_owned();
     let rendered = crate::types::mysql_renderer()
-        .render_query(&plenora_database_core::query::QueryOperation {
+        .render_query(&plenora_database_core::relational::QueryOperation {
             declared_crs: vec![plenora_database_core::plan::DeclaredCrs {
                 column: "geom".to_owned(),
                 srid: 4_326,
             }],
             common_table_expressions: Vec::new(),
-            source: Some(plenora_database_core::query::QuerySource {
+            source: Some(plenora_database_core::relational::QuerySource {
                 object: plenora_database_core::plan::ObjectRef {
                     catalog: None,
                     schema: Some("app".to_owned()),
@@ -192,12 +192,12 @@ fn the_renderer_wraps_a_computed_geometry_as_the_profile_wraps_a_column() {
                 alias: None,
             }),
             derived_source: None,
-            projection: vec![plenora_database_core::query::QueryProjection {
+            projection: vec![plenora_database_core::relational::QueryProjection {
                 alias: Some("hull".to_owned()),
-                expression: plenora_database_core::query::QueryExpression::Spatial {
-                    function: plenora_database_core::query::SpatialFunction::Envelope,
-                    arguments: vec![plenora_database_core::query::QueryExpression::Column {
-                        column: plenora_database_core::query::ColumnRef {
+                expression: plenora_database_core::relational::QueryExpression::Spatial {
+                    function: plenora_database_core::relational::SpatialFunction::Envelope,
+                    arguments: vec![plenora_database_core::relational::QueryExpression::Column {
+                        column: plenora_database_core::relational::ColumnRef {
                             relation: None,
                             field: "geom".to_owned(),
                         },
@@ -1170,7 +1170,7 @@ async fn the_pure_paths_no_longer_contradict_the_attribution() {
     // 2. AST: una forma che il dialetto non qualifica.
     let mut unsupported = oversized_identifier_query();
     unsupported.common_table_expressions =
-        vec![plenora_database_core::query::CommonTableExpression {
+        vec![plenora_database_core::relational::CommonTableExpression {
             name: "recenti".to_owned(),
             recursive: false,
             query: Box::new(oversized_identifier_query()),
@@ -1902,14 +1902,14 @@ fn the_mariadb_capabilities_open_only_where_a_probe_supports_them() {
     assert_eq!(
         only_mysql,
         vec![
-            plenora_database_core::query::SpatialFunction::IsValid,
-            plenora_database_core::query::SpatialFunction::HausdorffDistance,
-            plenora_database_core::query::SpatialFunction::FrechetDistance,
+            plenora_database_core::relational::SpatialFunction::IsValid,
+            plenora_database_core::relational::SpatialFunction::HausdorffDistance,
+            plenora_database_core::relational::SpatialFunction::FrechetDistance,
             // La quarta, e la prima che riguarda una funzione che rende
             // geometria: `raw.geometry_function_forms` ha trovato
             // `ST_Simplify` su `MySQL` e su nessuna major di `MariaDB` —
             // `4212` sulla 12.3, `1305` sulle due LTS.
-            plenora_database_core::query::SpatialFunction::Simplify,
+            plenora_database_core::relational::SpatialFunction::Simplify,
         ],
         "cio che MySQL ha e MariaDB no"
     );
@@ -1924,8 +1924,8 @@ fn the_mariadb_capabilities_open_only_where_a_probe_supports_them() {
     assert_eq!(
         only_mariadb,
         vec![
-            plenora_database_core::query::SpatialFunction::PointOnSurface,
-            plenora_database_core::query::SpatialFunction::Boundary,
+            plenora_database_core::relational::SpatialFunction::PointOnSurface,
+            plenora_database_core::relational::SpatialFunction::Boundary,
         ],
         "cio che MariaDB ha e MySQL no"
     );

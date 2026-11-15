@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use plenora_database_core::plan::{ComparisonOperator, SortDirection};
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use plenora_database_sql::{
     Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Ordering, RenderedSql,
     Renderer, Select,

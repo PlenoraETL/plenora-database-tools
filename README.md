@@ -47,7 +47,8 @@ che il componente esegue sono copiati byte per byte in
 [`contracts/upstream`](contracts/upstream/source.json), con il loro SHA-256;
 il gate rifiuta una copia diversa dal checkout o un vettore del pin senza
 copia. Le deviazioni dal profilo sono dichiarate in `adoption-source.json`
-accanto al pin, e il manifest le riporta. Le regressioni
+accanto al pin, e il manifest le riporta. Il riesame delle differenze e in
+[`contracts/ADOPTION.md`](contracts/ADOPTION.md). Le regressioni
 del confine sono eseguite dal job `public-contract` di `rust-ci`; il generatore
 del manifest applica gli stessi controlli nel workflow di release.
 La mappa versionata della superficie Rust e prodotta dallo stesso catalogo in

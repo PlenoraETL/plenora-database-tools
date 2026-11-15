@@ -4,7 +4,7 @@ use plenora_database_core::capabilities::{
     TransactionScope, WriteCapabilities,
 };
 use plenora_database_core::geometry::Dimensions;
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use serde_json::json;
 use std::collections::BTreeMap;
 

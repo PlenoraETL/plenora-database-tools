@@ -10445,7 +10445,7 @@
     },
     "crates/plenora-db-postgres/src/lib.rs": {
       "reason": "Dry run Deny delega alla variante con consenso: preparazione, guardia chiavi e verify_input_with_consent; nessun fetch non validato. Il fallback dopo prepare conserva il rischio senza sovrascrivere la valutazione del consumer.",
-      "review_sha256": "75cdfde9bd7cc365b2748d1597109ecaf9a40aeecf48ba9147c6b3778ba139aa"
+      "review_sha256": "d961a2b991315b9ca282bb117cdf6605b87300657564d1694eddf7982ba0c852"
     },
     "crates/plenora-database-py/src/async_session_ops.rs": {
       "review_sha256": "0761d53ca477a5cd35f53896c0f3d17830c92864b3e254f420db6637d31b2896",
@@ -10630,7 +10630,7 @@
       "reason": "Matrice SDK sync/async e reader originali: eseguita dal job sdk-offline."
     },
     ".github/workflows/rust-ci.yml": {
-      "review_sha256": "a0b676662d144dce85b8fe5269ad9c45f793956e8e6ee96a76bf8afa7d9825fe",
+      "review_sha256": "1ae27460f2de9438447c0509e2ce0b19690ee07309759d29a92727d675606be4",
       "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     },
     ".github/scripts/offline_suite.sh": {
@@ -10758,10 +10758,6 @@
     "crates/plenora-database-core/src/operand_admission.rs::reexport::pub use crate::cast_table::{operand_type, CatalogType, Charset, LengthUnit, OperandType};#1": {
       "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",
       "review_sha256": "94ded032d12d618ae8f4de89a44ee647266f7ac6fe7d705a59f791631c802706"
-    },
-    "crates/plenora-database-core/src/query.rs::reexport::pub use crate::relational::*;#1": {
-      "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",
-      "review_sha256": "edef24c73a6a8060d7011943430d636a12f7c014db619e152d0fdd7b0e92a5a2"
     },
     "crates/plenora-database-core/src/spatial_operand.rs::reexport::pub use types::{ catalog_column_is_geometric, parameter_family, query_parameter_family, rendered_family, CatalogColumn, ColumnOrigin, ColumnType, OperandFamily, ParameterFamilies, BIND_LAYOUT_MISMATCH, OPERAND_FAMILY_MISMATCH, OPERAND_TYPING_TOO_DEEP, };#1": {
       "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",

@@ -8,7 +8,7 @@ use plenora_database_core::plan::{
 use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
 };
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
 };
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};

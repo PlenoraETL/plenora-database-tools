@@ -86,7 +86,7 @@ fn neither_provider_adapts_to_the_other_product() {
 }
 use plenora_database_core::plan::{ComparisonOperator, ObjectRef};
 use plenora_database_core::provider::ParameterValue;
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, JoinKind, QueryExpression, QueryJoin, QueryLock, QueryLockStrength, QueryLockWait,
     QueryProjection, QuerySource, ScalarFunction,
 };

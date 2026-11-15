@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/PlenoraETL/plenora-contracts.git",
-  "revision": "3aec9f724f5a0ad21366f293895b4d0dbcd0aad1",
+  "revision": "38d68b402389855edbcecb7ce57c31e91282cb4e",
   "files": {
     "arrow-v1/invalid-missing-crs-with-id.json": {
       "source": "vectors/arrow-v1/invalid-missing-crs-with-id.json",
@@ -177,6 +177,14 @@
     "specs/runtime/RUNTIME-BINDING-2.0.md": {
       "source": "specs/runtime/RUNTIME-BINDING-2.0.md",
       "sha256": "3a0141fb5588d51918af3bcfaff69628852fdbe1842eb6b75cff0625a19a03ff"
+    },
+    "arrow-v1/invalid-mixed-empty-types.json": {
+      "source": "vectors/arrow-v1/invalid-mixed-empty-types.json",
+      "sha256": "3082d9e0f8dc77d42e18293ac662e48f91495cfd7ca84ceb0779c41fb1823afb"
+    },
+    "arrow-v1/mixed-without-types.json": {
+      "source": "vectors/arrow-v1/mixed-without-types.json",
+      "sha256": "b767f50bd4bebd156ac08c0dc245d94da8fcb0f055a43514bd9b5441faf39020"
     }
   }
 }

@@ -42,7 +42,6 @@ pub mod primary_key;
 pub mod protocol;
 pub mod provider;
 pub mod public_contract;
-pub mod query;
 pub mod relational;
 pub mod relational_mutation;
 pub mod resource;

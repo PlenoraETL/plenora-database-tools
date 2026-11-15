@@ -177,7 +177,7 @@ mod tests {
         TransactionProfile, WriteMode,
     };
     use plenora_database_core::provider::ParameterValue;
-    use plenora_database_core::query::{
+    use plenora_database_core::relational::{
         ColumnRef, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin, QueryOperation,
         QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
         ScalarFunction, SpatialFunction, SpatialOperator,
@@ -1429,6 +1429,10 @@ mod tests {
 
     #[test]
     fn tls_material_is_validated_and_redacted() {
+        assert_eq!(
+            PostgresProvider::default().tls_mode,
+            PostgresTlsMode::Require
+        );
         let config = PostgresTlsConfig::webpki();
         let debug = format!("{config:?}");
         assert!(debug.contains("[REDACTED]"));

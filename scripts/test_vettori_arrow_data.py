@@ -233,6 +233,85 @@ class Verdetti(unittest.TestCase):
         )
 
 
+class RiletturaSenzaChiaveImplicita(unittest.TestCase):
+    PUNTO = "0101000000000000000000f03f0000000000000040"
+    ALTRO = "010100000000000000000008400000000000001040"
+    BIG_ENDIAN = "00000000013ff00000000000004000000000000000"
+
+    def vettore(self, rows, *, geometria=True):
+        fields = [{"name": 'misura"x', "type": "int64", "metadata": {}}]
+        if geometria:
+            fields.append({"name": "forma", "type": "binary", "metadata": {
+                "ARROW:extension:name": "geoarrow.wkb", "plenora.geometry.encoding": "wkb"}})
+        return {"fields": fields, "rows": rows, "expect": "valid"}
+
+    def confronta(self, vector, actual, *, binario=False):
+        import json
+        from unittest.mock import patch
+        pg = runner.Postgres(Path("cli"), "DSN", Path("."))
+        with patch.object(pg, "testo", return_value=json.dumps(actual)) as read:
+            result = (pg.byte_difformi if binario else pg.coordinate_difformi)("fixture", vector)
+        sql = read.call_args.args[0]
+        self.assertNotIn("ORDER BY id", sql)
+        self.assertIn('"misura""x"', sql)
+        self.assertIn("json_build_array", sql)
+        return result
+
+    def test_scalar_vectors_without_geometry_or_id_are_read_back(self):
+        vector = self.vettore([{'misura"x': 42}], geometria=False)
+        for binary in (False, True):
+            self.assertEqual(self.confronta(vector, [[42]], binario=binary), 0)
+            self.assertGreater(self.confronta(vector, [[43]], binario=binary), 0)
+            self.assertGreater(self.confronta(vector, [], binario=binary), 0)
+
+    def test_geometry_without_id_retains_row_associations_and_multiplicity(self):
+        vector = self.vettore([{'misura"x': 1, "forma": self.PUNTO},
+                              {'misura"x': 2, "forma": self.ALTRO},
+                              {'misura"x': 1, "forma": self.PUNTO},
+                              {'misura"x': None, "forma": None}])
+        actual = [[None, None], [1, self.PUNTO], [2, self.ALTRO], [1, self.PUNTO]]
+        for binary in (False, True):
+            self.assertEqual(self.confronta(vector, actual, binario=binary), 0)
+            for changed in (actual[:-1], actual + [actual[0]],
+                            [[None, None], [1, self.ALTRO], [2, self.PUNTO], [1, self.PUNTO]]):
+                self.assertGreater(self.confronta(vector, changed, binario=binary), 0)
+
+    def test_coordinate_equivalence_does_not_hide_binary_changes(self):
+        vector = self.vettore([{'misura"x': 7, "forma": self.BIG_ENDIAN}])
+        self.assertEqual(self.confronta(vector, [[7, self.PUNTO]]), 0)
+        self.assertEqual(self.confronta(vector, [[7, self.PUNTO]], binario=True), 1)
+
+    def test_multiple_geometry_fields_are_not_compared_independently(self):
+        vector = self.vettore([{'misura"x': 1, "forma": self.PUNTO, "altra": self.ALTRO}])
+        vector["fields"].append({**vector["fields"][1], "name": "altra"})
+        self.assertEqual(self.confronta(vector, [[1, self.PUNTO, self.ALTRO]]), 0)
+        self.assertGreater(self.confronta(vector, [[1, self.ALTRO, self.PUNTO]]), 0)
+
+    def test_empty_and_malformed_readback(self):
+        vector = self.vettore([], geometria=False)
+        self.assertEqual(self.confronta(vector, []), 0)
+        for malformed in ({}, [42], [[42, 43]], None):
+            with self.subTest(malformed=malformed), self.assertRaises(RuntimeError):
+                self.confronta(vector, malformed)
+
+    def test_successful_scalar_write_traverses_the_real_readback(self):
+        import json
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        for metadata in ({}, {"plenora.field_id": "314159"}):
+            with TemporaryDirectory() as directory:
+                pg = runner.Postgres(Path("cli"), "DSN", Path(directory))
+                vector = self.vettore([{'misura"x': 42}], geometria=False)
+                vector["fields"][0]["metadata"] = metadata
+                with patch.object(pg, "cancella"), \
+                     patch.object(runner, "busta", return_value={"exit": 0, "category": None}), \
+                     patch.object(pg, "testo", return_value=json.dumps([[42]])) as read:
+                    result = pg.scrivi("scalar", Path("input"), vector)
+                self.assertEqual(result["coordinate_difformi"], 0)
+                self.assertEqual(result["srid_difformi"], 0)
+                read.assert_called_once()
+
+
 class Coordinate(unittest.TestCase):
     def test_byte_order_e_forma_del_codice_non_contano(self) -> None:
         # POINT Z(1 2 3): ISO little endian, esteso big endian con SRID 4326.
