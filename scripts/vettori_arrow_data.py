@@ -87,6 +87,7 @@ atteso; l'uscita e' 0 solo se ogni vettore ha il verdetto del contratto.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
@@ -238,49 +239,64 @@ class Postgres:
                                      f"WHERE ST_SRID({colonna}::geometry) <> {int(atteso)}")
         return difformi
 
-    def coordinate_difformi(self, tabella: str, vettore: dict) -> int:
-        """Le righe la cui geometria riletta non ha le ordinate scritte, nello
-        stesso ordine. `ST_AsBinary` rende WKB ISO senza SRID: si confrontano
-        tipo, dimensioni e coordinate, non i byte, che cambiano con il byte
-        order e con la forma del type code."""
-        difformi = 0
-        righe = sorted(vettore["rows"], key=lambda riga: riga["id"])
-        for campo in vettore["fields"]:
-            md = campo.get("metadata") or {}
-            if md.get("ARROW:extension:name") != "geoarrow.wkb":
-                continue
+    def righe_difformi(self, tabella: str, vettore: dict, *, binario: bool) -> int:
+        """Confronta righe complete come multinsiemi, senza una chiave implicita.
+
+        Il database non garantisce l'ordine delle righe. La tupla di tutti i
+        campi conserva associazioni, null e duplicati anche senza `id` o
+        geometrie; solo il confronto delle geometrie cambia fra le due prove.
+        """
+        campi = vettore["fields"]
+        espressioni = []
+        for campo in campi:
             colonna = '"' + campo["name"].replace('"', '""') + '"'
-            testo = self.testo(
-                f"SELECT string_agg(coalesce(encode(ST_AsBinary({colonna}::geometry), 'hex'), "
-                f"'NULL'), ',' ORDER BY id) FROM public.{tabella}")
-            riletti = (testo or "").split(",") if righe else []
-            attesi = [riga.get(campo["name"]) for riga in righe]
-            if len(riletti) != len(attesi):
-                return max(len(attesi), 1)
-            for atteso, riletto in zip(attesi, riletti):
-                if (atteso is None) != (riletto == "NULL"):
-                    difformi += 1
-                elif atteso is not None and (coordinate(bytes.fromhex(atteso))
-                                             != coordinate(bytes.fromhex(riletto))):
-                    difformi += 1
-        return difformi
+            md = campo.get("metadata") or {}
+            if md.get("ARROW:extension:name") == "geoarrow.wkb":
+                funzione = "ST_AsEWKB" if binario and md.get("plenora.geometry.encoding") == "ewkb" else "ST_AsBinary"
+                ordine = ", 'NDR'" if binario else ""
+                colonna = f"encode({funzione}({colonna}::geometry{ordine}), 'hex')"
+            elif campo["type"] in {"binary", "large_binary"}:
+                colonna = f"encode({colonna}, 'hex')"
+            espressioni.append(colonna)
+        testo = self.testo(
+            "SELECT json_agg(json_build_array(" + ", ".join(espressioni)
+            + f"))::text FROM public.{tabella}")
+        riletti = json.loads(testo) if testo is not None else []
+        if not isinstance(riletti, list) or any(
+            not isinstance(riga, list) or len(riga) != len(campi) for riga in riletti
+        ):
+            raise RuntimeError("forma della rilettura incoerente con lo schema")
+
+        def immutabile(value):
+            return tuple(map(immutabile, value)) if isinstance(value, (list, tuple)) else value
+
+        def firma(riga):
+            valori = []
+            for campo, valore in zip(campi, riga):
+                md = campo.get("metadata") or {}
+                if valore is not None and campo["type"] in {"binary", "large_binary"}:
+                    valore = bytes.fromhex(valore)
+                    if not binario and md.get("ARROW:extension:name") == "geoarrow.wkb":
+                        valore = immutabile(coordinate(valore))
+                elif valore is not None and campo["type"] == "float64":
+                    valore = float(valore)
+                    if valore != valore:
+                        valore = "NaN"
+                valori.append(valore)
+            return tuple(valori)
+
+        attesi = Counter(firma([riga.get(campo["name"]) for campo in campi])
+                         for riga in vettore["rows"])
+        effettivi = Counter(map(firma, riletti))
+        return max(sum((attesi - effettivi).values()), sum((effettivi - attesi).values()))
+
+    def coordinate_difformi(self, tabella: str, vettore: dict) -> int:
+        """Tipo, dimensioni e coordinate invariati, con le associazioni di riga."""
+        return self.righe_difformi(tabella, vettore, binario=False)
 
     def byte_difformi(self, tabella: str, vettore: dict) -> int:
-        count = 0
-        rows = sorted(vettore["rows"], key=lambda row: row["id"])
-        for field in vettore["fields"]:
-            md = field.get("metadata") or {}
-            if md.get("ARROW:extension:name") != "geoarrow.wkb":
-                continue
-            function = "ST_AsEWKB" if md.get("plenora.geometry.encoding") == "ewkb" else "ST_AsBinary"
-            column = '"' + field["name"].replace('"', '""') + '"'
-            text = self.testo(f"SELECT string_agg(coalesce(encode({function}({column}::geometry, 'NDR'), 'hex'), 'NULL'), ',' ORDER BY id) FROM public.{tabella}")
-            actual = (text or "").split(",") if rows else []
-            expected = [row.get(field["name"]) or "NULL" for row in rows]
-            if len(actual) != len(expected):
-                raise RuntimeError("conteggio della rilettura binaria incoerente")
-            count += sum(a.lower() != b.lower() for a, b in zip(actual, expected))
-        return count
+        """Rappresentazione binaria riletta, con le stesse associazioni di riga."""
+        return self.righe_difformi(tabella, vettore, binario=True)
 
     def testo(self, sql: str) -> str | None:
         argv = [str(self.cli), "database-execute-scalar", "postgres", self.variabile, sql]

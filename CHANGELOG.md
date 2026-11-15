@@ -1,6 +1,6 @@
 # Changelog
 
-## Non rilasciata — 12.0.0
+## 12.0.0 — Non rilasciata
 
 - Rimozioni incompatibili: eliminati `PostgresProvider::default_secure` e la
   facciata Rust `plenora_database_core::query`; usare `Default` e `relational`.
