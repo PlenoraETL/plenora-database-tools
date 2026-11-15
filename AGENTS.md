@@ -45,6 +45,18 @@ l'unico posto in cui sono scritte.
 
 ## Prima di dire "fatto"
 
+Prima di consegnare una modifica si esegue
+`python scripts/ci_locale.py --esegui --profilo pr` e si allega la ricevuta JSON
+prodotta in `target/ci-locale/`. Dichiarare verde solo cio che la ricevuta dice
+`PASS`. Per leggere il piano senza eseguire: `python scripts/ci_locale.py --piano`.
+`--job` restringe la corsa, non certifica il profilo completo. I servizi live
+richiedono `--servizi-live`; release e pubblicazioni restano vietate.
+Il profilo PR include tutti i filtri PR potenziali: non consulta GitHub ne
+deduce i required checks della branch protection. Conserva shell, ambiente e
+piattaforma dei workflow; un prerequisito assente resta `NON ESEGUITO`.
+L'exit code 1 indica fallimenti, 2 copertura incompleta. Le toolchain richieste
+devono essere gia installate; la corsa usa dipendenze disponibili offline.
+
 I comandi stanno in [`README.md`](README.md), sezione «Cosa fa girare le
 prove», e nei workflow sotto `.github/workflows/`: sono la fonte, e ricopiarli
 qui li farebbe divergere al primo cambiamento.

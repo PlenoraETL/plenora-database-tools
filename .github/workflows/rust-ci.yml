@@ -127,6 +127,8 @@ jobs:
         run: python3 -m pip install -r requirements-self-tests.txt
       - name: scripts/test_ci_workflows.py
         run: python3 scripts/test_ci_workflows.py
+      - name: piano CI locale e ricevute senza verdi impliciti
+        run: python3 -m unittest tests.test_ci_locale
       - name: scripts/test_check_mariadb_reference.py
         run: python3 scripts/test_check_mariadb_reference.py
       - name: scripts/test_check_db2_reference.py

@@ -338,7 +338,12 @@ proprio workflow in `.github/workflows/python-wheel.yml`.
 
 ## Cosa fa girare le prove
 
-Il percorso offline canonico è lo sweep. I gate live sono separati per
+Prima di consegnare si esegue `python scripts/ci_locale.py --esegui --profilo pr`
+e si allega la ricevuta in `target/ci-locale/`, dichiarando verde soltanto i
+passi `PASS`. `--piano` stampa il piano derivato; `--job` seleziona un job.
+Le regole di esecuzione sono in [`AGENTS.md`](AGENTS.md#prima-di-dire-fatto).
+
+Lo sweep resta disponibile come percorso offline. I gate live sono separati per
 provider: un risultato verde su un database non qualifica gli altri.
 
 La sweep legge tutti i workflow YAML e conserva i programmi `run` interi,
