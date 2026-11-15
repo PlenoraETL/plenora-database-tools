@@ -5,7 +5,7 @@ use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 pub fn validate(value: &Value) -> Result<()> {
     let valid = match value {
         Value::Date(y, mo, d, h, mi, s, us) => {
-            (1..=9999).contains(y)
+            *y <= 9999
                 && *us < 1_000_000
                 && *s < 60
                 && chrono::NaiveDate::from_ymd_opt(i32::from(*y), u32::from(*mo), u32::from(*d))

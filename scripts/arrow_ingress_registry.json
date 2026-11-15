@@ -10658,7 +10658,7 @@
       "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
     },
     "crates/plenora-db-mysql/src/temporal.rs": {
-      "review_sha256": "827472fb45007b505f46089b11592374b832b519560bdb147896cb46cfdfa4e2",
+      "review_sha256": "600d5230cb63d1ae37987d6ba5001e78f37ef5b781cba58275a66c81a815e927",
       "reason": "Barriera dei valori temporali del driver prima del decoding e della conversione Arrow: rifiuto fallibile dei campi fuori dominio senza payload. Coperta dai test temporal_tests.rs e dalla guardia check_temporal.py in rust-ci."
     },
     "crates/plenora-db-postgres/src/temporal.rs": {
