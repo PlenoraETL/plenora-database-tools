@@ -149,7 +149,7 @@ propagare integralmente `read_loss` e i rapporti esecutivi, anche negli errori,
 senza ricostruirli nel consumer. Una lettura parziale non equivale a completata.
 I nuovi rifiuti PostgreSQL precedono gli effetti e non sono aggirabili dal consenso.
 
-La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+La 11.0.0 estende a MySQL il consenso per valore delle
 superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
 Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
 registro generato; l'apertura del percorso non attesta la qualifica live,

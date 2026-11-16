@@ -727,7 +727,7 @@ anche i nuovi rifiuti geometrici PostgreSQL e i rapporti metadata: il consenso
 non elimina i vincoli del contratto e una perdita metadata può riguardare
 anche una tabella vuota. Per gli errori durante la lettura lazy vedere
 [stato degli stream Arrow](#stato-degli-stream-arrow-1100).
-La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+La 11.0.0 estende a MySQL il consenso per valore delle
 superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
 Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
 registro generato; l'apertura del percorso non attesta la qualifica live,

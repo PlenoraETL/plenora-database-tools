@@ -1,6 +1,6 @@
 # Changelog
 
-## 12.0.0 — Non rilasciata
+## 12.0.0 — 2026-11-15
 
 - Rimozioni incompatibili: eliminati `PostgresProvider::default_secure` e la
   facciata Rust `plenora_database_core::query`; usare `Default` e `relational`.
@@ -11,6 +11,22 @@
 - Decisione del titolare del 15/11/2026: nessuna compatibilita con release
   Plenora precedenti; i protocolli condivisi ancora correnti richiedono
   coordinamento con i consumatori prima del ritiro.
+- Guardie dell'IR relazionale contro definizioni parallele; sonde PostgreSQL
+  e inventari MariaDB allineati alle superfici correnti dopo le rimozioni (#158).
+- Sicurezza temporale B1–B3 (#159): timeout, keepalive e retry condividono
+  un dominio positivo limitato a un giorno e deadline con somma controllata;
+  Db2 converte il timeout senza fallback.
+- Decoder temporali: PostgreSQL rifiuta TIME 24:00 senza trasformarlo in
+  mezzanotte; SQL Server valida i campi wire prima del decoder, evitando
+  panic su smalldatetime, avvolgimenti degli orari e sostituzioni degli offset.
+  Oracle rifiuta il byte di lunghezza assente invece di restituire NULL.
+- MySQL: fork vendorizzati di mysql_common e mysql_async, con licenze
+  upstream conservate; rifiuto InvalidData dei formati temporali non
+  supportati e delle lunghezze non canoniche, senza panic o perdita di byte,
+  e aritmetica controllata nella conversione delle durate. L'anno 0 resta
+  valido nel dominio 0..9999; date zero e giorni inesistenti restano rifiutati.
+- Guardia temporale in CI contro conversioni infallibili e bypass dei decoder;
+  guardie dei moduli, registro Arrow e budget del codice riallineati al delta.
 
 ## 11.0.0 — 2026-11-14
 
