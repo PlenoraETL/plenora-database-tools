@@ -195,6 +195,10 @@ jobs:
           python3 -m unittest scripts.test_python_version
       - name: SDK stream boundaries
         run: python3 -m unittest scripts.test_sdk_stream_boundaries scripts.test_final_campaign_regressions
+      - name: Temporal checked arithmetic guard
+        run: |
+          python3 scripts/check_temporal.py
+          python3 -m unittest scripts.test_check_temporal
       - name: scripts/check_test_layout.py
         run: python3 scripts/check_test_layout.py
       - name: scripts/check_arrow_ingress.py
@@ -409,6 +413,8 @@ jobs:
         run: python scripts/check_campaign_inventories.py --compiled-mysql
       - name: cargo test --workspace (senza live_*)
         run: cargo test --workspace -- --skip live_
+      - name: Decoder temporali TDS su byte wire senza server
+        run: python scripts/test_temporal_tds_wire.py
       - name: test unitari del fork Oracle
         # Il fork escluso dal workspace richiede una risoluzione standalone.
         # La copia temporanea conserva intatti i lockfile del checkout.

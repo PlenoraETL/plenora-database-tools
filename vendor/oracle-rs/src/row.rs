@@ -534,10 +534,7 @@ impl<'a> RowDataDecoder<'a> {
 
     /// Read Oracle-format data slice from buffer
     fn read_oracle_slice(&self, buf: &mut ReadBuffer) -> Result<Option<Vec<u8>>> {
-        if buf.remaining() == 0 {
-            return Ok(None);
-        }
-
+        // Un campo troncato non e il marcatore NULL del protocollo.
         let length = buf.read_u8()?;
 
         // NULL indicator

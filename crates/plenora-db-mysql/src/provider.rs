@@ -622,6 +622,9 @@ impl Provider for MysqlProvider {
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
         plenora_database_core::caller_sql::open_transaction({
             Box::pin(async move {
+                if let Some(ms) = options.statement_timeout_ms {
+                    plenora_database_core::temporal::timeout_ms(ms)?;
+                }
                 // Bordo: da qui in poi l'attribuzione e quella del
                 // profilo, non il segnaposto con cui l'errore e nato.
                 let outcome = async move {

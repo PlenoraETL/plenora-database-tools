@@ -1969,3 +1969,44 @@ async fn live_arrow_timestamp_precision_refuses_only_inexact_values() {
         drop_table_if_present(&provider, &secret, &budget, &cancellation, &object).await;
     }
 }
+
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live con fixture; corpus temporale"]
+async fn live_temporal_decoder_boundaries() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    let result = tx
+        .query(
+            &Statement::new("SELECT DATE('0001-01-01') AS T FROM SYSIBM.SYSDUMMY1"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::Date(
+            "0001-01-01".to_owned()
+        ))
+    );
+    let result = tx.query(&Statement::new("SELECT CAST('9999-12-31-23.59.59.999999999999' AS TIMESTAMP(12)) AS T FROM SYSIBM.SYSDUMMY1"), &cancellation).await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::Timestamp(
+            "9999-12-31T23:59:59.999999999999".to_owned()
+        ))
+    );
+    tx.rollback(&cancellation).await.expect("rollback");
+}

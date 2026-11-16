@@ -123,6 +123,9 @@ impl PostgresTransaction {
         cancellation: &CancellationToken,
     ) -> Result<Self> {
         check_cancelled(cancellation, ErrorPhase::Prepare)?;
+        if let Some(ms) = options.statement_timeout_ms {
+            plenora_database_core::temporal::timeout_ms(ms)?;
+        }
         let sql = build_begin_sql(options);
         if let Err(error) = client
             .client_mut()?

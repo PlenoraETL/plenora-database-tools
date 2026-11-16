@@ -16848,3 +16848,69 @@ async fn live_p6_runtime_public_consent_and_outcomes() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture reale del provider; corpus temporale"]
+async fn live_temporal_decoder_boundaries() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    let result = tx
+        .query(
+            &Statement::new("SELECT CAST('9999-12-31 23:59:59.999999' AS DATETIME(6)) AS t"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::Timestamp(
+            "9999-12-31T23:59:59.999999".to_owned()
+        ))
+    );
+    // La sessione permissiva fa arrivare uno zero-date reale sul wire.
+    let mut raw_session = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("sessione zero-date");
+    let connection = raw_session.connection_mut().unwrap();
+    connection
+        .query_drop("SET SESSION sql_mode = ''")
+        .await
+        .unwrap();
+    let row: mysql_async::Row = connection
+        .exec_first("SELECT CAST('0000-00-00' AS DATE)", ())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        crate::temporal::validate(row.as_ref(0).unwrap())
+            .unwrap_err()
+            .category,
+        ErrorCategory::DataMapping
+    );
+    let result = tx
+        .query(
+            &Statement::new("SELECT CAST('-838:59:59.000000' AS TIME(6)) AS t"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::String(
+            "-838:59:59.000000".to_owned()
+        ))
+    );
+    tx.rollback(&cancellation).await.expect("rollback");
+}

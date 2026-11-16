@@ -170,6 +170,13 @@ impl OracleConfig {
     /// `InvalidConfiguration` per campi vuoti o di controllo, porta e
     /// timeout nulli, cache eccessiva o configurazione TLS incoerente.
     pub fn validate(&self) -> Result<()> {
+        plenora_database_core::temporal::timeout(self.connect_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+        plenora_database_core::temporal::timeout(self.operation_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+        plenora_database_core::temporal::timeout(self.acquire_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+
         for (value, message) in [
             (&self.host, "configurazione Oracle senza host"),
             (
@@ -250,3 +257,7 @@ fn invalid_configuration(message: &'static str) -> DatabaseError {
         message,
     )
 }
+
+#[cfg(test)]
+#[path = "temporal_config_tests.rs"]
+mod temporal_config_tests;

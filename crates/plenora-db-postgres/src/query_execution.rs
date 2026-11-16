@@ -24,14 +24,16 @@ async fn cancel_inflight(
     client: &mut PooledClient,
     cancellation: &CancellationToken,
 ) -> DatabaseError {
-    cancel_and_invalidate(
+    let result = cancel_and_invalidate(
         client,
         provider.tls_mode,
         provider.tls_config.connector(),
         provider.network_options.connect_timeout_ms,
     )
     .await;
-    cancelled_read_error(cancellation)
+    result
+        .err()
+        .unwrap_or_else(|| cancelled_read_error(cancellation))
 }
 
 fn validate_stream_configuration(provider: &PostgresProvider) -> Result<()> {

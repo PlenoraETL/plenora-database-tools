@@ -256,6 +256,23 @@ fn decode_timestamp_tz(
     let seconds = i32::from(value.tz_hour_offset) * 3_600 + i32::from(value.tz_minute_offset) * 60;
     let offset = FixedOffset::east_opt(seconds)
         .ok_or_else(|| mapping_error(phase, "offset TIMESTAMP WITH TIME ZONE Oracle non valido"))?;
+    let local = utc
+        .checked_add_offset(offset)
+        .ok_or_else(|| mapping_error(phase, "calendario locale Oracle non rappresentabile"))?;
+    if chrono::Datelike::year(&local) > 9999 {
+        return Err(mapping_error(
+            phase,
+            "calendario locale Oracle fuori dominio",
+        ));
+    }
+    require_gregorian(
+        chrono::Datelike::year(&local),
+        u8::try_from(chrono::Datelike::month(&local))
+            .map_err(|_| mapping_error(phase, "mese Oracle non rappresentabile"))?,
+        u8::try_from(chrono::Datelike::day(&local))
+            .map_err(|_| mapping_error(phase, "giorno Oracle non rappresentabile"))?,
+        phase,
+    )?;
     Ok(offset
         .from_utc_datetime(&utc)
         .to_rfc3339_opts(SecondsFormat::Micros, false))

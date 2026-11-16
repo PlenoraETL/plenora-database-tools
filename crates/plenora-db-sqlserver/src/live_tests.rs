@@ -11925,3 +11925,77 @@ async fn live_audit900_typed_wkb_positive() {
 #[cfg(test)]
 #[path = "effective_loss_live_tests.rs"]
 mod effective_loss;
+
+#[tokio::test]
+#[ignore = "richiede fixture reale del provider; corpus temporale"]
+async fn live_temporal_decoder_boundaries() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = live_provider();
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    let result = tx
+        .query(
+            &Statement::new("SELECT CAST('0001-01-01T00:00:00' AS datetime2(7)) AS t"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::Timestamp(
+            "0001-01-01T00:00:00.000000".to_owned()
+        ))
+    );
+    let result = tx
+        .query(
+            &Statement::new("SELECT CAST('9999-12-31T23:59:59.9999999' AS datetime2(7)) AS t"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::Timestamp(
+            "9999-12-31T23:59:59.999999900".to_owned()
+        ))
+    );
+    let result = tx
+        .query(
+            &Statement::new("SELECT CAST('1753-01-01' AS datetime) AS t"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(&plenora_database_core::provider::ParameterValue::Timestamp(
+            "1753-01-01T00:00:00.000000".to_owned()
+        ))
+    );
+    let result = tx
+        .query(
+            &Statement::new("SELECT CAST('0001-01-02T00:00:00+14:00' AS datetimeoffset(7)) AS t"),
+            &cancellation,
+        )
+        .await;
+    let rows = result.expect("valore temporale esatto");
+    assert_eq!(
+        rows[0].get_index(0),
+        Some(
+            &plenora_database_core::provider::ParameterValue::TimestampTz(
+                "0001-01-01T10:00:00+00:00".to_owned()
+            )
+        )
+    );
+    tx.rollback(&cancellation).await.expect("rollback");
+}
