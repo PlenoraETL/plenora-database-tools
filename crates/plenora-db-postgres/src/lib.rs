@@ -1288,6 +1288,9 @@ impl Provider for PostgresProvider {
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
         plenora_database_core::caller_sql::open_transaction({
             Box::pin(async move {
+                if let Some(ms) = options.statement_timeout_ms {
+                    plenora_database_core::temporal::timeout_ms(ms)?;
+                }
                 let client = self.connect_session(secret).await?;
                 let transaction =
                     transaction::PostgresTransaction::begin(client, options, cancellation).await?;
@@ -1446,3 +1449,5 @@ mod effective_loss_live_tests;
 
 #[cfg(test)]
 mod geometry_qualification_live_tests;
+
+mod temporal;

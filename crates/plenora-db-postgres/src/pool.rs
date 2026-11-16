@@ -7,7 +7,6 @@ use plenora_database_core::provider::SecretString;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration as StdDuration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_postgres::Client;
 
@@ -68,7 +67,7 @@ impl PostgresPool {
         }
         self.metrics.checkout();
         let permit = tokio::time::timeout(
-            StdDuration::from_millis(acquire_timeout_ms),
+            plenora_database_core::temporal::timeout_ms(acquire_timeout_ms)?,
             Arc::clone(&self.semaphore).acquire_owned(),
         )
         .await

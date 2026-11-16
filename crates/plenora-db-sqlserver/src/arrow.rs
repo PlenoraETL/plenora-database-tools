@@ -115,7 +115,8 @@ impl SqlServerColumnBuffer {
                         value.map(parse_date).transpose()?
                     }
                     SqlServerWireEncoding::Native => {
-                        let value: Option<NaiveDate> = get(row, index)?;
+                        let value =
+                            get::<crate::temporal::Checked<NaiveDate>>(row, index)?.map(|v| v.0);
                         value.map(date32).transpose()?
                     }
                 };
@@ -129,7 +130,8 @@ impl SqlServerColumnBuffer {
                         value.map(parse_time).transpose()?
                     }
                     SqlServerWireEncoding::Native => {
-                        let value: Option<NaiveTime> = get(row, index)?;
+                        let value =
+                            get::<crate::temporal::Checked<NaiveTime>>(row, index)?.map(|v| v.0);
                         value.map(time_micros).transpose()?
                     }
                 };
@@ -143,7 +145,8 @@ impl SqlServerColumnBuffer {
                         value.map(parse_timestamp).transpose()?
                     }
                     SqlServerWireEncoding::Native => {
-                        let value: Option<NaiveDateTime> = get(row, index)?;
+                        let value = get::<crate::temporal::Checked<NaiveDateTime>>(row, index)?
+                            .map(|v| v.0);
                         value
                             .map(|value| native_timestamp(value, *legacy))
                             .transpose()?
@@ -153,23 +156,7 @@ impl SqlServerColumnBuffer {
                 Ok(())
             }
             Self::TimestampTz(builder, encoding, scale) => {
-                match encoding {
-                    SqlServerWireEncoding::Projected => {
-                        let value: Option<&str> = get(row, index)?;
-                        if let Some(text) = value {
-                            validate_timestamp_tz(text)?;
-                        }
-                        builder.append_option(value);
-                    }
-                    SqlServerWireEncoding::Native => {
-                        let value: Option<DateTime<FixedOffset>> = get(row, index)?;
-                        let encoded = value
-                            .map(|value| format_timestamp_tz(value, *scale))
-                            .transpose()?;
-                        builder.append_option(encoded.as_deref());
-                    }
-                }
-                Ok(())
+                append_timestamp_tz(builder, *encoding, *scale, row, index)
             }
             Self::Decimal(builder, scale, encoding) => {
                 let parsed = match encoding {
@@ -209,6 +196,33 @@ impl SqlServerColumnBuffer {
             Self::Decimal(builder, _, _) => Arc::new(builder.finish()),
         }
     }
+}
+
+fn append_timestamp_tz(
+    builder: &mut StringBuilder,
+    encoding: SqlServerWireEncoding,
+    scale: u8,
+    row: &Row,
+    index: usize,
+) -> Result<()> {
+    match encoding {
+        SqlServerWireEncoding::Projected => {
+            let value: Option<&str> = get(row, index)?;
+            if let Some(text) = value {
+                validate_timestamp_tz(text)?;
+            }
+            builder.append_option(value);
+        }
+        SqlServerWireEncoding::Native => {
+            let value =
+                get::<crate::temporal::Checked<DateTime<FixedOffset>>>(row, index)?.map(|v| v.0);
+            let encoded = value
+                .map(|value| format_timestamp_tz(value, scale))
+                .transpose()?;
+            builder.append_option(encoded.as_deref());
+        }
+    }
+    Ok(())
 }
 
 trait OptionBuilder<T> {

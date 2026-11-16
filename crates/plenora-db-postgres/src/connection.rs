@@ -5,7 +5,6 @@ use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio_postgres::config::SslMode;
 use tokio_postgres::{Client, Config, NoTls};
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -255,6 +254,8 @@ pub fn connection_fingerprint(
 }
 
 pub fn validate_session_timeouts(statement_timeout_ms: u64, lock_timeout_ms: u64) -> Result<()> {
+    plenora_database_core::temporal::timeout_ms(statement_timeout_ms)?;
+    plenora_database_core::temporal::timeout_ms(lock_timeout_ms)?;
     if statement_timeout_ms == 0 || lock_timeout_ms == 0 {
         return Err(DatabaseError::invalid_plan(
             "timeout PostgreSQL deve essere maggiore di zero",
@@ -311,11 +312,19 @@ pub fn connection_config(secret: &SecretString, options: PostgresNetworkOptions)
         )
     })?;
     config
-        .connect_timeout(Duration::from_millis(options.connect_timeout_ms))
-        .tcp_user_timeout(Duration::from_millis(options.tcp_user_timeout_ms))
+        .connect_timeout(plenora_database_core::temporal::timeout_ms(
+            options.connect_timeout_ms,
+        )?)
+        .tcp_user_timeout(plenora_database_core::temporal::timeout_ms(
+            options.tcp_user_timeout_ms,
+        )?)
         .keepalives(true)
-        .keepalives_idle(Duration::from_secs(options.keepalive_idle_secs))
-        .keepalives_interval(Duration::from_secs(options.keepalive_interval_secs))
+        .keepalives_idle(plenora_database_core::temporal::keepalive_seconds(
+            options.keepalive_idle_secs,
+        )?)
+        .keepalives_interval(plenora_database_core::temporal::keepalive_seconds(
+            options.keepalive_interval_secs,
+        )?)
         .keepalives_retries(options.keepalive_retries);
     Ok(config)
 }

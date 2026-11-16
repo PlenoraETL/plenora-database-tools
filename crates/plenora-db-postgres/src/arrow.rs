@@ -204,11 +204,11 @@ impl ColumnBuffer {
                 Ok(5)
             }
             Self::Time(builder) => {
-                let value: Option<chrono::NaiveTime> =
+                let value: Option<crate::temporal::CheckedTime> =
                     row.try_get(index).map_err(row_decode_error)?;
                 builder.append_option(value.map(|time| {
-                    i64::from(time.num_seconds_from_midnight()) * 1_000_000
-                        + i64::from(time.nanosecond() / 1_000)
+                    i64::from(time.0.num_seconds_from_midnight()) * 1_000_000
+                        + i64::from(time.0.nanosecond() / 1_000)
                 }));
                 Ok(9)
             }
@@ -217,24 +217,15 @@ impl ColumnBuffer {
                     row.try_get(index).map_err(row_decode_error)?;
                 let value = value
                     .map(|interval| {
-                        interval
-                            .microseconds
-                            .checked_mul(1_000)
-                            .map(|nanoseconds| {
+                        crate::temporal::interval_nanoseconds(interval.microseconds).map(
+                            |nanoseconds| {
                                 IntervalMonthDayNano::new(
                                     interval.months,
                                     interval.days,
                                     nanoseconds,
                                 )
-                            })
-                            .ok_or_else(|| {
-                                public_error(
-                                    ErrorCategory::DataMapping,
-                                    ErrorPhase::Read,
-                                    false,
-                                    "interval PostgreSQL oltre il range Arrow nanosecond",
-                                )
-                            })
+                            },
+                        )
                     })
                     .transpose()?;
                 builder.append_option(value);
@@ -595,3 +586,7 @@ where
     builder.append_optional(value);
     Ok(estimated_bytes)
 }
+
+#[cfg(test)]
+#[path = "arrow_temporal_tests.rs"]
+mod temporal_tests;

@@ -322,7 +322,8 @@ fn decode_cell(
         // Il canone e il microsecondo: un `datetime2(7)` con il settimo
         // decimale diverso da zero si rifiuta invece di troncarlo.
         Ct::Datetime | Ct::Datetime2 | Ct::Datetime4 | Ct::Datetimen => row
-            .try_get::<chrono::NaiveDateTime, _>(index)
+            .try_get::<crate::temporal::Checked<chrono::NaiveDateTime>, _>(index)
+            .map(|value| value.map(|v| v.0))
             .map_err(|_| decode_mapping_error(index, "datetime"))?
             .map_or_else(
                 || Ok(null_value(kind)),
@@ -341,7 +342,8 @@ fn decode_cell(
         // il protocollo porta gia in UTC: `10:20+02:00` tornava `06:20Z`.
         // L'istante si legge con il suo offset e si porta a UTC qui.
         Ct::DatetimeOffsetn => row
-            .try_get::<chrono::DateTime<chrono::FixedOffset>, _>(index)
+            .try_get::<crate::temporal::Checked<chrono::DateTime<chrono::FixedOffset>>, _>(index)
+            .map(|value| value.map(|v| v.0))
             .map_err(|_| decode_mapping_error(index, "datetimeoffset"))?
             .map_or_else(
                 || Ok(null_value(kind)),
@@ -352,14 +354,16 @@ fn decode_cell(
                 },
             ),
         Ct::Daten => Ok(row
-            .try_get::<chrono::NaiveDate, _>(index)
+            .try_get::<crate::temporal::Checked<chrono::NaiveDate>, _>(index)
+            .map(|value| value.map(|v| v.0))
             .map_err(|_| decode_mapping_error(index, "date"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::Date(value.format("%Y-%m-%d").to_string()),
             )),
         Ct::Timen => Ok(row
-            .try_get::<chrono::NaiveTime, _>(index)
+            .try_get::<crate::temporal::Checked<chrono::NaiveTime>, _>(index)
+            .map(|value| value.map(|v| v.0))
             .map_err(|_| decode_mapping_error(index, "time"))?
             .map_or_else(
                 || null_value(kind),

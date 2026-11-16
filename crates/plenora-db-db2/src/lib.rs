@@ -100,3 +100,6 @@ mod parameter_catalog_tests;
 #[cfg(test)]
 #[path = "exact_read_tests.rs"]
 mod exact_read_tests;
+
+#[cfg(test)]
+mod temporal_tests;

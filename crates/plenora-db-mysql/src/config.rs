@@ -218,6 +218,13 @@ impl MysqlConfig {
     /// Come `validate_without_password`.
     #[allow(clippy::redundant_pub_crate)]
     pub(crate) fn validate_without_password_for_product(&self, product: &str) -> Result<()> {
+        plenora_database_core::temporal::timeout(self.connect_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+        plenora_database_core::temporal::timeout(self.operation_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+        plenora_database_core::temporal::timeout(self.acquire_timeout)
+            .map_err(|_| invalid_configuration("timeout fuori dominio operativo"))?;
+
         for (name, value) in [
             ("host", self.host.as_str()),
             ("database", self.database.as_str()),
@@ -370,3 +377,7 @@ fn invalid_configuration(message: impl Into<String>) -> DatabaseError {
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "temporal_config_tests.rs"]
+mod temporal_config_tests;

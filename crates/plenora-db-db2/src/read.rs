@@ -697,6 +697,9 @@ const UNIX_EPOCH_DAYS_FROM_CE: i32 = 719_163;
 pub fn parse_date(value: &str) -> Result<i32> {
     let date = NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| mapping("DATE Db2 non rappresentabile"))?;
+    if !(1..=9999).contains(&date.year()) {
+        return Err(mapping("DATE Db2 fuori dominio"));
+    }
     Ok(date.num_days_from_ce() - UNIX_EPOCH_DAYS_FROM_CE)
 }
 

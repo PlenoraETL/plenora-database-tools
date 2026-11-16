@@ -248,6 +248,7 @@ fn append_binary(builder: &mut BinaryBuilder, value: &Value, cell_limit: u64) ->
 }
 
 fn append_date(builder: &mut Date32Builder, value: &Value) -> Result<()> {
+    crate::temporal::validate(value)?;
     match value {
         Value::NULL => builder.append_null(),
         Value::Date(year, month, day, 0, 0, 0, 0) => {
@@ -266,6 +267,7 @@ fn append_date(builder: &mut Date32Builder, value: &Value) -> Result<()> {
 }
 
 fn append_timestamp(builder: &mut TimestampMicrosecondBuilder, value: &Value) -> Result<()> {
+    crate::temporal::validate(value)?;
     match value {
         Value::NULL => builder.append_null(),
         Value::Date(year, month, day, hour, minute, second, micros) => {
@@ -288,6 +290,7 @@ fn append_timestamp(builder: &mut TimestampMicrosecondBuilder, value: &Value) ->
 }
 
 fn append_time(builder: &mut StringBuilder, value: &Value) -> Result<()> {
+    crate::temporal::validate(value)?;
     match value {
         Value::NULL => builder.append_null(),
         Value::Time(negative, days, hours, minutes, seconds, micros) => {

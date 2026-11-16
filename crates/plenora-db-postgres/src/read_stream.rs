@@ -16,7 +16,6 @@ use plenora_database_core::{
 use plenora_database_engine::{inspect_spatial_arrays, DeadlineGuard, ReadBatchReservation};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
 use tokio_postgres::{CancelToken, NoTls, Row};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
@@ -140,8 +139,11 @@ impl PostgresBatchStream {
         self.metrics.cancellation();
         self.client.invalidate();
         self.finished = true;
-        let _cancel_result = tokio::time::timeout(
-            StdDuration::from_millis(self.cancel_timeout_ms),
+        let _cancel_result = tokio::time::timeout_at(
+            plenora_database_core::temporal::deadline(
+                plenora_database_core::temporal::timeout_ms(self.cancel_timeout_ms)?,
+            )?
+            .into(),
             cancel_query(&self.cancel_token, self.tls_mode, &self.tls_connector),
         )
         .await;
@@ -151,8 +153,11 @@ impl PostgresBatchStream {
     async fn deadline_exceeded<T>(&mut self) -> Result<T> {
         self.client.invalidate();
         self.finished = true;
-        let _cancel_result = tokio::time::timeout(
-            StdDuration::from_millis(self.cancel_timeout_ms),
+        let _cancel_result = tokio::time::timeout_at(
+            plenora_database_core::temporal::deadline(
+                plenora_database_core::temporal::timeout_ms(self.cancel_timeout_ms)?,
+            )?
+            .into(),
             cancel_query(&self.cancel_token, self.tls_mode, &self.tls_connector),
         )
         .await;
@@ -410,19 +415,23 @@ pub async fn cancel_and_invalidate(
     tls_mode: PostgresTlsMode,
     tls_connector: &MakeRustlsConnect,
     timeout_ms: u64,
-) {
+) -> Result<()> {
+    let deadline = plenora_database_core::temporal::deadline(
+        plenora_database_core::temporal::timeout_ms(timeout_ms)?,
+    )?;
     client.record_cancellation();
     let Ok(active_client) = client.client() else {
         client.invalidate();
-        return;
+        return Ok(());
     };
     let token = active_client.cancel_token();
     client.invalidate();
-    let _cancel_result = tokio::time::timeout(
-        StdDuration::from_millis(timeout_ms),
+    let _cancel_result = tokio::time::timeout_at(
+        deadline.into(),
         cancel_query(&token, tls_mode, tls_connector),
     )
     .await;
+    Ok(())
 }
 
 async fn cancel_query(

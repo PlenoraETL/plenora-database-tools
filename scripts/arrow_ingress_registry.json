@@ -7914,9 +7914,9 @@
     },
     "crates/plenora-db-postgres/src/read_stream.rs::cancel_and_invalidate#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera su schema, tipi, configurazione o risultati di probe; non riceve buffer Arrow esterni. I metodi di ValidatedWriteArray usano il valore gia validato dal costruttore classificato.",
-      "signature": "pub async fn cancel_and_invalidate( client: &mut PooledClient, tls_mode: PostgresTlsMode, tls_connector: &MakeRustlsConnect, timeout_ms: u64, )",
-      "review_sha256": "3e7df211666852388bf2bd215d2a716c0a03a1c15bd78472e64fbeef6470b726"
+      "reason": "Cancella e invalida il client usando timeout e deadline checked; nessun buffer Arrow in ingresso. Il risultato propaga il rifiuto del timeout.",
+      "signature": "pub async fn cancel_and_invalidate( client: &mut PooledClient, tls_mode: PostgresTlsMode, tls_connector: &MakeRustlsConnect, timeout_ms: u64, ) -> Result<()>",
+      "review_sha256": "544e1bff3bdde262e46ae53d46a2b96625e38741ef4e92729a4d622508d9a154"
     },
     "crates/plenora-db-postgres/src/types.rs::arrow_field#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -8351,9 +8351,9 @@
     },
     "crates/plenora-db-db2/src/transaction.rs::decode_value#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Omonimo conservativamente enumerato dal catalogo upstream: tipo del driver SQL, metadati o durata; nessun buffer Arrow in ingresso.",
+      "reason": "Decodifica byte ODBC secondo DataType del driver, non buffer Arrow; DATE passa da read::parse_date prima di costruire ParameterValue.",
       "signature": "pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<ParameterValue>",
-      "review_sha256": "9faf46aab5e1e5d50eb8305e8e38ed76178473cca6b2f3989e5d74a344112741"
+      "review_sha256": "0a868ce147d843072feffad51d2579f7419ce42c2c587826480cd5a3ba6173ee"
     },
     "crates/plenora-db-db2/src/write_admission_live_tests.rs::direct_probe#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -10308,6 +10308,48 @@
       "reason": "Lifecycle/stato interno senza importazione di buffer esterni; i batch sono validati nel consumer unico Reader.next e nel decoder Python. Prove B-13 in stream_reader_tests.rs e test_stream_channel.py.",
       "review_sha256": "55c782e41b920c5be574108815124f04c39ab36551c77b4985d202743cd72f93",
       "signature": "fn cancellation_of_python_finalization_after_eof_is_structured()"
+    },
+    "crates/plenora-database-core/src/temporal.rs::deadline#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Converte e valida durate std::time o deadline Instant, omonime dei tipi del catalogo Arrow; nessun buffer Arrow in ingresso.",
+      "signature": "pub fn deadline(value: Duration) -> Result<Instant>",
+      "review_sha256": "77389a25ce43bce972be2e5fc8361db05aa454a64e809a0a172f8ca06b4e82aa"
+    },
+    "crates/plenora-database-core/src/temporal.rs::keepalive_seconds#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Converte e valida durate std::time o deadline Instant, omonime dei tipi del catalogo Arrow; nessun buffer Arrow in ingresso.",
+      "signature": "pub fn keepalive_seconds(value: u64) -> Result<Duration>",
+      "review_sha256": "8cddbb1d472e7abf6df0fda94e31402a732915de1ec33a87468f70b47e23b103"
+    },
+    "crates/plenora-database-core/src/temporal.rs::retry_ms#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Converte e valida durate std::time o deadline Instant, omonime dei tipi del catalogo Arrow; nessun buffer Arrow in ingresso.",
+      "signature": "pub fn retry_ms(value: u64) -> Result<Duration>",
+      "review_sha256": "f8ce71c0562476e12d5e9287f0c36750c397aebff2f265b2e5fc11414bff99ed"
+    },
+    "crates/plenora-database-core/src/temporal.rs::timeout#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Converte e valida durate std::time o deadline Instant, omonime dei tipi del catalogo Arrow; nessun buffer Arrow in ingresso.",
+      "signature": "pub fn timeout(value: Duration) -> Result<Duration>",
+      "review_sha256": "68559f2ab0c18f65e1cd0e0fa4a293ce7114b857ee1f2453e879c98e33e55a83"
+    },
+    "crates/plenora-database-core/src/temporal.rs::timeout_ms#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Converte e valida durate std::time o deadline Instant, omonime dei tipi del catalogo Arrow; nessun buffer Arrow in ingresso.",
+      "signature": "pub fn timeout_ms(value: u64) -> Result<Duration>",
+      "review_sha256": "fd10e8d42c927ac49c27ac5e7871e388f7724002730f48c13f152bf4604f87d6"
+    },
+    "crates/plenora-db-postgres/src/temporal.rs::accepts#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Implementa FromSql PostgreSQL su Type del driver e byte TIME: verifica lunghezza e dominio giornaliero prima di chrono; nessun buffer Arrow in ingresso.",
+      "signature": "fn accepts(ty: &Type) -> bool",
+      "review_sha256": "4c17ade4d75d8010ae0bdc012a979d370bdce6adc57aa6a8355e4b379ad1c168"
+    },
+    "crates/plenora-db-postgres/src/temporal.rs::from_sql#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Implementa FromSql PostgreSQL su Type del driver e byte TIME: verifica lunghezza e dominio giornaliero prima di chrono; nessun buffer Arrow in ingresso.",
+      "signature": "fn from_sql( ty: &Type, raw: &'a [u8], ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>>",
+      "review_sha256": "6a7255e63569129f074b52d73638a38ef7a31602bd75d346527c9890955c7a1f"
     }
   },
   "support_sources": {
@@ -10360,8 +10402,8 @@
       "reason": "locate e drain usano validated_batch; evaluation.batch precede bind/invio e segue la validazione."
     },
     "crates/plenora-db-mysql/src/provider.rs": {
-      "review_sha256": "dd9805437bb2998a4252dd2498f157a472e997e15d2d9e2376760ffed107a29d",
-      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
+      "review_sha256": "789bb25fb79286336d92d9f0581c73f80fea95c795c3e1ccafae0a1a9bb98f44",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow. Validazione del timeout prima della connessione e moduli temporali privati: nessun nuovo ingresso Arrow o bypass della validazione dei batch."
     },
     "crates/plenora-db-mysql/src/row_diagnostics.rs": {
       "review_sha256": "7b13c9c0e7d03bc57908c24a30d7bd5fbcf646b785fec9fb1774b53356d03674",
@@ -10444,8 +10486,8 @@
       "reason": "copy_from -> copy_from_sync_family -> decoder IPC validante prima del provider."
     },
     "crates/plenora-db-postgres/src/lib.rs": {
-      "reason": "Dry run Deny delega alla variante con consenso: preparazione, guardia chiavi e verify_input_with_consent; nessun fetch non validato. Il fallback dopo prepare conserva il rischio senza sovrascrivere la valutazione del consumer.",
-      "review_sha256": "d961a2b991315b9ca282bb117cdf6605b87300657564d1694eddf7982ba0c852"
+      "reason": "Dry run Deny delega alla variante con consenso: preparazione, guardia chiavi e verify_input_with_consent; nessun fetch non validato. Il fallback dopo prepare conserva il rischio senza sovrascrivere la valutazione del consumer. Validazione del timeout prima della connessione e moduli temporali privati: nessun nuovo ingresso Arrow o bypass della validazione dei batch.",
+      "review_sha256": "3653aa727c052345ce40a96531b1d29db515d875acbebc25db41032cfe890781"
     },
     "crates/plenora-database-py/src/async_session_ops.rs": {
       "review_sha256": "0761d53ca477a5cd35f53896c0f3d17830c92864b3e254f420db6637d31b2896",
@@ -10600,8 +10642,8 @@
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-mysql/src/lib.rs": {
-      "review_sha256": "44e585ef1df6802ed119d87dc8445ec0ceb974dba231dfa8354214504ac5beeb",
-      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
+      "review_sha256": "4f789796a2ac7c405057912f79e72e84fcbf2778b7627aa0c2096497c3f9e3cc",
+      "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow. Validazione del timeout prima della connessione e moduli temporali privati: nessun nuovo ingresso Arrow o bypass della validazione dei batch."
     },
     "crates/plenora-database-py/python/plenora_database/arrow_stream.py": {
       "review_sha256": "f0eba2efc45caef4a6e9c1552c7231ecc8858df59594e60883ef565d99915444",
@@ -10614,6 +10656,18 @@
     "crates/plenora-database-py/src/stream_state.rs": {
       "review_sha256": "88f2f42c3dc216ae386570f36fb403034a5e7a50ab59fd6493772d310f35110c",
       "reason": "B-13: canale di stato posseduto, callback C, pubblicazione e rilascio unico sync/async; revisionato con doppi deterministici."
+    },
+    "crates/plenora-db-mysql/src/temporal.rs": {
+      "review_sha256": "600d5230cb63d1ae37987d6ba5001e78f37ef5b781cba58275a66c81a815e927",
+      "reason": "Barriera dei valori temporali del driver prima del decoding e della conversione Arrow: rifiuto fallibile dei campi fuori dominio senza payload. Coperta dai test temporal_tests.rs e dalla guardia check_temporal.py in rust-ci."
+    },
+    "crates/plenora-db-postgres/src/temporal.rs": {
+      "review_sha256": "1dbec2720f19fe9e2fd2f0a1ec1892d06f5eace823717b375cf57774510fbceb",
+      "reason": "Barriera dei valori temporali del driver prima del decoding e della conversione Arrow: rifiuto fallibile dei campi fuori dominio senza payload. Coperta dai test temporal_tests.rs e dalla guardia check_temporal.py in rust-ci."
+    },
+    "crates/plenora-db-sqlserver/src/temporal.rs": {
+      "review_sha256": "5e030b5ae223e0e6c773123da748bfb5ebb6eac7415cf87e104357b6236f54f4",
+      "reason": "Barriera dei valori temporali del driver prima del decoding e della conversione Arrow: rifiuto fallibile dei campi fuori dominio senza payload. Coperta dai test temporal_tests.rs e dalla guardia check_temporal.py in rust-ci."
     }
   },
   "evidence_sources": {
@@ -10630,7 +10684,7 @@
       "reason": "Matrice SDK sync/async e reader originali: eseguita dal job sdk-offline."
     },
     ".github/workflows/rust-ci.yml": {
-      "review_sha256": "1ae27460f2de9438447c0509e2ce0b19690ee07309759d29a92727d675606be4",
+      "review_sha256": "e760a602fa09916f047be77b77b578795632c557f0b4645339a3fb6ca3ab359b",
       "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     },
     ".github/scripts/offline_suite.sh": {
@@ -11028,14 +11082,6 @@
       "review_sha256": "0cc1c86f11bd7f11764bee269718f869dc6f612526f5e2eca40075a13e0cc53b"
     },
     "crates/plenora-db-postgres/src/lib.rs::alias::use std::time::Duration as StdDuration;#1": {
-      "reason": "Alias di std::time::Duration, omonimo del tipo upstream nel catalogo; non e un alias Arrow.",
-      "review_sha256": "f24f5c1005a328d1ee53e7fe26872a9464f8ae1e852d2bc19820a00478b2251d"
-    },
-    "crates/plenora-db-postgres/src/pool.rs::alias::use std::time::Duration as StdDuration;#1": {
-      "reason": "Alias di std::time::Duration, omonimo del tipo upstream nel catalogo; non e un alias Arrow.",
-      "review_sha256": "f24f5c1005a328d1ee53e7fe26872a9464f8ae1e852d2bc19820a00478b2251d"
-    },
-    "crates/plenora-db-postgres/src/read_stream.rs::alias::use std::time::Duration as StdDuration;#1": {
       "reason": "Alias di std::time::Duration, omonimo del tipo upstream nel catalogo; non e un alias Arrow.",
       "review_sha256": "f24f5c1005a328d1ee53e7fe26872a9464f8ae1e852d2bc19820a00478b2251d"
     },

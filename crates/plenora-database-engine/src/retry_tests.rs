@@ -1,3 +1,45 @@
+use std::time::Duration;
+
+#[tokio::test]
+async fn temporal_retry_rejects_unbounded_delay_and_honors_explicit_cap() {
+    let cancel = CancellationToken::new();
+    let error = retry_with_policy(
+        |_| async { Err::<(), _>(mk_error(RetryDisposition::After(u64::MAX))) },
+        RetryPolicy::new(2),
+        &cancel,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    let result = retry_with_policy(
+        |attempt| async move {
+            if attempt == 0 {
+                Err(mk_error(RetryDisposition::After(u64::MAX)))
+            } else {
+                Ok(7)
+            }
+        },
+        RetryPolicy {
+            max_attempts: 2,
+            max_delay_ms: Some(0),
+        },
+        &cancel,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, 7);
+    let error = retry_with_policy(
+        |_| async { Ok(()) },
+        RetryPolicy {
+            max_attempts: 2,
+            max_delay_ms: Some(u64::MAX),
+        },
+        &cancel,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+}
 use super::*;
 use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect};
 use std::sync::atomic::{AtomicU32, Ordering};
