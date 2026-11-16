@@ -434,7 +434,7 @@ artefatti sono descritti in [`docs/RELEASE.md`](docs/RELEASE.md).
 
 ## Scritture Arrow: rapporto e consenso
 
-La 11.0.0 (non pubblicata) estende a MySQL il consenso per valore delle
+La 11.0.0 estende a MySQL il consenso per valore delle
 superfici Rust, CLI, SDK sync/async e runtime. MariaDB resta escluso.
 Strict MySQL e regola A non cambiano. Le regole e i rifiuti indipendenti sono nel
 registro generato; l'apertura del percorso non attesta la qualifica live,
@@ -481,5 +481,5 @@ e la [guida operativa](docs/operativo.md#scritture-arrow-rapporto-e-consenso).
 Il binding `database.write@2` richiede adozione anche in runtime-tools:
 catalogo, `accept_loss` e WriteOutcome v3; vedere [runtime](docs/runtime.md).
 
-Il minimo Python della release 11.0.0 e 3.14, dichiarato in `.python-version`;
+Il minimo Python e dichiarato in `.python-version`;
 il gate `scripts/check_python_version.py` verifica packaging, CI e campagne.
