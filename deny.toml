@@ -1,4 +1,4 @@
-# Supply-chain policy: advisories denied without exceptions; permissive
+# Supply-chain policy: advisories denied except documented temporary exceptions; permissive
 # licenses allowlisted; only crates.io sources or reviewed local patches.
 # The scheduled supply-chain workflow checks workspace and fuzz graphs.
 
@@ -13,7 +13,10 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 yanked = "deny"
 # RustSec dichiara ora lo shim webpki-roots 0.26.11 non interessato da
 # RUSTSEC-2026-0381; la 1.x risolta resta soggetta al gate, senza eccezioni.
-ignore = []
+# Riesame: 2027-02-13; owner: manutentori della famiglia Plenora.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, non vulnerabile, nessuna versione sicura; migrazione di famiglia a jiff/time pianificata" },
+]
 # ============================================================================
 #  licenses
 # ============================================================================
