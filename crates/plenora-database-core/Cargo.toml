@@ -20,4 +20,4 @@ workspace = true
 
 [dev-dependencies]
 # Parser Rust per censire consumer, UFCS e override indipendentemente dalla grafia.
-syn = { version = "=2.0.119", features = ["full", "visit"] }
+syn = { version = "=3.0.6", features = ["full", "visit"] }

@@ -10684,7 +10684,7 @@
       "reason": "Matrice SDK sync/async e reader originali: eseguita dal job sdk-offline."
     },
     ".github/workflows/rust-ci.yml": {
-      "review_sha256": "b9c1bc35cd1910a10ed828d8558901146edd6b7c910729fcf97174cf8c1c8d2e",
+      "review_sha256": "6e282fcb20ca2793deac3a7b49fc74056b5ac190950705a712e2f60880520c18",
       "reason": "B-13: prove native, trasporto C reale con doppi, enumerazione e campagna server non eseguita localmente."
     },
     ".github/scripts/offline_suite.sh": {

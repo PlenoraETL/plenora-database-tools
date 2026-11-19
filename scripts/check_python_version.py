@@ -76,7 +76,7 @@ def check(root=ROOT, runtime=False):
     history = json.loads((root / "scripts/python_historical_evidence.json").read_text(encoding="utf-8"))
     names = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=root).decode().splitlines()
     for name in names:
-        if name.startswith(("vendor/", ".plenora-contracts/")):
+        if name.startswith(("vendor/", ".plenora-contracts/", ".ci/plenora-dependencies/")):
             continue  # Third-party contracts are not a project interpreter policy.
         path = root / name
         if path.suffix not in {".rs", ".py", ".pyi", ".yml", ".yaml", ".toml", ".md", ".txt", ".json", ".sh"} and path.name != "Dockerfile":

@@ -443,3 +443,41 @@ jobs:
         run: |
           python scripts/test_avvisi_crate.py
           python scripts/avvisi_crate.py
+
+  dipendenze:
+    name: politica comune delle dipendenze
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1
+        with:
+          toolchain: '1.98.1'
+      - name: Integrita snapshot di famiglia
+        run: |
+          cd .ci/plenora-dependencies
+          echo '370b3554f44a5d6726b4b5c527a570fa4299081e141177769ad8e9f8359bf604  plenora-dependencies.toml' | sha256sum -c -
+          sha256sum -c snapshot.sha256
+      - name: Dipendenze dei guardiani Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      - name: Regressioni della qualifica
+        run: python3 scripts/test_manifesto_dipendenze.py
+      - name: Qualifica completa dei driver e delle licenze
+        run: python3 scripts/manifesto_dipendenze.py
+      - name: politica comune delle dipendenze
+        env:
+          PLENORA_REPO: plenora-database-tools
+        run: |
+          python3 .ci/plenora-dependencies/controlla_dipendenze.py \
+            --repo . --nome "$PLENORA_REPO" --json dipendenze-report.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dipendenze-report
+          path: dipendenze-report.json
+          if-no-files-found: error
