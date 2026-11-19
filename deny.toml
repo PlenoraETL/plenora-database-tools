@@ -2,6 +2,9 @@
 # licenses allowlisted; only crates.io sources or reviewed local patches.
 # The scheduled supply-chain workflow checks workspace and fuzz graphs.
 
+[graph]
+all-features = true
+
 # ============================================================================
 #  advisories
 # ============================================================================

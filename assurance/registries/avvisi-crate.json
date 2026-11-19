@@ -262,7 +262,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.7.0"
     },
-    "atoi-3.1.0": {
+    "atoi-3.1.1": {
       "files": [
         {
           "file": "LICENSE",
@@ -273,7 +273,7 @@
       "license": "MIT",
       "name": "atoi",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "3.1.0"
+      "version": "3.1.1"
     },
     "aws-lc-rs-1.18.1": {
       "files": [
@@ -509,7 +509,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.1.2"
     },
-    "cfg-if-1.0.4": {
+    "cfg-if-1.0.5": {
       "files": [
         {
           "file": "LICENSE-APACHE",
@@ -525,7 +525,7 @@
       "license": "MIT OR Apache-2.0",
       "name": "cfg-if",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "1.0.4"
+      "version": "1.0.5"
     },
     "chacha20-0.10.2": {
       "files": [
@@ -792,7 +792,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.2.2"
     },
-    "ctutils-0.4.5": {
+    "ctutils-0.4.8": {
       "files": [
         {
           "file": "LICENSE-APACHE",
@@ -808,7 +808,7 @@
       "license": "Apache-2.0 OR MIT",
       "name": "ctutils",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.4.5"
+      "version": "0.4.8"
     },
     "der-0.7.10": {
       "files": [
@@ -2583,7 +2583,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.1.0"
     },
-    "schannel-0.1.29": {
+    "schannel-0.1.30": {
       "files": [
         {
           "file": "LICENSE.md",
@@ -2594,7 +2594,7 @@
       "license": "MIT",
       "name": "schannel",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.1.29"
+      "version": "0.1.30"
     },
     "scopeguard-1.2.0": {
       "files": [
@@ -3445,7 +3445,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.8.3"
     },
-    "zerocopy-0.8.57": {
+    "zerocopy-0.8.59": {
       "files": [
         {
           "file": "LICENSE-APACHE",
@@ -3466,7 +3466,7 @@
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "name": "zerocopy",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.8.57"
+      "version": "0.8.59"
     },
     "zerofrom-0.1.8": {
       "files": [
@@ -3540,10 +3540,10 @@
     }
   },
   "inputs": {
-    "Cargo.lock": "cdcc4c7a8f5751ee39761252127e93dee40d1974c457c8a2833ea162d96c9595",
+    "Cargo.lock": "04edfe97435e20e04842072c0de4aa8292dc5cac0c525dacf7c8fa229c4bf3a3",
     "Cargo.toml": "f9bba91275615b223e086c9fe3f284cebf6d6a9553061e85dcd3e5efc304faab",
     "crates/plenora-database-cli/Cargo.toml": "0107ee7dcb5324889086a010b936328627a0cdc65ba101554b82e469a544efd8",
-    "crates/plenora-database-core/Cargo.toml": "26df9dea18ec176868371c43c512018a8960733100128ba8bb0caa4735d33262",
+    "crates/plenora-database-core/Cargo.toml": "605bdc7fd5801b2c5798d35eedab2407b7a14d79f1a211cbe809537cff1c30b8",
     "crates/plenora-database-engine/Cargo.toml": "3842feb711364c1af54db42be113848c1e8a53ec51f3d50d173fca6eeac73e42",
     "crates/plenora-database-py/Cargo.toml": "44a1f33125d3629e97c09e7bb70566788fb70e80ded74fb58dac4c0d9f871c54",
     "crates/plenora-database-sql/Cargo.toml": "9cd9e7b711f0b6c24bec96bca116fa53e67e60e9c239304e26c99f52a7bfce14",
@@ -3579,7 +3579,7 @@
         "arrow-schema-60.1.0",
         "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
-        "atoi-3.1.0",
+        "atoi-3.1.1",
         "aws-lc-rs-1.18.1",
         "aws-lc-sys-0.45.0",
         "base64-0.22.1",
@@ -3593,7 +3593,7 @@
         "byteorder-1.5.0",
         "bytes-1.12.1",
         "cbc-0.1.2",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cipher-0.4.4",
@@ -3609,7 +3609,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -3754,7 +3754,7 @@
         "writeable-0.6.4",
         "x509-cert-0.2.5",
         "yoke-0.8.3",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zerofrom-0.1.8",
         "zeroize-1.9.0",
         "zerotrie-0.2.5",
@@ -3784,7 +3784,7 @@
         "arrow-schema-60.1.0",
         "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
-        "atoi-3.1.0",
+        "atoi-3.1.1",
         "aws-lc-rs-1.18.1",
         "aws-lc-sys-0.45.0",
         "base64-0.22.1",
@@ -3798,7 +3798,7 @@
         "byteorder-1.5.0",
         "bytes-1.12.1",
         "cbc-0.1.2",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cipher-0.4.4",
@@ -3814,7 +3814,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -3909,7 +3909,7 @@
         "rustls-webpki-0.103.16",
         "salsa20-0.10.2",
         "saturating-0.1.0",
-        "schannel-0.1.29",
+        "schannel-0.1.30",
         "scopeguard-1.2.0",
         "scrypt-0.11.0",
         "serde-1.0.229",
@@ -3959,7 +3959,7 @@
         "writeable-0.6.4",
         "x509-cert-0.2.5",
         "yoke-0.8.3",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zerofrom-0.1.8",
         "zeroize-1.9.0",
         "zerotrie-0.2.5",
@@ -3987,7 +3987,7 @@
         "block-buffer-0.12.1",
         "byteorder-1.5.0",
         "bytes-1.12.1",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cmov-0.5.4",
@@ -3995,7 +3995,7 @@
         "const-oid-0.9.6",
         "cpufeatures-0.3.1",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.11.3",
         "fallible-iterator-0.2.0",
@@ -4068,7 +4068,7 @@
         "webpki-roots-1.0.10",
         "whoami-2.1.3",
         "x509-cert-0.2.5",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zeroize-1.9.0",
         "zmij-1.0.23"
       ],
@@ -4106,7 +4106,7 @@
         "btoi-0.5.0",
         "byteorder-1.5.0",
         "bytes-1.12.1",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cmov-0.5.4",
@@ -4121,7 +4121,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4245,7 +4245,7 @@
         "writeable-0.6.4",
         "x509-cert-0.2.5",
         "yoke-0.8.3",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zerofrom-0.1.8",
         "zeroize-1.9.0",
         "zerotrie-0.2.5",
@@ -4286,7 +4286,7 @@
         "btoi-0.5.0",
         "byteorder-1.5.0",
         "bytes-1.12.1",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cmov-0.5.4",
@@ -4301,7 +4301,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4379,7 +4379,7 @@
         "rustls-pki-types-1.15.1",
         "rustls-webpki-0.103.16",
         "saturating-0.1.0",
-        "schannel-0.1.29",
+        "schannel-0.1.30",
         "scopeguard-1.2.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
@@ -4425,7 +4425,7 @@
         "writeable-0.6.4",
         "x509-cert-0.2.5",
         "yoke-0.8.3",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zerofrom-0.1.8",
         "zeroize-1.9.0",
         "zerotrie-0.2.5",
@@ -4453,7 +4453,7 @@
         "block-buffer-0.12.1",
         "byteorder-1.5.0",
         "bytes-1.12.1",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cmov-0.5.4",
@@ -4461,7 +4461,7 @@
         "const-oid-0.9.6",
         "cpufeatures-0.3.1",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.11.3",
         "fallible-iterator-0.2.0",
@@ -4534,7 +4534,7 @@
         "windows-link-0.2.1",
         "windows-sys-0.61.2",
         "x509-cert-0.2.5",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zeroize-1.9.0",
         "zmij-1.0.23"
       ],
@@ -4562,7 +4562,7 @@
         "arrow-schema-60.1.0",
         "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
-        "atoi-3.1.0",
+        "atoi-3.1.1",
         "aws-lc-rs-1.18.1",
         "aws-lc-sys-0.45.0",
         "base64-0.22.1",
@@ -4575,7 +4575,7 @@
         "byteorder-1.5.0",
         "bytes-1.12.1",
         "cbc-0.1.2",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cipher-0.4.4",
@@ -4591,7 +4591,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4739,7 +4739,7 @@
         "writeable-0.6.4",
         "x509-cert-0.2.5",
         "yoke-0.8.3",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zerofrom-0.1.8",
         "zeroize-1.9.0",
         "zerotrie-0.2.5",
@@ -4779,7 +4779,7 @@
         "byteorder-1.5.0",
         "bytes-1.12.1",
         "cbc-0.1.2",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cipher-0.4.4",
@@ -4795,7 +4795,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4940,7 +4940,7 @@
         "writeable-0.6.4",
         "x509-cert-0.2.5",
         "yoke-0.8.3",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zerofrom-0.1.8",
         "zeroize-1.9.0",
         "zerotrie-0.2.5",
@@ -4980,7 +4980,7 @@
         "byteorder-1.5.0",
         "bytes-1.12.1",
         "cbc-0.1.2",
-        "cfg-if-1.0.4",
+        "cfg-if-1.0.5",
         "chacha20-0.10.2",
         "chrono-0.4.45",
         "cipher-0.4.4",
@@ -4996,7 +4996,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.5",
+        "ctutils-0.4.8",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -5093,7 +5093,7 @@
         "rustls-webpki-0.103.16",
         "salsa20-0.10.2",
         "saturating-0.1.0",
-        "schannel-0.1.29",
+        "schannel-0.1.30",
         "scopeguard-1.2.0",
         "scrypt-0.11.0",
         "serde-1.0.229",
@@ -5142,7 +5142,7 @@
         "writeable-0.6.4",
         "x509-cert-0.2.5",
         "yoke-0.8.3",
-        "zerocopy-0.8.57",
+        "zerocopy-0.8.59",
         "zerofrom-0.1.8",
         "zeroize-1.9.0",
         "zerotrie-0.2.5",

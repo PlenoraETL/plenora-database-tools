@@ -345,6 +345,12 @@ Le regole di esecuzione sono in [`AGENTS.md`](AGENTS.md#prima-di-dire-fatto).
 Per avvio, dipendenze e schema della ricevuta seguire il
 [contratto comune CI locale](docs/ci-locale.md).
 
+Per proporre un aggiornamento del manifesto di famiglia eseguire
+`python scripts/manifesto_dipendenze.py --write`, revisionare il diff delle
+qualifiche e aggiornare il digest esplicito nel job `dipendenze`. Verificare poi
+con `python scripts/manifesto_dipendenze.py`: in CI la rigenerazione non scrive.
+La baseline importata resta immutabile; i lock si allineano prima di generare.
+
 Lo sweep resta disponibile come percorso offline. I gate live sono separati per
 provider: un risultato verde su un database non qualifica gli altri.
 
