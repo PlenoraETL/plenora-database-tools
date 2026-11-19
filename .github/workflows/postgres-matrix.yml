@@ -12,19 +12,7 @@ name: postgres-matrix
 # anche il modo in cui la matrice si riproduce in locale con lo stesso comando.
 
 on:
-  schedule:
-    # Lunedi 04:17 UTC, un'ora dopo `mysql-assurance`: le campagne pesanti non
-    # si accavallano sulla stessa finestra, e i pull da Docker Hub restano
-    # distanziati.
-    - cron: '17 4 * * 1'
   workflow_dispatch:
-  # La matrice presidia anche se stessa: una modifica allo script o a questo
-  # file va provata dove viene scritta, non alla schedulazione successiva.
-  pull_request:
-    paths:
-      - "requirements-*.txt"
-      - ".github/workflows/postgres-matrix.yml"
-      - "scripts/check_postgres_matrix.py"
 
 permissions:
   contents: read

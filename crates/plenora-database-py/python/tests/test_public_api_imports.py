@@ -167,8 +167,6 @@ def _native_importable() -> bool:
         exts = (".so",)
     elif sys.platform == "win32":
         exts = (".pyd",)
-    elif sys.platform == "darwin":
-        exts = (".dylib", ".so")
     else:
         return False
     return any(

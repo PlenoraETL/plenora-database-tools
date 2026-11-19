@@ -926,6 +926,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         """
 
         workflow = ASSURANCE_WORKFLOW.read_text(encoding="utf-8")
+        workflow += ASSURANCE_WORKFLOW.with_name("mysql-assurance-long.yml").read_text(encoding="utf-8")
         self.assertIn("python3 scripts/check_mysql_reference.py |", workflow)
         self.assertIn("python3 scripts/check_mysql_matrix.py |", workflow)
         for forbidden in (

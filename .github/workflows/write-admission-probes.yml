@@ -56,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server: [postgres, mysql, mariadb, sqlserver, oracle, db2]
+        server: [postgres, mysql, mariadb]
     steps:
       - name: spazio disco del runner
         # Immagine Db2 piu' build del workspace superano il disco libero del

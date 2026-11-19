@@ -10430,7 +10430,7 @@
       "reason": "Catena operativa revisionata: include deleghe private, impl Provider/BatchStream e ordine della validazione."
     },
     "crates/plenora-database-cli/src/main.rs": {
-      "review_sha256": "93e9d5703bccb3e249f74bfe5865eef45ab52cc9f6700a10bde861261cdfb1d1",
+      "review_sha256": "4775ab3a5e8d08bc721a94ad05095f7fd40d63aea633036b81d7a5b376596fbc",
       "reason": "write e database-write-ipc passano da IpcFileBatchStream e provider validanti; dry-run e output usano validated_batch. accept_loss e un argomento distinto dai dati."
     },
     "crates/plenora-database-cli/src/query_cmd.rs": {

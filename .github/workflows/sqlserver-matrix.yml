@@ -15,8 +15,7 @@ name: sqlserver-matrix
 
 on:
   schedule:
-    # Lunedi 05:17 UTC, dopo `mysql-assurance` e `postgres-matrix`: le campagne
-    # pesanti non si accavallano sulla stessa finestra.
+    # Lunedi 05:17 UTC; le campagne manuali hanno un avvio indipendente.
     - cron: '17 5 * * 1'
   workflow_dispatch:
   # La matrice presidia anche se stessa: una modifica allo script o a questo

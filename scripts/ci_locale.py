@@ -356,7 +356,7 @@ def resources(entry: dict, root: Path) -> list[str]:
 
 
 def host_os() -> str:
-    return {"Darwin": "macOS"}.get(platform.system(), platform.system())
+    return platform.system()
 
 
 def checkout(root, destination, source, ref):
@@ -483,7 +483,7 @@ def assess(entry: dict, item: dict, root: Path, live: bool = False, offline: boo
     if entry["services"] or entry["job"].get("container"):
         return "NON ESEGUIBILE", "provisioning services/container Actions non mappato", None
     runner = str(entry["job"].get("runs-on", ""))
-    target = next((os_name for token, os_name in (("windows", "Windows"), ("ubuntu", "Linux"), ("macos", "macOS")) if token in runner), None)
+    target = next((os_name for token, os_name in (("windows", "Windows"), ("ubuntu", "Linux")) if token in runner), None)
     if target != host_os():
         return "NON ESEGUIBILE", f"piattaforma richiesta {runner}; host {host_os()}", None
     step_if = step.get("if", True)

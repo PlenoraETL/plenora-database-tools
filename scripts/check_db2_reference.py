@@ -459,7 +459,6 @@ def main() -> int:
         "platform_matrix": {
             "linux_x86_64": "live_qualified",
             "windows_x86_64": "build_only",
-            "macos": "unsupported_by_ibm_client_matrix",
         },
     }
     RESULT.parent.mkdir(parents=True, exist_ok=True)

@@ -37,10 +37,10 @@ WORKFLOWS = ROOT / ".github/workflows"
 # requisito esterno. Se il testimone scompare, occorre rivalutare il job.
 EXCLUDED = {
     "age-assurance.yml/age": ("docker compose", "fixture AGE in Docker"),
-    "db2-assurance.yml/db2-linux": ("docker compose", "fixture Db2 in Docker"),
+    "db2-assurance-long.yml/db2-linux": ("docker compose", "fixture Db2 in Docker"),
     "mariadb-evidence.yml/mariadb-evidence": ("scripts/check_mariadb_campaign.py", "campagna MariaDB live in Docker"),
     "mysql-assurance.yml/reference": ("scripts/check_mysql_reference.py", "riferimento MySQL live"),
-    "mysql-assurance.yml/matrix": ("scripts/check_mysql_matrix.py", "matrice MySQL live"),
+    "mysql-assurance-long.yml/matrix": ("scripts/check_mysql_matrix.py", "matrice MySQL live"),
     "oracle-assurance.yml/oracle-linux": ("docker compose", "fixture Oracle in Docker"),
     "postgres-assurance.yml/postgres": ("docker compose", "fixture PostgreSQL in Docker"),
     "postgres-assurance.yml/hardening": ("docker compose", "fixture PostgreSQL TLS in Docker"),
@@ -59,6 +59,7 @@ EXCLUDED = {
     "sqlserver-matrix.yml/matrix": ("scripts/check_sqlserver_matrix.py", "matrice SQL Server live"),
     "supply-chain.yml/cargo-deny": ("scripts/check_cargo_deny.py", "cargo deny eseguito in Docker con database RustSec"),
     "write-admission-probes.yml/probes": ("scripts/sonde_scritture_server.py", "sonde contro database live"),
+    "write-admission-probes-long.yml/probes": ("scripts/sonde_scritture_server.py", "sonde contro database live"),
 }
 
 

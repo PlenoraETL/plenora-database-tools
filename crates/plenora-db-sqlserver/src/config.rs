@@ -1,10 +1,10 @@
 use plenora_database_core::provider::SecretString;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::fs::Permissions;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -101,7 +101,7 @@ impl OwnedPrivateCaFile {
         let result = (|| {
             let mut options = OpenOptions::new();
             options.write(true).read(true).create_new(true);
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             options.mode(0o600);
             #[cfg(windows)]
             options.share_mode(0x0000_0001);
@@ -110,7 +110,7 @@ impl OwnedPrivateCaFile {
                     "configurazione SQL Server: staging CA privata non disponibile",
                 )
             })?;
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             std::fs::set_permissions(&path, Permissions::from_mode(0o600)).map_err(|_| {
                 invalid_configuration(
                     "configurazione SQL Server: permessi CA privata non applicabili",

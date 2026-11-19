@@ -2082,21 +2082,16 @@ fn staging_cleanup_failure(context: &str, temporary: &Path, error: &std::io::Err
     )
 }
 
-#[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> bool {
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .is_ok()
-}
-
-#[cfg(windows)]
-fn sync_parent_directory(parent: &Path) -> bool {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options
         .open(parent)
         .and_then(|directory| directory.sync_all())
         .is_ok()
@@ -2108,7 +2103,7 @@ fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)>
         let candidate = parent.join(format!(".{name}.partial-{}-{sequence}", std::process::id()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);

@@ -2,6 +2,9 @@
 //!
 //! Questo crate non contiene client, pool, runtime async o dialect SQL.
 
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+compile_error!("Plenora Database supports only Linux and Windows");
+
 pub mod admission_gate;
 pub mod arrow_validation;
 pub mod caller_sql;
