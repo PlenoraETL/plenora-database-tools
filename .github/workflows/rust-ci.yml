@@ -411,6 +411,10 @@ jobs:
         run: python -m pip install -r requirements-self-tests.txt
       - name: inventario MySQL contro i target compilati
         run: python scripts/check_campaign_inventories.py --compiled-mysql
+      # Il probe TDS legge metadata offline per tutte le piattaforme: una build
+      # dell'host non scarica le dipendenze degli altri target del lock.
+      - name: Popola cache completa per i probe offline
+        run: cargo fetch --locked
       - name: cargo test --workspace (senza live_*)
         run: cargo test --workspace -- --skip live_
       - name: Decoder temporali TDS su byte wire senza server
