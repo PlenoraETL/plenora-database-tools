@@ -167,9 +167,11 @@ class Fixture(unittest.TestCase):
 
     def test_il_workflow_misura_ogni_prodotto(self) -> None:
         testo = WORKFLOW.read_text(encoding="utf-8")
+        testo += WORKFLOW.with_name("write-admission-probes-long.yml").read_text(encoding="utf-8")
         trovata = re.search(r"server:\s*\[([^\]]*)\]", testo)
         self.assertIsNotNone(trovata)
-        matrice = {voce.strip() for voce in trovata.group(1).split(",")}
+        matrice = {voce.strip() for gruppo in re.findall(r"server:\s*\[([^\]]*)\]", testo)
+                   for voce in gruppo.split(",")}
         self.assertEqual(matrice, set(sonde.PRODOTTI))
 
     def test_ogni_crate_incorpora_il_proprio_fixture(self) -> None:

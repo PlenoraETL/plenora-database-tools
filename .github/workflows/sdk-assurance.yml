@@ -10,14 +10,8 @@ name: sdk-assurance
 #
 # `rust-ci` copre la suite offline; questa campagna aggiunge il comportamento
 # del wheel installato contro database reali. Lo scope `stabilization` ripete
-# dieci volte cancellazione, recupero, rollback e concorrenza async; essendo
-# parte della campagna schedulata, non puo restare un gate solo nominale.
-#
-# Non gira su ogni push perché accende più riferimenti e costruisce gli
-# artefatti in release. Gira a cadenza fissa, su richiesta e sulle PR che
-# toccano il binding o il suo ambiente —
-# dove un `paths:` non e una promessa vuota, perche il passo che lancia il
-# gate e incondizionato.
+# dieci volte cancellazione, recupero, rollback e concorrenza async; fa
+# parte della campagna manuale richiesta dal titolare.
 #
 # Il ciclo di vita delle fixture non e qui: sta in
 # `scripts/fixture_campaign.py`, condiviso con le altre due campagne ed
@@ -25,47 +19,6 @@ name: sdk-assurance
 # decisione senza test.
 
 on:
-  schedule:
-    # Lunedi mattina, un'ora dopo l'evidenza MariaDB. Le tre campagne
-    # accendono container con nomi propri e progetti distinti, ma condividono
-    # il demone Docker del runner: non si incrociano perche non partono
-    # insieme.
-    - cron: '17 7 * * 1'
-  pull_request:
-    paths:
-      - ".python-version"
-      - "scripts/install_python.sh"
-      - "scripts/check_python_version.py"
-      - "requirements-*.txt"
-      - ".github/workflows/sdk-assurance.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/plenora-database-cli/**"
-      - "crates/plenora-database-py/**"
-      - "crates/plenora-database-core/**"
-      - "crates/plenora-database-engine/**"
-      - "tests/fixtures/postgres_geometry_qualification.json"
-      - "scripts/test_postgres_surface_matrix.py"
-      - "crates/plenora-db-mysql/**"
-      - "crates/plenora-db-postgres/**"
-      - "crates/plenora-db-sqlserver/**"
-      - "docker-compose.mariadb.yml"
-      - "docker-compose.age.yml"
-      - "docker-compose.mysql.yml"
-      - "docker-compose.postgres.yml"
-      - "docker-compose.sqlserver.yml"
-      - "docker/mariadb/**"
-      - "docker/mysql/**"
-      - "docker/postgres/init/**"
-      - "docker/sqlserver/**"
-      - "requirements-sdk-build.txt"
-      - "requirements-sdk-tests.txt"
-      - "rust-toolchain.toml"
-      - "scripts/check_sdk_campaign.py"
-      - "scripts/check_sdk_tests.py"
-      - "scripts/compose_network.py"
-      - "scripts/fixture_campaign.py"
-      - "scripts/sdk_wheel_probe.py"
   workflow_dispatch:
 
 # Sola lettura: la campagna misura, non scrive sul repository.

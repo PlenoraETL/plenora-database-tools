@@ -1065,14 +1065,10 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             "il manifest non puo precedere il black-box del CLI rilasciato",
         )
 
-    def test_macos_is_not_part_of_the_distribution_matrix(self) -> None:
+    def test_distribution_uses_supported_platforms(self) -> None:
         """La matrice di distribuzione comprende Linux e Windows."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
-        self.assertNotIn("  macos:", workflow)
-        self.assertNotIn("macos-latest", workflow)
-        self.assertNotIn("aarch64-apple-darwin", workflow)
-        self.assertNotIn("wheel-macos", workflow)
         self.assertIn("  linux:", workflow)
         self.assertIn("  windows:", workflow)
 
@@ -1107,14 +1103,66 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertIn("python -m pip install --no-deps dist/*.whl", block)
         self.assertIn("python .github/scripts/verify_wheel.py", block)
 
-    def test_release_waits_for_the_db2_wheel_and_not_for_macos(self) -> None:
+    def test_release_waits_for_all_supported_wheels(self) -> None:
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         needs = parsed_jobs(workflow)["attach-to-release"]["needs"]
         self.assertEqual(
             needs,
             ["linux", "windows", "db2-linux", "smoke-test", "abi3-runtime", "release-sbom"],
         )
-        self.assertNotIn("macos", needs)
+
+
+class PlatformAndLongJobPolicy(unittest.TestCase):
+    """Decisione del titolare: due sistemi e prove lunghe solo su richiesta."""
+
+    def test_all_workflow_runners_are_supported(self) -> None:
+        if __package__:
+            from .ci_locale import matrix_cells, expand
+        else:
+            from ci_locale import matrix_cells, expand
+
+        for path in workflow_files():
+            for name, job in parsed_jobs(path.read_text(encoding="utf-8")).items():
+                for cell in matrix_cells(job.get("strategy", {}).get("matrix", {})):
+                    runner = expand(job["runs-on"], {"matrix." + key: value for key, value in cell.items()})
+                    self.assertRegex(runner, r"^(ubuntu|windows)-", f"{path.name}/{name}")
+
+    def test_core_rejects_other_platforms_for_every_consumer(self) -> None:
+        source = (ROOT / "crates/plenora-database-core/src/lib.rs").read_text(encoding="utf-8")
+        self.assertRegex(source, r'#\[cfg\(not\(any\(target_os = "linux", target_os = "windows"\)\)\)\]\s*compile_error!')
+        for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
+            if manifest.parent.name == "plenora-database-core":
+                continue
+            dependencies = tomllib.loads(manifest.read_text(encoding="utf-8"))["dependencies"]
+            self.assertIn("plenora-database-core", dependencies, manifest)
+            self.assertFalse(dependencies["plenora-database-core"].get("optional", False), manifest)
+
+    def test_long_jobs_require_manual_dispatch(self) -> None:
+        for filename in ("oracle-assurance.yml", "sdk-assurance.yml", "postgres-matrix.yml",
+                         "write-admission-probes-long.yml", "coverage-long.yml",
+                         "db2-assurance-long.yml", "mysql-assurance-long.yml"):
+            doc = yaml.safe_load((WORKFLOW_DIRECTORY / filename).read_text(encoding="utf-8"))
+            self.assertEqual(set(doc.get("on", doc.get(True))), {"workflow_dispatch"}, filename)
+
+    def test_short_jobs_keep_automatic_triggers_and_names(self) -> None:
+        for filename, job_id, name in (
+            ("coverage.yml", "python-binding", "SDK Python + binding nativo dalla wheel"),
+            ("db2-assurance.yml", "db2-windows-build", "Db2 feature Windows x86_64 (build-only)"),
+            ("mysql-assurance.yml", "reference", "gate riferimento baseline"),
+            ("sqlserver-matrix.yml", "matrix", "matrice major SQL Server"),
+            ("fuzz.yml", "fuzz", "fuzz ${{ matrix.target }}"),
+        ):
+            source = (WORKFLOW_DIRECTORY / filename).read_text(encoding="utf-8")
+            doc = yaml.safe_load(source)
+            self.assertTrue(set(doc.get("on", doc.get(True))) & {"push", "pull_request", "schedule"})
+            job = parsed_jobs(source)[job_id]
+            self.assertNotIn("if", job)
+            self.assertEqual(job["name"], name)
+        short = parsed_jobs((WORKFLOW_DIRECTORY / "write-admission-probes.yml").read_text(encoding="utf-8"))["probes"]
+        long = parsed_jobs((WORKFLOW_DIRECTORY / "write-admission-probes-long.yml").read_text(encoding="utf-8"))["probes"]
+        self.assertEqual(short["name"], long["name"])
+        self.assertEqual(short["strategy"]["matrix"]["server"], ["postgres", "mysql", "mariadb"])
+        self.assertEqual(long["strategy"]["matrix"]["server"], ["sqlserver", "oracle", "db2"])
 
 
 class EveryGateIsExecutedBySomebody(unittest.TestCase):

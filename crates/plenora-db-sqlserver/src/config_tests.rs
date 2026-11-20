@@ -134,7 +134,7 @@ fn owned_private_ca_has_clone_scoped_lifecycle_and_no_public_path() {
         Some(expected_temp_root.as_path()),
         "owned CA must not introduce a replaceable intermediate directory"
     );
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(

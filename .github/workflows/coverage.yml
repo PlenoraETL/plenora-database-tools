@@ -1,8 +1,7 @@
 name: coverage
 
-# Coverage offline e riproducibile. I test live restano nei workflow dei
-# provider: un report senza il relativo fixture non puo attribuirsi quella
-# prova.
+# Coverage SDK Python e binding; la copertura Rust completa vive in coverage-long.yml.
+
 on:
   push:
     branches: [main]
@@ -21,63 +20,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust-product:
-    name: prodotto Rust
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version-file: .python-version
-      - name: Dipendenze del gate Python
-        run: python3 -m pip install -r requirements-self-tests.txt
-      - name: unixODBC development files
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq unixodbc-dev
-      - name: Install Rust 1.98.1 + llvm-tools
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1
-        with:
-          toolchain: '1.98.1'
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: '. -> target'
-      - name: Installa cargo-llvm-cov 0.9.1
-        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
-      - name: Misura e genera i report
-        env:
-          # Testkit, binding Python e moduli #[cfg(test)] hanno una propria
-          # superficie: contarli nel prodotto renderebbe il denominatore
-          # dipendente dalla dimensione dei test anziche dal runtime.
-          # `vendor/` (il fork di oracle-rs, dipendenza path) entra nel binario ma
-          # non e' prodotto: le esclusioni automatiche non lo coprono.
-          RUST_COVERAGE_IGNORE: '(^|/)(vendor/|crates/(plenora-database-py|plenora-database-testkit)/|(test_suite|evidence|mariadb_evidence|session_evidence)\.rs$)'
-        run: |
-          mkdir -p coverage/rust
-          cargo llvm-cov --locked --workspace --all-features \
-            --json --summary-only \
-            --output-path coverage/rust/summary.json \
-            --ignore-filename-regex "$RUST_COVERAGE_IGNORE" \
-            -- --skip live_
-          cargo llvm-cov report \
-            --lcov --output-path coverage/rust/lcov.info \
-            --ignore-filename-regex "$RUST_COVERAGE_IGNORE"
-          cargo llvm-cov report \
-            --html --output-dir coverage/rust/html \
-            --ignore-filename-regex "$RUST_COVERAGE_IGNORE"
-      - name: Budget coverage Rust
-        run: >-
-          python3 scripts/check_coverage.py
-          --summary coverage/rust/summary.json
-          --surface rust_product
-      - name: Report coverage Rust
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-rust
-          path: coverage/rust
-          if-no-files-found: error
-          retention-days: 14
-
   python-binding:
     name: SDK Python + binding nativo dalla wheel
     runs-on: ubuntu-latest

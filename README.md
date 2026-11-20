@@ -398,9 +398,11 @@ Ogni provider usa un progetto e volumi dedicati.
 
 ### Coverage
 
-Il workflow `.github/workflows/coverage.yml` misura tre superfici indipendenti:
-il codice Rust di prodotto con la suite workspace non-live, il binding nativo
-PyO3 e l'SDK Python, entrambi esercitati importando la wheel costruita dal job.
+I workflow [coverage](.github/workflows/coverage.yml) e
+[coverage-long](.github/workflows/coverage-long.yml) definiscono le prove e i
+trigger delle tre superfici indipendenti: codice Rust di prodotto con la
+suite workspace non-live, binding nativo PyO3 e SDK Python. Le ultime due
+sono esercitate importando la wheel costruita dal job.
 I report JSON e HTML, oltre a LCOV per Rust/PyO3 e XML per Python, sono artefatti
 della run; `scripts/coverage_budget.json` contiene le soglie minime e i
 sorgenti di ogni superficie (`sources`), e `scripts/check_coverage.py` le

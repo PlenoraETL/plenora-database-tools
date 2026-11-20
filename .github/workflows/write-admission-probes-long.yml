@@ -1,0 +1,64 @@
+name: write-admission-probes-long
+
+# Le misure live del server: per ogni prodotto e ogni
+# immagine qualificata, la sonda scrive senza le guardie di ammissione una
+# batteria fissa di valori limite per ogni chiave d'ammissione e verifica che il
+# server dia ancora le misure del fixture `tests/fixtures/scrittura_server_*.json`.
+# Il replay writer riverifica le guardie sui profili qualificati separati;
+# confronta ogni chiave e valore della batteria e non amplia i profili.
+#
+# Questo file non contiene logica di qualifica: un'invocazione per prodotto.
+# Le immagini vengono, per digest, dalle loro fonti (references.json, compose e
+# matrici); i container sono usa e getta (`docker run --rm`).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: write-admission-probes-long-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probes:
+    name: sonde scritture (${{ matrix.server }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [sqlserver, oracle, db2]
+    steps:
+      - name: spazio disco del runner
+        # Immagine Db2 piu' build del workspace superano il disco libero del
+        # runner (No space left on device, 03/11): si tolgono toolchain
+        # preinstallate che le sonde non usano. Nessun prune Docker.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - name: dipendenze dei gate Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      - name: sonde_scritture_server.py
+        run: >-
+          python3 scripts/sonde_scritture_server.py
+          --server ${{ matrix.server }}
+          --riferimenti
+          --referto sonde-scritture-${{ matrix.server }}.json
+      - name: referto
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonde-scritture-${{ matrix.server }}
+          path: sonde-scritture-${{ matrix.server }}.json
+          if-no-files-found: error

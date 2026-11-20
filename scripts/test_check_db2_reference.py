@@ -216,6 +216,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_workflow_executes_self_test_gate_and_cleanup(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        workflow += WORKFLOW.with_name("db2-assurance-long.yml").read_text(encoding="utf-8")
         for expected in (
             "python3 scripts/test_check_db2_reference.py",
             "python3 scripts/test_name_db2_wheel.py",

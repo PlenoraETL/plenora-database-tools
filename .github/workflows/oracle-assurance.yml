@@ -1,29 +1,6 @@
 name: oracle-assurance
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    paths:
-      - "requirements-*.txt"
-      - ".github/workflows/oracle-assurance.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "crates/plenora-database-core/**"
-      - "crates/plenora-database-engine/**"
-      - "crates/plenora-database-cli/**"
-      - "crates/plenora-database-py/**"
-      - "crates/plenora-db-oracle/**"
-      - "vendor/oracle-rs/**"
-      - "docker-compose.oracle.yml"
-      - "docker/oracle/**"
-      - "scripts/check_oracle_reference.py"
-      - "scripts/test_check_oracle_reference.py"
-      - "scripts/live_inventory.py"
-      - "requirements-sdk-build.txt"
-      - "requirements-sdk-tests.txt"
-      - "requirements-self-tests.txt"
   workflow_dispatch:
 
 permissions:
