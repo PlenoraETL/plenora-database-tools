@@ -403,52 +403,52 @@ pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
 macro_rules! walk_sql {
     () => {
         "
-    SELECT w.name, x.next, x.typmod, x.shape, w.depth + 1 FROM walk w CROSS JOIN LATERAL (
+    SELECT w.name, x.next, x.typmod, x.shape, w.depth OPERATOR(pg_catalog.+) 1 FROM walk w CROSS JOIN LATERAL (
         SELECT y.typbasetype AS next, y.typtypmod AS typmod, w.shape AS shape
-          FROM pg_catalog.pg_type y WHERE y.oid = w.oid AND y.typtype = 'd'
+          FROM pg_catalog.pg_type y WHERE y.oid OPERATOR(pg_catalog.=) w.oid AND y.typtype OPERATOR(pg_catalog.=) 'd'
         UNION ALL
-        SELECT y.typelem, w.typmod, CASE WHEN w.shape = 'scalar' THEN 'array' ELSE 'nested' END
+        SELECT y.typelem, w.typmod, CASE WHEN w.shape OPERATOR(pg_catalog.=) 'scalar' THEN 'array' ELSE 'nested' END
           FROM pg_catalog.pg_type y
-         WHERE y.oid = w.oid AND y.typtype = 'b' AND y.typcategory = 'A'
-           AND y.typelem <> 0::pg_catalog.oid
+         WHERE y.oid OPERATOR(pg_catalog.=) w.oid AND y.typtype OPERATOR(pg_catalog.=) 'b' AND y.typcategory OPERATOR(pg_catalog.=) 'A'
+           AND y.typelem OPERATOR(pg_catalog.<>) 0::pg_catalog.oid
         UNION ALL
-        SELECT r.rngsubtype, -1, CASE WHEN w.shape = 'scalar' THEN 'range' ELSE 'nested' END
-          FROM pg_catalog.pg_range r WHERE r.rngtypid = w.oid
+        SELECT r.rngsubtype, -1, CASE WHEN w.shape OPERATOR(pg_catalog.=) 'scalar' THEN 'range' ELSE 'nested' END
+          FROM pg_catalog.pg_range r WHERE r.rngtypid OPERATOR(pg_catalog.=) w.oid
         UNION ALL
-        SELECT r.rngsubtype, -1, 'nested' FROM pg_catalog.pg_range r WHERE r.rngmultitypid = w.oid
+        SELECT r.rngsubtype, -1, 'nested' FROM pg_catalog.pg_range r WHERE r.rngmultitypid OPERATOR(pg_catalog.=) w.oid
         UNION ALL
         SELECT a.atttypid, a.atttypmod, 'nested'
-          FROM pg_catalog.pg_type y JOIN pg_catalog.pg_attribute a ON a.attrelid = y.typrelid
-         WHERE y.oid = w.oid AND y.typtype = 'c' AND a.attnum > 0 AND NOT a.attisdropped
+          FROM pg_catalog.pg_type y JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) y.typrelid
+         WHERE y.oid OPERATOR(pg_catalog.=) w.oid AND y.typtype OPERATOR(pg_catalog.=) 'c' AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped
     ) x
-    WHERE w.depth < 32
+    WHERE w.depth OPERATOR(pg_catalog.<) 32
 )
 SELECT w.name, w.shape,
-       CASE WHEN p.prolang = 12::pg_catalog.oid THEN p.prosrc::pg_catalog.text END,
+       CASE WHEN p.prolang OPERATOR(pg_catalog.=) 12::pg_catalog.oid THEN p.prosrc::pg_catalog.text END,
        w.typmod, pg_catalog.format_type(w.oid, w.typmod), y.typtype::pg_catalog.text
   FROM walk w
-  JOIN pg_catalog.pg_type y ON y.oid = w.oid
-  LEFT JOIN pg_catalog.pg_proc p ON p.oid = y.typinput
- WHERE w.depth = 32
+  JOIN pg_catalog.pg_type y ON y.oid OPERATOR(pg_catalog.=) w.oid
+  LEFT JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) y.typinput
+ WHERE w.depth OPERATOR(pg_catalog.=) 32
     OR (y.typtype IN ('b', 'e', 'p')
-        AND NOT (y.typtype = 'b' AND y.typcategory = 'A' AND y.typelem <> 0::pg_catalog.oid))
+        AND NOT (y.typtype OPERATOR(pg_catalog.=) 'b' AND y.typcategory OPERATOR(pg_catalog.=) 'A' AND y.typelem OPERATOR(pg_catalog.<>) 0::pg_catalog.oid))
 "
     };
 }
 
 /// Le foglie del tipo di ogni colonna `$3` del target (`walk_sql!`). Gira
-/// con il percorso chiuso (regola Q2).
+/// con operatori di catalogo qualificati.
 const RULES_SQL: &str = concat!(
     "\
 WITH RECURSIVE target AS (
     SELECT c.oid FROM pg_catalog.pg_class c
-      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+      JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+     WHERE n.nspname OPERATOR(pg_catalog.=) $1::pg_catalog.text AND c.relname OPERATOR(pg_catalog.=) $2::pg_catalog.text
 ), walk(name, oid, typmod, shape, depth) AS (
     SELECT a.attname::pg_catalog.text, a.atttypid, a.atttypmod, 'scalar'::pg_catalog.text, 0
-      FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
-     WHERE a.attnum > 0 AND NOT a.attisdropped
-       AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
+      FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) t.oid
+     WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped
+       AND a.attname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($3::pg_catalog.text[])
     UNION ALL",
     walk_sql!()
 );
@@ -457,7 +457,7 @@ WITH RECURSIVE target AS (
 /// `walk_sql!` da un tipo invece che da una colonna, per Create, la cui
 /// colonna non esiste ancora. Senza il typmod della colonna: i tipi che lo
 /// portano nella dichiarazione (`numeric(p,s)`) li conosce [`declared`]. Gira
-/// con il percorso chiuso (regola Q2).
+/// con operatori di catalogo qualificati.
 const TYPE_RULES_SQL: &str = concat!(
     "\
 WITH RECURSIVE walk(name, oid, typmod, shape, depth) AS (
@@ -564,7 +564,7 @@ fn shape_of(shape: &str) -> SessionShape {
 /// (enum, dominio, composto: `plenora.type_kind`), per nome, dal catalogo:
 /// il tipo si risolve con il percorso della sessione, come lo risolverebbe
 /// `CREATE TABLE`, poi le foglie si leggono con il percorso chiuso (regola
-/// Q2), in una transazione che si annulla. I tipi di `pg_catalog` li
+/// Q2). La lettura non apre o chiude transazioni. I tipi di `pg_catalog` li
 /// conosce [`declared`]; un tipo che non si risolve non ha regole (lo
 /// rifiutera `CREATE TABLE`).
 ///
@@ -594,17 +594,11 @@ pub(super) async fn type_rules<C: tokio_postgres::GenericClient + Sync>(
     if names.is_empty() {
         return Ok(BTreeMap::new());
     }
-    client.batch_execute("BEGIN").await.map_err(read)?;
-    let walked = async {
-        crate::search_path::SessionPath::close(client, phase).await?;
-        client
-            .query(TYPE_RULES_SQL, &[&names, &oids])
-            .await
-            .map_err(read)
-    }
-    .await;
-    client.batch_execute("ROLLBACK").await.map_err(read)?;
-    Ok(collect_rules(&walked?, strict))
+    let walked = client
+        .query(TYPE_RULES_SQL, &[&names, &oids])
+        .await
+        .map_err(read)?;
+    Ok(collect_rules(&walked, strict))
 }
 
 fn collect_rules(rows: &[tokio_postgres::Row], strict: bool) -> BTreeMap<String, SessionRule> {

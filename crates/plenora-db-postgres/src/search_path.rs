@@ -80,9 +80,14 @@ const SET_SQL: &str = "SELECT pg_catalog.set_config('search_path', $1::pg_catalo
 
 /// Il `search_path` della sessione, letto prima di chiudere il percorso.
 #[derive(Debug, Clone)]
-pub struct SessionPath(String);
+pub struct SessionPath(Option<String>);
 
 impl SessionPath {
+    /// Usa le impostazioni del chiamante senza emettere SET.
+    pub const fn borrowed() -> Self {
+        Self(None)
+    }
+
     /// Legge il percorso della sessione e chiude il percorso per il resto
     /// della transazione aperta su `client`.
     ///
@@ -96,7 +101,7 @@ impl SessionPath {
             .map_err(|error| classify_error(phase, &error))?
             .get(0);
         set(client, CLOSED, phase).await?;
-        Ok(Self(session))
+        Ok(Self(Some(session)))
     }
 
     /// Esegue `statement`, uno statement sul target, con il percorso della
@@ -114,7 +119,10 @@ impl SessionPath {
         E: From<DatabaseError>,
         F: std::future::Future<Output = std::result::Result<T, E>>,
     {
-        set(client, &self.0, ErrorPhase::Write).await?;
+        let Some(session) = &self.0 else {
+            return statement.await;
+        };
+        set(client, session, ErrorPhase::Write).await?;
         let value = statement.await?;
         set(client, CLOSED, ErrorPhase::Write).await?;
         Ok(value)
@@ -129,7 +137,10 @@ impl SessionPath {
     ///
     /// L'errore classificato dell'impostazione.
     pub async fn restore<C: GenericClient + Sync>(&self, client: &C) -> Result<()> {
-        set(client, &self.0, ErrorPhase::Write).await
+        if let Some(session) = &self.0 {
+            set(client, session, ErrorPhase::Write).await?;
+        }
+        Ok(())
     }
 }
 

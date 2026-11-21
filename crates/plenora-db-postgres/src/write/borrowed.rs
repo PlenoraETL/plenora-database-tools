@@ -56,7 +56,7 @@ impl<S: Stream<Item = RecordBatch> + Send> BatchStream for Input<S> {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
-    /// Precondizione: il consumer valida il batch con validated_batch prima dei codec.
+    /// Precondizione: il consumer valida il batch con `validated_batch` prima dei codec.
     fn next_batch<'a>(
         &'a mut self,
         _token: &'a CancellationToken,
@@ -93,6 +93,7 @@ pub async fn scrivi_arrow(
             .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?,
     )?;
     let preparation = async {
+        super::visibility::guard_search_path(tx, ErrorPhase::Prepare).await?;
         let operation = WriteOperation {
             target: crate::target_schema::resolve(
                 tx,
@@ -158,7 +159,7 @@ pub async fn scrivi_arrow(
         Box::pin(select_with_cancellation(preparation, cancellation))
             .await
             .unwrap_or_else(|| Err(borrowed_cancelled(cancellation)))?;
-    let paths = SessionPath::close(tx, ErrorPhase::Write).await?;
+    let paths = SessionPath::borrowed();
     let provider = crate::PostgresProvider::default();
     let runtime = WriteRuntime {
         statement_timeout_ms: provider.statement_timeout_ms,
@@ -221,22 +222,21 @@ pub async fn scrivi_arrow(
     let result = Box::pin(select_with_cancellation(work, cancellation))
         .await
         .unwrap_or_else(|| Err(borrowed_cancelled(cancellation)));
-    // Ripristina anche sugli errori locali. Se PostgreSQL ha abortito, soltanto
-    // il rollback del proprietario puo ripristinare la transazione.
-    let restored = paths.restore(tx).await;
     let report = evaluation.ledger.report();
+    let result = result.and_then(|(received, applied)| {
+        if applied > received {
+            return Err(DatabaseError::invalid_plan(
+                "conteggio applicato oltre le righe ricevute",
+            ));
+        }
+        Ok((received, applied))
+    });
     let (received, applied) = result.map_err(|mut error| {
         error.loss_report = Some(Box::new(report.clone().into()));
         error.remote_effect = plenora_database_core::RemoteEffect::Unknown;
         error.retry = plenora_database_core::RetryDisposition::RequiresRecovery;
         error
     })?;
-    restored?;
-    if applied > received {
-        return Err(DatabaseError::invalid_plan(
-            "conteggio applicato oltre le righe ricevute",
-        ));
-    }
     Ok(WriteOutcome {
         received,
         applied,

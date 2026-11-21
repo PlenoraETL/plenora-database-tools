@@ -1,8 +1,6 @@
 //! Arrow su connessioni del chiamante. Nessuna apertura o chiusura di transazioni.
 //!
-//! La scrittura usa temporaneamente `SET LOCAL search_path` e lo ripristina
-//! prima di restituire. In una transazione abortita il ripristino avviene con
-//! il rollback del chiamante. Ruolo e timeout non vengono cambiati.
+//! La scrittura non modifica percorso, ruolo o timeout della sessione.
 //! La lettura non modifica impostazioni. Interrompere o abbandonare il suo
 //! stream non invia un `CancelRequest` su una nuova connessione: il chiamante
 //! conserva il controllo della cancellazione server e dei suoi timeout.

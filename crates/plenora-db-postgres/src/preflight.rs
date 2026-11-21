@@ -26,15 +26,25 @@ pub async fn write(
     Vec<RuleInstance>,
     Option<crate::catalog::CatalogSchemaToken>,
 )> {
-    let client = provider.connect_session(secret).await?;
-    write_on(
-        client.client()?,
+    let mut client = provider.connect_session(secret).await?;
+    let tx = client
+        .client_mut()?
+        .transaction()
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+    let result = write_on(
+        &tx,
         provider.schema_evolution,
         operation,
         input_schema,
         metadata_plan,
     )
-    .await
+    .await;
+    tx.rollback()
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+    drop(client);
+    result
 }
 
 #[allow(clippy::too_many_lines)]

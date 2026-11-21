@@ -759,7 +759,6 @@ pub async fn leaf_losses<C: tokio_postgres::GenericClient + Sync>(
     let phase = ErrorPhase::Prepare;
     let mut plans = compile_schema_plan(schema, operation)?;
     canonical::assign_declared(&mut plans, operation);
-    let read = |error: tokio_postgres::Error| classify_error(phase, &error);
     if operation.mode == WriteMode::Create {
         let mut declarations = Vec::new();
         for field in schema.fields() {
@@ -785,14 +784,8 @@ pub async fn leaf_losses<C: tokio_postgres::GenericClient + Sync>(
             }
         }
     } else {
-        client.batch_execute("BEGIN").await.map_err(read)?;
-        let rules = async {
-            SessionPath::close(client, phase).await?;
-            canonical::rules(client, operation, schema, phase).await
-        }
-        .await;
-        client.batch_execute("ROLLBACK").await.map_err(read)?;
-        canonical::assign(&mut plans, schema, &rules?);
+        let rules = canonical::rules(client, operation, schema, phase).await?;
+        canonical::assign(&mut plans, schema, &rules);
     }
     Ok(plans
         .iter()

@@ -102,6 +102,7 @@ impl BatchStream for One {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn live_borrowed_commit_rollback_and_owned_parity() {
     let Some(dsn) = write_visibility_live_tests::live_dsn() else {
         return;
@@ -119,10 +120,16 @@ async fn live_borrowed_commit_rollback_and_owned_parity() {
         let mut provisional = None;
         for commit in [false, true] {
             let tx = client.transaction().await.expect("begin");
+            tx.batch_execute("INSERT INTO pln_borrowed.owned (id) VALUES (99)")
+                .await
+                .expect("lavoro precedente del chiamante");
             let result = scrivi_arrow(
                 &tx,
                 &plan,
-                stream::iter([input.clone()]),
+                stream::once(async {
+                    assert_eq!(settings(&tx).await, before);
+                    input.clone()
+                }),
                 &budget(),
                 &cancellation,
             )
@@ -132,6 +139,18 @@ async fn live_borrowed_commit_rollback_and_owned_parity() {
             assert!(result.loss_report.effective.is_empty());
             result.loss_report.validate().expect("rapporto provvisorio");
             assert_eq!(settings(&tx).await, before);
+            let marker: i64 = tx
+                .query_one("SELECT count(*) FROM pln_borrowed.owned WHERE id = 99", &[])
+                .await
+                .expect("lavoro del chiamante preservato")
+                .get(0);
+            assert_eq!(marker, 1);
+            let invisible: i64 = observer
+                .query_one("SELECT count(*) FROM pln_borrowed.owned", &[])
+                .await
+                .expect("nessun commit implicito")
+                .get(0);
+            assert_eq!(invisible, 0);
             let count: i64 = observer
                 .query_one("SELECT count(*) FROM pln_borrowed.borrowed", &[])
                 .await
@@ -146,6 +165,10 @@ async fn live_borrowed_commit_rollback_and_owned_parity() {
             }
         }
         assert_eq!(settings(&client).await, before);
+        client
+            .batch_execute("DELETE FROM pln_borrowed.owned WHERE id = 99")
+            .await
+            .expect("rimuovi marker committed");
         let provider = PostgresProvider::insecure_local().with_insert_mode(mode);
         let owned = write_visibility_live_tests::write_stream(
             &provider,
@@ -209,6 +232,7 @@ async fn live_borrowed_commit_rollback_and_owned_parity() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn live_borrowed_budget_and_cancelled_input_leave_caller_in_control() {
     let Some(dsn) = write_visibility_live_tests::live_dsn() else {
         return;
@@ -233,8 +257,7 @@ async fn live_borrowed_budget_and_cancelled_input_leave_caller_in_control() {
         &CancellationToken::new(),
     )
     .await
-    .err()
-    .expect("budget deve fallire");
+    .expect_err("budget deve fallire");
     assert_eq!(error.category, ErrorCategory::ResourceLimit);
     assert_eq!(settings(&tx).await, before);
     tx.rollback().await.expect("rollback chiamante");
@@ -253,8 +276,7 @@ async fn live_borrowed_budget_and_cancelled_input_leave_caller_in_control() {
         &CancellationToken::new(),
     )
     .await
-    .err()
-    .expect("secondo batch oltre budget");
+    .expect_err("secondo batch oltre budget");
     assert_eq!(error.category, ErrorCategory::ResourceLimit);
     let count: i64 = tx
         .query_one("SELECT count(*) FROM pln_borrowed.borrowed", &[])
@@ -287,7 +309,7 @@ async fn live_borrowed_budget_and_cancelled_input_leave_caller_in_control() {
             .try_collect()
             .await;
     assert_eq!(
-        result.err().expect("read oltre budget").category,
+        result.expect_err("read oltre budget").category,
         ErrorCategory::ResourceLimit
     );
     // Un produttore in attesa non deve impedire l'annullamento.
@@ -305,7 +327,7 @@ async fn live_borrowed_budget_and_cancelled_input_leave_caller_in_control() {
     .await
     .expect("annullamento bounded");
     assert_eq!(
-        result.err().expect("cancelled").category,
+        result.expect_err("cancelled").category,
         ErrorCategory::Cancelled
     );
     tx.rollback().await.expect("rollback chiamante");
@@ -374,7 +396,7 @@ async fn live_borrowed_cancel_in_copy() {
         .await
         .expect("COPY osservata e annullata");
         assert_eq!(
-            result.err().expect("cancelled").category,
+            result.expect_err("cancelled").category,
             ErrorCategory::Cancelled
         );
         tx.rollback()
@@ -395,4 +417,36 @@ async fn live_borrowed_cancel_in_copy() {
         .batch_execute("DROP SCHEMA pln_borrowed CASCADE")
         .await
         .expect("cleanup");
+}
+
+#[test]
+fn borrowed_preflight_does_not_control_the_callers_transaction() {
+    // Queste funzioni generiche sono raggiunte sia dal Client sia dalla Transaction.
+    for source in [
+        include_str!("write/canonical.rs"),
+        include_str!("write/borrowed.rs"),
+        include_str!("write.rs")
+            .split("pub async fn leaf_losses")
+            .nth(1)
+            .unwrap()
+            .split("pub async fn assign_dry_run_key_equality")
+            .next()
+            .unwrap(),
+        include_str!("write/admission.rs")
+            .split("pub async fn preflight")
+            .nth(1)
+            .unwrap(),
+    ] {
+        for forbidden in [
+            "batch_execute(\"BEGIN\")",
+            "batch_execute(\"ROLLBACK\")",
+            "SessionPath::close",
+            "set_config(",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "controllo della sessione nel preflight: {forbidden}"
+            );
+        }
+    }
 }
