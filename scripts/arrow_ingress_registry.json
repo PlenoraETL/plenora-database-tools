@@ -1159,7 +1159,7 @@
     "crates/plenora-db-postgres/src/preflight.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Preflight PostgreSQL riceve solo SchemaRef; produce regole/rapporto/catalog token, senza celle Arrow.",
-      "review_sha256": "e9c5dc4858e31a095b681c296ab593d88122c349017aa865d5c4750a734d7458",
+      "review_sha256": "0996b2f8c2c4d3badeb191bdd93a38e5efbddc92226497cfa4b40ffff5d5ae77",
       "signature": "pub async fn write( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, input_schema: &SchemaRef, metadata_plan: &crate::geometry_properties::SchemaPlan, ) -> Result<( LossReport, Vec<ColumnRewrites>, Vec<RuleInstance>, Option<crate::catalog::CatalogSchemaToken>, )>"
     },
     "crates/plenora-db-postgres/src/query_execution.rs::query_stream#1": {
@@ -1217,7 +1217,7 @@
     "crates/plenora-db-postgres/src/write.rs::leaf_losses#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "8e8953b63f7c435e7f5405605fedeec7425e47d5844a03459f2a41880762e2c2",
+      "review_sha256": "540a87d4c4530d39df72bef0e3f767b72308bc20e2174daf891c2ec35c318f5b",
       "signature": "pub async fn leaf_losses<C: tokio_postgres::GenericClient + Sync>( client: &C, operation: &WriteOperation, schema: &SchemaRef, ) -> Result<std::collections::BTreeMap<String, std::collections::BTreeSet<LeafLoss>>>"
     },
     "crates/plenora-db-postgres/src/write.rs::prepare_state#1": {
@@ -1241,7 +1241,7 @@
     "crates/plenora-db-postgres/src/write/admission.rs::preflight#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "f6ac4a533067be84e8fc9534bf47b2ac05565b69569f6099f44210b122e7712d",
+      "review_sha256": "b75c0e5fb088941b82cdfe4631ed25c0dcd4397d61fe3cbcef74d921469288aa",
       "signature": "pub async fn preflight<C: tokio_postgres::GenericClient + Sync>( client: &C, operation: &WriteOperation, schema: &SchemaRef, ) -> Result<Vec<ColumnRewrites>>"
     },
     "crates/plenora-db-postgres/src/write/admission.rs::target_keys#1": {
@@ -1343,7 +1343,7 @@
     "crates/plenora-db-postgres/src/write/target.rs::inspect#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Legge metadati del target e privilegi; il rifiuto del lock precede visibilita e statement come nel writer, senza lock di scrittura. Non riceve celle.",
-      "review_sha256": "1301b694596a80469cd61288e612c720dbf6c6e2c5c8c60305f23c2a6eb1c295",
+      "review_sha256": "f46a375e1aea37c07692dba08e5c2ee6f96791ba5b26722acd20ab26e2a5e3cf",
       "signature": "pub async fn inspect( client: &Client, operation: &WriteOperation, schema: &SchemaRef, path: WritePath, evolution: PostgresSchemaEvolution, ) -> Result<TargetVerdict>"
     },
     "crates/plenora-db-postgres/src/write/value_codec.rs::composite_string#1": {
@@ -10407,7 +10407,7 @@
       "review_sha256": "1d2a3985ff3a560e9069f082c3831561b1cedb66fd0b061eb0eb46a933036503",
       "signature": "fn next_batch<'a>( &'a mut self, _token: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>",
       "precondition": [
-        "il consumer valida il batch con validated_batch prima dei codec"
+        "il consumer valida il batch con `validated_batch` prima dei codec"
       ]
     },
     "crates/plenora-db-postgres/src/write/borrowed.rs::scrivi_arrow#1": {
@@ -10418,7 +10418,7 @@
         "write_prepared("
       ],
       "proof": "Revisione del consumer write_prepared: validated_batch precede validazione schema, budget, evaluation.batch e codec; prove comuni Arrow ingress e borrowed_live_tests. Nessuna qualifica live locale.",
-      "review_sha256": "901181dab1b71fc7952ed575997e4099c1223e6a6742a185c25498c3636d9a26",
+      "review_sha256": "2517f93444a759fae974258315b1ba296cbd8b449d47c6d5c1abf50a1a03bc79",
       "signature": "pub async fn scrivi_arrow( tx: &Transaction<'_>, piano: &WritePlan, batch: impl Stream<Item = RecordBatch> + Send, budget: &ResourceBudget, annulla: &CancellationToken, ) -> Result<WriteOutcome>"
     }
   },
@@ -10448,7 +10448,7 @@
       "reason": "write applica validated_input allo stream del resolver prima di prepare/write_with_consent; gli output passano da validated_batch."
     },
     "crates/plenora-db-postgres/src/write.rs": {
-      "review_sha256": "f246756015016cf62c3bd82418db735347f93c0fdd9525caa0630f0e0fa666d0",
+      "review_sha256": "04d311b6999b6027f7d45ceb9b28a68a19a14ddcd9319ffccf5823ac639f04cf",
       "reason": "Review L-DB1 parte 2: transazione prestata e posseduta condividono il consumer validato e i codec. Nessuna conferma di commit nella API prestata; nessuna capability aperta."
     },
     "crates/plenora-db-postgres/src/write/dry_run.rs": {
@@ -10692,7 +10692,7 @@
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-postgres/src/write/canonical.rs": {
-      "review_sha256": "21001994be77d3e7bcf0184c80ea818c9d1d7568dc26613fa668d60ddfbb68cb",
+      "review_sha256": "798a07e63fb795c1eba40e9a81dce220c7f079d05a32c5f91f78dbf363f5213d",
       "reason": "Review L-DB1 parte 2: transazione prestata e posseduta condividono il consumer validato e i codec. Nessuna conferma di commit nella API prestata; nessuna capability aperta."
     },
     "crates/plenora-database-core/src/prepared_execution.rs": {
@@ -10740,11 +10740,11 @@
       "reason": "Barriera dei valori temporali del driver prima del decoding e della conversione Arrow: rifiuto fallibile dei campi fuori dominio senza payload. Coperta dai test temporal_tests.rs e dalla guardia check_temporal.py in rust-ci."
     },
     "crates/plenora-db-postgres/src/write/borrowed.rs": {
-      "review_sha256": "a8d297f03940f6cefdf8e275a38e547a59651fd05119712171d8bc91a87fbb20",
+      "review_sha256": "736d8d97ae68dc412665d20ab49cf84e5d125533f21526d84bfabda2a9bd5acd",
       "reason": "Review L-DB1 parte 2: transazione prestata e posseduta condividono il consumer validato e i codec. Nessuna conferma di commit nella API prestata; nessuna capability aperta."
     },
     "crates/plenora-db-postgres/src/borrowed.rs": {
-      "review_sha256": "45610d5573131d268c9bf6304fd61ddb953ef014b20213419da4aa55050d6a07",
+      "review_sha256": "a743c35d5de4ff2ccadcc488c39515ca5019692bba9e161a0467bd374bc25e4a",
       "reason": "Review L-DB1 parte 2: transazione prestata e posseduta condividono il consumer validato e i codec. Nessuna conferma di commit nella API prestata; nessuna capability aperta."
     }
   },
