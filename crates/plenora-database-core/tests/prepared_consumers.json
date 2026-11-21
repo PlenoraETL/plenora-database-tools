@@ -481,11 +481,19 @@
   },
   "plenora-db-postgres/src/write.rs": {
     "consent": 0,
-    "direct": 0,
+    "direct": 1,
     "overrides": 0,
     "prepare": 0,
     "prepared": 2,
     "write": 1
+  },
+  "plenora-db-postgres/src/write/borrowed.rs": {
+    "consent": 0,
+    "direct": 1,
+    "overrides": 0,
+    "prepare": 0,
+    "prepared": 0,
+    "write": 0
   },
   "plenora-db-postgres/src/write_admission_live_tests.rs": {
     "consent": 0,

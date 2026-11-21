@@ -1,5 +1,23 @@
 # Changelog
 
+## 13.0.0 — non rilasciata
+
+- Requisito L-DB1 aggiornato: PgBouncer >= 1.21, pooling in modo transazione,
+  `max_prepared_statements > 0`. Le istruzioni preparate a livello di protocollo
+  sono ammesse; non occorre un fork di tokio-postgres.
+- I rifiuti riconosciuti delle istruzioni preparate producono
+  `InvalidConfiguration` con identificatore `PG_PREPARED_STATEMENTS_REQUIRED`,
+  senza riportare il messaggio del server. I due percorsi COPY completano
+  Parse prima di costruire il sink.
+- Connessione prestata (L-DB1): `scrivi_arrow` sulla `Transaction` del
+  chiamante e `leggi_arrow` sul suo `Client`, con i codec, i limiti e il
+  rapporto delle perdite del provider. Nessuna transazione aperta o chiusa e
+  nessun `SET`; `search_path` che oscura `pg_catalog` e
+  `session_replication_role` diverso da `origin` si rifiutano prima di ogni
+  effetto. Prova live anche tramite PgBouncer 1.26 in modo transazione nel
+  gate del riferimento. Dettagli in
+  [connessione prestata](docs/connessione-prestata.md).
+
 ## 12.0.0 — 2026-11-15
 
 - Rimozioni incompatibili: eliminati `PostgresProvider::default_secure` e la

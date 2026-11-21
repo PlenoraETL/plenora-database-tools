@@ -94,13 +94,13 @@ macro_rules! keys_index {
         concat!(
             "i.indisunique AND i.indimmediate AND i.indisvalid AND i.indisready AND i.indislive
                AND i.indpred IS NULL AND i.indexprs IS NULL
-               AND (c.relkind = 'p'
-                    OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhparent = c.oid))
+               AND (c.relkind OPERATOR(pg_catalog.=) 'p'
+                    OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhparent OPERATOR(pg_catalog.=) c.oid))
                AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text
                                                 ORDER BY a.attname::pg_catalog.text)
                       FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position)
-                      JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-                     WHERE k.position <= i.indnkeyatts)
+                      JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k.attnum
+                     WHERE k.position OPERATOR(pg_catalog.<=) i.indnkeyatts)
                    OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(DISTINCT key ORDER BY key)
                         FROM pg_catalog.unnest(",
             $keys,
@@ -123,17 +123,17 @@ macro_rules! key_semantics {
                               pg_catalog.unnest(i.indcollation::pg_catalog.oid[]),
                               pg_catalog.unnest(i.indclass::pg_catalog.oid[]))
                    WITH ORDINALITY AS k(attnum, coll, opclass, position)
-              JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-              JOIN pg_catalog.pg_type y ON y.oid = a.atttypid
-              LEFT JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass
-             WHERE k.position <= i.indnkeyatts
+              JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k.attnum
+              JOIN pg_catalog.pg_type y ON y.oid OPERATOR(pg_catalog.=) a.atttypid
+              LEFT JOIN pg_catalog.pg_opclass oc ON oc.oid OPERATOR(pg_catalog.=) k.opclass
+             WHERE k.position OPERATOR(pg_catalog.<=) i.indnkeyatts
                AND (k.coll IS DISTINCT FROM a.attcollation
-                    OR oc.oid IS NULL OR NOT oc.opcdefault OR oc.opcmethod <> 403::pg_catalog.oid
-                    OR (y.typtype = 'd' AND EXISTS (SELECT 1 FROM pg_catalog.pg_type b
-                                                     WHERE b.oid = y.typbasetype AND b.typtype = 'd'))
+                    OR oc.oid IS NULL OR NOT oc.opcdefault OR oc.opcmethod OPERATOR(pg_catalog.<>) 403::pg_catalog.oid
+                    OR (y.typtype OPERATOR(pg_catalog.=) 'd' AND EXISTS (SELECT 1 FROM pg_catalog.pg_type b
+                                                     WHERE b.oid OPERATOR(pg_catalog.=) y.typbasetype AND b.typtype OPERATOR(pg_catalog.=) 'd'))
                     OR EXISTS (SELECT 1 FROM pg_catalog.pg_opclass o
-                                WHERE o.opcmethod = oc.opcmethod AND o.opcdefault AND o.oid <> oc.oid
-                                  AND o.opcintype = CASE WHEN y.typtype = 'd' THEN y.typbasetype
+                                WHERE o.opcmethod OPERATOR(pg_catalog.=) oc.opcmethod AND o.opcdefault AND o.oid OPERATOR(pg_catalog.<>) oc.oid
+                                  AND o.opcintype OPERATOR(pg_catalog.=) CASE WHEN y.typtype OPERATOR(pg_catalog.=) 'd' THEN y.typbasetype
                                                          ELSE y.oid END)))"
     };
 }
@@ -147,31 +147,31 @@ const KEY_EQUALITY_SQL: &str = concat!(
     "\
 WITH target AS (
     SELECT c.oid FROM pg_catalog.pg_class c
-      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+      JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+     WHERE n.nspname OPERATOR(pg_catalog.=) $1::pg_catalog.text AND c.relname OPERATOR(pg_catalog.=) $2::pg_catalog.text
 )
 SELECT DISTINCT ON (a.attname) a.attname::pg_catalog.text,
-       pg_catalog.quote_ident(opn.nspname) || '.' || o.oprname::pg_catalog.text,
-       pg_catalog.quote_ident(tn.nspname) || '.' || pg_catalog.quote_ident(t.typname)
+       pg_catalog.quote_ident(opn.nspname) OPERATOR(pg_catalog.||) '.' OPERATOR(pg_catalog.||) o.oprname::pg_catalog.text,
+       pg_catalog.quote_ident(tn.nspname) OPERATOR(pg_catalog.||) '.' OPERATOR(pg_catalog.||) pg_catalog.quote_ident(t.typname)
   FROM target x
-  JOIN pg_catalog.pg_class c ON c.oid = x.oid
-  JOIN pg_catalog.pg_index i ON i.indrelid = x.oid
+  JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) x.oid
+  JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) x.oid
   CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(i.indkey::pg_catalog.int2[]),
                                 pg_catalog.unnest(i.indclass::pg_catalog.oid[]))
        WITH ORDINALITY AS k(attnum, opclass, position)
-  JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-  JOIN pg_catalog.pg_type y ON y.oid = a.atttypid
-  JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass
-  JOIN pg_catalog.pg_type it ON it.oid = oc.opcintype
-  JOIN pg_catalog.pg_amop m ON m.amopfamily = oc.opcfamily AND m.amopmethod = oc.opcmethod
-   AND m.amopstrategy = 3 AND m.amoplefttype = oc.opcintype AND m.amoprighttype = oc.opcintype
-  JOIN pg_catalog.pg_operator o ON o.oid = m.amopopr
-  JOIN pg_catalog.pg_namespace opn ON opn.oid = o.oprnamespace
-  JOIN pg_catalog.pg_type t ON t.oid = CASE WHEN it.typtype = 'p'
-                                            THEN CASE WHEN y.typtype = 'd' THEN y.typbasetype ELSE y.oid END
+  JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k.attnum
+  JOIN pg_catalog.pg_type y ON y.oid OPERATOR(pg_catalog.=) a.atttypid
+  JOIN pg_catalog.pg_opclass oc ON oc.oid OPERATOR(pg_catalog.=) k.opclass
+  JOIN pg_catalog.pg_type it ON it.oid OPERATOR(pg_catalog.=) oc.opcintype
+  JOIN pg_catalog.pg_amop m ON m.amopfamily OPERATOR(pg_catalog.=) oc.opcfamily AND m.amopmethod OPERATOR(pg_catalog.=) oc.opcmethod
+   AND m.amopstrategy OPERATOR(pg_catalog.=) 3 AND m.amoplefttype OPERATOR(pg_catalog.=) oc.opcintype AND m.amoprighttype OPERATOR(pg_catalog.=) oc.opcintype
+  JOIN pg_catalog.pg_operator o ON o.oid OPERATOR(pg_catalog.=) m.amopopr
+  JOIN pg_catalog.pg_namespace opn ON opn.oid OPERATOR(pg_catalog.=) o.oprnamespace
+  JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) CASE WHEN it.typtype OPERATOR(pg_catalog.=) 'p'
+                                            THEN CASE WHEN y.typtype OPERATOR(pg_catalog.=) 'd' THEN y.typbasetype ELSE y.oid END
                                             ELSE oc.opcintype END
-  JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace
- WHERE t.oid = a.atttypid AND k.position <= i.indnkeyatts AND ",
+  JOIN pg_catalog.pg_namespace tn ON tn.oid OPERATOR(pg_catalog.=) t.typnamespace
+ WHERE t.oid OPERATOR(pg_catalog.=) a.atttypid AND k.position OPERATOR(pg_catalog.<=) i.indnkeyatts AND ",
     keys_index!("$3"),
     " AND ",
     key_semantics!(),
@@ -183,8 +183,8 @@ const FACTS_SQL: &str = concat!(
     "\
 WITH RECURSIVE target AS (
     SELECT (SELECT c.oid FROM pg_catalog.pg_class c
-              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text) AS oid
+              JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+             WHERE n.nspname OPERATOR(pg_catalog.=) $1::pg_catalog.text AND c.relname OPERATOR(pg_catalog.=) $2::pg_catalog.text) AS oid
 ), closure(oid, via_view) AS (
     SELECT oid, false FROM target WHERE oid IS NOT NULL
     UNION
@@ -192,64 +192,64 @@ WITH RECURSIVE target AS (
         SELECT d.refobjid AS child, true AS via_view
           FROM pg_catalog.pg_rewrite r
           JOIN pg_catalog.pg_depend d
-            ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = r.oid
-           AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.refobjid <> cl.oid
-         WHERE r.ev_class = cl.oid AND r.ev_type = '1'
+            ON d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid OPERATOR(pg_catalog.=) r.oid
+           AND d.refclassid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass AND d.refobjid OPERATOR(pg_catalog.<>) cl.oid
+         WHERE r.ev_class OPERATOR(pg_catalog.=) cl.oid AND r.ev_type OPERATOR(pg_catalog.=) '1'
         UNION ALL
-        SELECT i.inhrelid, cl.via_view FROM pg_catalog.pg_inherits i WHERE i.inhparent = cl.oid
+        SELECT i.inhrelid, cl.via_view FROM pg_catalog.pg_inherits i WHERE i.inhparent OPERATOR(pg_catalog.=) cl.oid
     ) x
 )
 SELECT
     EXISTS (SELECT 1 FROM target WHERE oid IS NOT NULL),
-    coalesce((SELECT c.relkind::pg_catalog.text FROM pg_catalog.pg_class c JOIN target t ON c.oid = t.oid), ''),
+    coalesce((SELECT c.relkind::pg_catalog.text FROM pg_catalog.pg_class c JOIN target t ON c.oid OPERATOR(pg_catalog.=) t.oid), ''),
     coalesce((SELECT pg_catalog.row_security_active(t.oid) FROM target t WHERE t.oid IS NOT NULL), false),
-    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
-             WHERE cl.oid <> (SELECT oid FROM target) AND c.relrowsecurity),
-    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
+    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) cl.oid
+             WHERE cl.oid OPERATOR(pg_catalog.<>) (SELECT oid FROM target) AND c.relrowsecurity),
+    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) cl.oid
              WHERE cl.via_view AND c.relrowsecurity),
-    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_rewrite r ON r.ev_class = cl.oid
-             WHERE r.ev_type::pg_catalog.text = ANY ($3::pg_catalog.text[]) AND r.ev_enabled <> 'D'),
-    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_trigger g ON g.tgrelid = cl.oid
-             WHERE NOT g.tgisinternal AND g.tgenabled <> 'D'
-               AND (g.tgtype::int & $4::int) <> 0
-               AND ((g.tgtype::int & 3) = 3 OR (g.tgtype::int & 64) <> 0)),
-    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_trigger g ON g.tgrelid = cl.oid
-             WHERE NOT g.tgisinternal AND g.tgenabled <> 'D'
-               AND (g.tgtype::int & $5::int) <> 0 AND (g.tgtype::int & 64) <> 0),
-    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
-             WHERE c.relkind = 'f'),
-    EXISTS (SELECT 1 FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
-             WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attidentity = 'a'
-               AND a.attname::pg_catalog.text = ANY ($6::pg_catalog.text[])),
+    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_rewrite r ON r.ev_class OPERATOR(pg_catalog.=) cl.oid
+             WHERE r.ev_type::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($3::pg_catalog.text[]) AND r.ev_enabled OPERATOR(pg_catalog.<>) 'D'),
+    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_trigger g ON g.tgrelid OPERATOR(pg_catalog.=) cl.oid
+             WHERE NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'
+               AND (g.tgtype::int & $4::int) OPERATOR(pg_catalog.<>) 0
+               AND ((g.tgtype::int & 3) OPERATOR(pg_catalog.=) 3 OR (g.tgtype::int & 64) OPERATOR(pg_catalog.<>) 0)),
+    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_trigger g ON g.tgrelid OPERATOR(pg_catalog.=) cl.oid
+             WHERE NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'
+               AND (g.tgtype::int & $5::int) OPERATOR(pg_catalog.<>) 0 AND (g.tgtype::int & 64) OPERATOR(pg_catalog.<>) 0),
+    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) cl.oid
+             WHERE c.relkind OPERATOR(pg_catalog.=) 'f'),
+    EXISTS (SELECT 1 FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) t.oid
+             WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND a.attidentity OPERATOR(pg_catalog.=) 'a'
+               AND a.attname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($6::pg_catalog.text[])),
     EXISTS (SELECT 1 FROM target t
-              JOIN pg_catalog.pg_class c ON c.oid = t.oid
-              JOIN pg_catalog.pg_index i ON i.indrelid = t.oid
+              JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) t.oid
+              JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) t.oid
              WHERE ",
     keys_index!("$7"),
     "),
     EXISTS (SELECT 1 FROM target t
-              JOIN pg_catalog.pg_class c ON c.oid = t.oid
-              JOIN pg_catalog.pg_index i ON i.indrelid = t.oid
+              JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) t.oid
+              JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) t.oid
              WHERE ",
     keys_index!("$7"),
     " AND ",
     key_semantics!(),
     "),
     (SELECT pg_catalog.count(*)::pg_catalog.int8 FROM target t
-       JOIN pg_catalog.pg_index i ON i.indrelid = t.oid
+       JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) t.oid
       WHERE i.indisunique
         AND (EXISTS (SELECT 1 FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k(attnum)
                        JOIN pg_catalog.pg_attribute a
-                         ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-                      WHERE a.attname::pg_catalog.text = ANY ($7::pg_catalog.text[]))
+                         ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k.attnum
+                      WHERE a.attname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($7::pg_catalog.text[]))
              OR EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
                           JOIN pg_catalog.pg_attribute a
-                            ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
-                         WHERE d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
-                           AND d.objid = i.indexrelid
-                           AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
-                           AND d.refobjid = i.indrelid
-                           AND a.attname::pg_catalog.text = ANY ($7::pg_catalog.text[]))))"
+                            ON a.attrelid OPERATOR(pg_catalog.=) d.refobjid AND a.attnum OPERATOR(pg_catalog.=) d.refobjsubid
+                         WHERE d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass
+                           AND d.objid OPERATOR(pg_catalog.=) i.indexrelid
+                           AND d.refclassid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass
+                           AND d.refobjid OPERATOR(pg_catalog.=) i.indrelid
+                           AND a.attname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($7::pg_catalog.text[]))))"
 );
 
 /// La guardia del `search_path` (regola Q): uno schema che precede
@@ -517,10 +517,10 @@ const NULL_KEYS_SQL: &str = concat!(
     "\
 SELECT EXISTS (
     SELECT 1 FROM pg_catalog.pg_class c
-      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_catalog.pg_index i ON i.indrelid = c.oid
-     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
-       AND coalesce((pg_catalog.to_jsonb(i) ->> 'indnullsnotdistinct')::pg_catalog.bool, false)
+      JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+      JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) c.oid
+     WHERE n.nspname OPERATOR(pg_catalog.=) $1::pg_catalog.text AND c.relname OPERATOR(pg_catalog.=) $2::pg_catalog.text
+       AND coalesce((pg_catalog.to_jsonb(i) OPERATOR(pg_catalog.->>) 'indnullsnotdistinct')::pg_catalog.bool, false)
        AND ",
     keys_index!("$3"),
     ")"
@@ -569,24 +569,24 @@ pub async fn null_keys<C: GenericClient + Sync>(
 const NONDETERMINISTIC_KEYS_SQL: &str = "\
 SELECT EXISTS (
     SELECT 1 FROM pg_catalog.pg_class c
-      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
-      JOIN pg_catalog.pg_collation k ON k.oid = a.attcollation
-     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
-       AND a.attnum > 0 AND NOT a.attisdropped
-       AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
+      JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+      JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid
+      JOIN pg_catalog.pg_collation k ON k.oid OPERATOR(pg_catalog.=) a.attcollation
+     WHERE n.nspname OPERATOR(pg_catalog.=) $1::pg_catalog.text AND c.relname OPERATOR(pg_catalog.=) $2::pg_catalog.text
+       AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped
+       AND a.attname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($3::pg_catalog.text[])
        AND NOT k.collisdeterministic
 ) OR EXISTS (
     SELECT 1 FROM pg_catalog.pg_class c
-      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_catalog.pg_index i ON i.indrelid = c.oid
-      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
-       AND a.attnum = ANY (i.indkey::pg_catalog.int2[])
+      JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+      JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) c.oid
+      JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid
+       AND a.attnum OPERATOR(pg_catalog.=) ANY (i.indkey::pg_catalog.int2[])
       CROSS JOIN LATERAL pg_catalog.unnest(i.indcollation::pg_catalog.oid[]) AS u(collation_oid)
-      JOIN pg_catalog.pg_collation k ON k.oid = u.collation_oid
-     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+      JOIN pg_catalog.pg_collation k ON k.oid OPERATOR(pg_catalog.=) u.collation_oid
+     WHERE n.nspname OPERATOR(pg_catalog.=) $1::pg_catalog.text AND c.relname OPERATOR(pg_catalog.=) $2::pg_catalog.text
        AND i.indisunique
-       AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
+       AND a.attname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($3::pg_catalog.text[])
        AND NOT k.collisdeterministic
 )";
 

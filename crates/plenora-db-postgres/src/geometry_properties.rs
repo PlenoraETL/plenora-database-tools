@@ -2,7 +2,6 @@
 use crate::column_metadata::invalid;
 use crate::error::{classify_error, public_error};
 use crate::field_contract::FieldContract;
-use crate::pool::PooledClient;
 use arrow_schema::Field;
 use arrow_schema::SchemaRef;
 use plenora_database_core::loss::MappingPolicy;
@@ -835,8 +834,8 @@ pub fn crs_changes(
 ///   limite del bersaglio (`unsupported`), uno sconosciuto un CRS che il
 ///   bersaglio non conosce (`crs`). Senza questa lettura il rifiuto arrivava
 ///   dalla DDL come `protocol`.
-pub async fn validate_resolved_crs_against_postgis(
-    client: &PooledClient,
+pub async fn validate_resolved_crs_against_postgis<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     input_schema: &SchemaRef,
 ) -> Result<()> {
     let crs_error =
@@ -864,13 +863,11 @@ pub async fn validate_resolved_crs_against_postgis(
         let qualifier = if let Some(qualifier) = &postgis {
             qualifier.clone()
         } else {
-            let qualifier =
-                crate::postgis_schema::qualifier(client.client()?, ErrorPhase::Prepare).await?;
+            let qualifier = crate::postgis_schema::qualifier(client, ErrorPhase::Prepare).await?;
             postgis = Some(qualifier.clone());
             qualifier
         };
         let row = client
-            .client()?
             .query_opt(
                 &crate::postgis_schema::qualify(
                     "SELECT auth_name, auth_srid, \

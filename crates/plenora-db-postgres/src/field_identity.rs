@@ -11,8 +11,8 @@ use tokio_postgres::{Client, Transaction};
 const COLUMN_COMMENTS: &str =
     "SELECT a.attname::pg_catalog.text, pg_catalog.col_description(a.attrelid, a.attnum) \
      FROM pg_catalog.pg_attribute a \
-     WHERE a.attrelid = $1::pg_catalog.text::pg_catalog.regclass \
-     AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum";
+     WHERE a.attrelid OPERATOR(pg_catalog.=) $1::pg_catalog.text::pg_catalog.regclass \
+     AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped ORDER BY a.attnum";
 
 /// La prima riga e riservata; il resto del commento resta byte per byte.
 /// Un'intestazione riservata corrotta non diventa un nuovo id di provenienza.

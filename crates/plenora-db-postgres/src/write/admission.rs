@@ -98,6 +98,7 @@
 use super::canonical::{self, LeafType, SessionShape};
 use super::plan::{StoreRule, WriteColumnPlan};
 use crate::error::{classify_error, public_error};
+#[cfg(test)]
 use crate::search_path::SessionPath;
 use arrow_schema::SchemaRef;
 use plenora_database_core::loss::MappingPolicy;
@@ -142,7 +143,7 @@ const SERVER_FACTS_SQL: &str = "SELECT pg_catalog.current_setting('server_versio
 
 /// La tabella temporanea con cui il preflight legge le foglie delle colonne
 /// che la scrittura creera.
-const CREATED_TABLE: &str = "pln_ammissione_w";
+static CREATED_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const TEMP_SCHEMA_SQL: &str = "SELECT n.nspname::pg_catalog.text FROM pg_catalog.pg_namespace n \
      WHERE n.oid = pg_catalog.pg_my_temp_schema()";
@@ -394,8 +395,8 @@ pub async fn target_keys(
     result
 }
 
-/// La regola A nel preflight: le riscritture misurate di ogni colonna, in una
-/// transazione che si annulla, con il percorso chiuso della regola Q2. Le
+/// La regola A nel preflight: le riscritture misurate di ogni colonna nella
+/// transazione del chiamante, senza modificarne le impostazioni. Le
 /// colonne che il target non ha (tutte, per Create) si leggono da una tabella
 /// temporanea con le dichiarazioni che la scrittura userebbe.
 ///
@@ -405,18 +406,16 @@ pub async fn target_keys(
 /// misurata come rifiutata; l'errore classificato della lettura, o della
 /// creazione della tabella temporanea (una dichiarazione che il server non
 /// risolve, che `CREATE TABLE` rifiuterebbe allo stesso modo).
-pub async fn preflight(
-    client: &tokio_postgres::Client,
+pub async fn preflight<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     operation: &WriteOperation,
     schema: &SchemaRef,
 ) -> Result<Vec<ColumnRewrites>> {
     let phase = ErrorPhase::Prepare;
     let plans = super::compile_schema_plan(schema, operation)?;
     let read = |error: tokio_postgres::Error| classify_error(phase, &error);
-    client.batch_execute("BEGIN").await.map_err(read)?;
-    let result = async {
+    async {
         let server = server_facts(client, phase).await?;
-        let paths = SessionPath::close(client, phase).await?;
         let mut leaves = if operation.mode == WriteMode::Create {
             BTreeMap::new()
         } else {
@@ -440,15 +439,12 @@ pub async fn preflight(
                 return Err(crate::error::public_error(ErrorCategory::Unsupported, ErrorPhase::Validate, false,
                     "schema geometrico unknown richiede una qualifica preventiva senza staging; modalita non prevalidabile"));
             }
+            let created_table = format!("pln_ammissione_{}", CREATED_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
             let sql = format!(
-                "CREATE TEMPORARY TABLE {CREATED_TABLE} ({}) ON COMMIT DROP",
+                "CREATE TEMPORARY TABLE {created_table} ({}) ON COMMIT DROP",
                 missing.join(", ")
             );
-            paths
-                .on_target(client, async {
-                    client.batch_execute(&sql).await.map_err(read)
-                })
-                .await?;
+            client.batch_execute(&sql).await.map_err(read)?;
             let temporary: String = client
                 .query_one(TEMP_SCHEMA_SQL, &[])
                 .await
@@ -456,18 +452,18 @@ pub async fn preflight(
                 .get(0);
             let mut created = operation.clone();
             created.target.schema = Some(temporary);
-            CREATED_TABLE.clone_into(&mut created.target.object);
+            created_table.clone_into(&mut created.target.object);
             let (_, declared) =
                 canonical::rules_with_leaves(client, &created, schema, phase).await?;
+            client.batch_execute(&format!("DROP TABLE pg_temp.{created_table}"))
+                .await.map_err(read)?;
             for (name, column) in declared {
                 leaves.entry(name).or_insert(column);
             }
         }
         admit(operation, schema, &plans, &leaves, &server, phase)
     }
-    .await;
-    client.batch_execute("ROLLBACK").await.map_err(read)?;
-    result
+    .await
 }
 
 #[cfg(test)]

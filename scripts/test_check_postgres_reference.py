@@ -35,6 +35,7 @@ REQUIRED_LIVE = (
     "live_parameter_values_bind_exactly_or_are_refused",
     "live_audit900_nul",
     "live_generated_values_bind_exactly_or_are_refused",
+    "live_borrowed_through_pgbouncer_transaction_mode",
 )
 
 

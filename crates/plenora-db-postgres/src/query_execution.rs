@@ -61,9 +61,9 @@ async fn connect_cancel_safe(
         })
 }
 
-async fn start_read_query(
+async fn start_borrowed_query(
     provider: &PostgresProvider,
-    client: &mut PooledClient,
+    client: &tokio_postgres::Client,
     sql: &str,
     parameter_refs: Vec<&(dyn ToSql + Sync)>,
     parameter_types: Option<Vec<Type>>,
@@ -71,9 +71,7 @@ async fn start_read_query(
 ) -> Result<RowStream> {
     let parameter_count = parameter_refs.len();
     let (result, error_phase) = if let Some(parameter_types) = parameter_types {
-        let query = client
-            .client()?
-            .query_typed_raw(sql, parameter_refs.into_iter().zip(parameter_types));
+        let query = client.query_typed_raw(sql, parameter_refs.into_iter().zip(parameter_types));
         (
             select_with_cancellation(query, cancellation)
                 .await
@@ -90,23 +88,19 @@ async fn start_read_query(
     } else {
         provider.metrics.read_prepared_fallback();
         let statement = client
-            .client()?
             .prepare(sql)
             .await
             .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
         (
-            select_with_cancellation(
-                client.client()?.query_raw(&statement, parameter_refs),
-                cancellation,
-            )
-            .await,
+            select_with_cancellation(client.query_raw(&statement, parameter_refs), cancellation)
+                .await,
             ErrorPhase::Read,
         )
     };
     if let Some(result) = result {
         return result.map_err(|error| classify_error(error_phase, &error));
     }
-    Err(cancel_inflight(provider, client, cancellation).await)
+    Err(cancelled_read_error(cancellation))
 }
 
 #[allow(clippy::significant_drop_tightening)]
@@ -123,15 +117,57 @@ pub async fn read_stream(
         return Err(cancelled_read_error(cancellation));
     }
     validate_stream_configuration(provider)?;
-    let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
+    let stream = select_with_cancellation(
+        read_on(
+            provider,
+            client.client()?,
+            Some(&client),
+            operation,
+            parameters,
+            budget,
+            cancellation,
+        ),
+        cancellation,
+    )
+    .await
+    .unwrap_or_else(|| Err(cancelled_read_error(cancellation)));
+    match stream {
+        Ok(mut stream) => {
+            stream.attach(client);
+            Ok(Box::new(stream))
+        }
+        Err(error) => {
+            if cancellation.is_cancelled() {
+                return Err(cancel_inflight(provider, &mut client, cancellation).await);
+            }
+            client.invalidate();
+            Err(error)
+        }
+    }
+}
+
+/// `pooled` is the provider's own connection: its columns come from the
+/// schema cache. A borrowed connection (`None`) reads the catalog each time.
+pub async fn read_on(
+    provider: &PostgresProvider,
+    client: &tokio_postgres::Client,
+    pooled: Option<&PooledClient>,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<PostgresBatchStream> {
+    crate::error::check_cancelled(cancellation, ErrorPhase::Read)?;
+    validate_stream_configuration(provider)?;
+    let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     // La regola T: il catalog e quello della connessione
     // (`target_schema::check_catalog`), e la sorgente senza schema si
     // risolve una volta, con il percorso della sessione; colonne, statement e cache nominano lo stesso
     // oggetto.
     let resolved = ReadOperation {
         source: crate::target_schema::resolve(
-            client.client()?,
+            client,
             &operation.source,
             crate::target_schema::Purpose::Existing,
             ErrorPhase::Prepare,
@@ -140,13 +176,20 @@ pub async fn read_stream(
         ..operation.clone()
     };
     let operation = &resolved;
-    let (available, _schema_token) = provider.cached_columns(&client, &operation.source).await?;
+    let available = match pooled {
+        Some(pooled) => provider.cached_columns(pooled, &operation.source).await?.0,
+        None => {
+            crate::catalog::load_columns_and_token(client, &operation.source)
+                .await?
+                .0
+        }
+    };
     // La regola degli operandi geometrici sul tipo che contiene una
     // geometria (array, dominio, composito, range), non soltanto sul tipo
     // descritto: `geometry[]` si descrive come testo.
     if operation.filter.is_some() || !operation.order_by.is_empty() {
         let columns = crate::spatial_probe::relation_columns(
-            client.client()?,
+            client,
             operation.source.schema.as_deref(),
             &operation.source.object,
         )
@@ -178,7 +221,7 @@ pub async fn read_stream(
         parameters,
         budget.limits().nesting_depth,
     )?;
-    let parameters = &admit_read_filter(client.client()?, operation, parameters).await?;
+    let parameters = &admit_read_filter(client, operation, parameters).await?;
     let columns = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
@@ -197,24 +240,23 @@ pub async fn read_stream(
     } else {
         None
     };
-    let rows = start_read_query(
+    let rows = start_borrowed_query(
         provider,
-        &mut client,
+        client,
         &plan.sql,
         parameter_refs,
         parameter_types,
         cancellation,
     )
     .await?;
-    let cancel_token = client.client()?.cancel_token();
     let schema = crate::geometry_properties::read_schema(&plan.columns)?;
-    Ok(Box::new(PostgresBatchStream::new(
+    Ok(PostgresBatchStream::new(
         provider,
-        ReadStreamSource::new(client, cancel_token, Box::pin(rows), plan.columns, schema),
+        ReadStreamSource::borrowed(client, Box::pin(rows), plan.columns, schema),
         budget,
         operation_lease,
         columns_lease,
-    )))
+    ))
 }
 
 #[allow(clippy::significant_drop_tightening)]

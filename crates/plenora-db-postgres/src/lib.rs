@@ -5,6 +5,8 @@
 //! definite dal core.
 
 mod age;
+pub mod borrowed;
+pub use borrowed::{leggi_arrow, scrivi_arrow, ReadPlan, WritePlan};
 mod arrow;
 mod catalog;
 mod column_metadata;
@@ -1451,3 +1453,6 @@ mod effective_loss_live_tests;
 mod geometry_qualification_live_tests;
 
 mod temporal;
+
+#[cfg(test)]
+mod borrowed_live_tests;

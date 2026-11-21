@@ -268,27 +268,27 @@ async fn table(client: &Client, schema: &str, object: &str) -> Result<Option<Tab
                     pg_catalog.has_table_privilege(c.oid, 'UPDATE') \
                     OR pg_catalog.has_table_privilege(c.oid, 'DELETE') \
                     OR pg_catalog.has_table_privilege(c.oid, 'TRUNCATE') \
-                    OR CASE WHEN pg_catalog.current_setting('server_version_num')::int >= 170000 \
+                    OR CASE WHEN pg_catalog.current_setting('server_version_num')::int OPERATOR(pg_catalog.>=) 170000 \
                        THEN pg_catalog.has_table_privilege(c.oid, 'MAINTAIN') ELSE false END, \
                     pg_catalog.has_schema_privilege(n.oid, 'USAGE'), \
                     c.relkind::pg_catalog.text, \
                     pg_catalog.row_security_active(c.oid), \
                     EXISTS (SELECT 1 FROM pg_catalog.pg_policy p \
-                            WHERE p.polrelid = c.oid AND p.polpermissive \
+                            WHERE p.polrelid OPERATOR(pg_catalog.=) c.oid AND p.polpermissive \
                               AND p.polcmd IN ('a', '*') \
-                              AND (0::pg_catalog.oid = ANY (p.polroles) \
+                              AND (0::pg_catalog.oid OPERATOR(pg_catalog.=) ANY (p.polroles) \
                                    OR EXISTS (SELECT 1 FROM pg_catalog.unnest(p.polroles) r \
-                                              WHERE r <> 0::pg_catalog.oid AND pg_catalog.pg_has_role(r, 'USAGE')))), \
+                                              WHERE r OPERATOR(pg_catalog.<>) 0::pg_catalog.oid AND pg_catalog.pg_has_role(r, 'USAGE')))), \
                     EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t \
-                            WHERE t.tgrelid = c.oid AND NOT t.tgisinternal \
-                              AND t.tgenabled <> 'D' \
-                              AND (t.tgtype::pg_catalog.int4 & 64) <> 0 \
-                              AND (t.tgtype::pg_catalog.int4 & 4) <> 0 \
-                              AND (t.tgtype::pg_catalog.int4 & 1) <> 0), \
+                            WHERE t.tgrelid OPERATOR(pg_catalog.=) c.oid AND NOT t.tgisinternal \
+                              AND t.tgenabled OPERATOR(pg_catalog.<>) 'D' \
+                              AND (t.tgtype::pg_catalog.int4 & 64) OPERATOR(pg_catalog.<>) 0 \
+                              AND (t.tgtype::pg_catalog.int4 & 4) OPERATOR(pg_catalog.<>) 0 \
+                              AND (t.tgtype::pg_catalog.int4 & 1) OPERATOR(pg_catalog.<>) 0), \
                     pg_catalog.pg_relation_is_updatable(c.oid, true) \
              FROM pg_catalog.pg_class c \
-             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2",
+             JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace \
+             WHERE n.nspname OPERATOR(pg_catalog.=) $1 AND c.relname OPERATOR(pg_catalog.=) $2",
             &[&schema, &object],
         )
         .await
@@ -303,12 +303,12 @@ async fn table(client: &Client, schema: &str, object: &str) -> Result<Option<Tab
                     pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'INSERT'), \
                     pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'UPDATE'), \
                     pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'SELECT'), \
-                    a.attgenerated = 's', \
-                    a.attidentity = 'a', \
-                    a.attnotnull AND NOT a.atthasdef AND a.attidentity = '' \
-                      AND a.attgenerated = '' \
+                    a.attgenerated OPERATOR(pg_catalog.=) 's', \
+                    a.attidentity OPERATOR(pg_catalog.=) 'a', \
+                    a.attnotnull AND NOT a.atthasdef AND a.attidentity OPERATOR(pg_catalog.=) '' \
+                      AND a.attgenerated OPERATOR(pg_catalog.=) '' \
              FROM pg_catalog.pg_attribute a \
-             WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped",
+             WHERE a.attrelid OPERATOR(pg_catalog.=) $1 AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped",
             &[&oid],
         )
         .await
@@ -375,16 +375,16 @@ enum Arbiter {
 async fn arbiter(client: &Client, oid: u32, keys: &[String]) -> Result<Arbiter> {
     let row = client
         .query_one(
-            "SELECT pg_catalog.bool_or(i.indimmediate), pg_catalog.count(*) > 0 \
+            "SELECT pg_catalog.bool_or(i.indimmediate), pg_catalog.count(*) OPERATOR(pg_catalog.>) 0 \
              FROM pg_catalog.pg_index i \
-             WHERE i.indrelid = $1 AND i.indisunique AND i.indisvalid AND i.indisready \
+             WHERE i.indrelid OPERATOR(pg_catalog.=) $1 AND i.indisunique AND i.indisvalid AND i.indisready \
                AND i.indislive \
                AND i.indpred IS NULL AND i.indexprs IS NULL \
                AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text) \
                     FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position) \
                     JOIN pg_catalog.pg_attribute a \
-                      ON a.attrelid = i.indrelid AND a.attnum = k.attnum \
-                    WHERE k.position <= i.indnkeyatts) \
+                      ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k.attnum \
+                    WHERE k.position OPERATOR(pg_catalog.<=) i.indnkeyatts) \
                    OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(DISTINCT key ORDER BY key) FROM pg_catalog.unnest($2::pg_catalog.text[]) key)",
             &[&oid, &keys],
         )
@@ -471,7 +471,7 @@ pub async fn inspect(
         let row = client
             .query_opt(
                 "SELECT pg_catalog.has_schema_privilege(n.oid, 'CREATE') \
-                 FROM pg_catalog.pg_namespace n WHERE n.nspname = $1",
+                 FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) $1",
                 &[&schema_name],
             )
             .await
