@@ -10354,7 +10354,7 @@
     "crates/plenora-db-postgres/src/borrowed.rs::leggi_arrow#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Produce Arrow dal medesimo read_on e ColumnBuffer del provider; non riceve celle esterne.",
-      "review_sha256": "c1ee65fe82f3122c7149585166d7380d528b523abaa8b5e90677984cd66da915",
+      "review_sha256": "3f46f13f7a176f15a9a87517b5e3aba41c8d9ed112271359621fd25f35c363d3",
       "signature": "pub async fn leggi_arrow<'c>( client: &'c tokio_postgres::Client, lettura: &ReadPlan, budget: &ResourceBudget, annulla: &CancellationToken, ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send + 'c>"
     },
     "crates/plenora-db-postgres/src/borrowed_live_tests.rs::next_batch#1": {
