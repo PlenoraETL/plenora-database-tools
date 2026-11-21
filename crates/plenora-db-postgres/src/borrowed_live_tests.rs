@@ -450,3 +450,151 @@ fn borrowed_preflight_does_not_control_the_callers_transaction() {
         }
     }
 }
+
+/// La DSN del `PgBouncer` del riferimento: modo transazione, `max_prepared_statements > 0`.
+fn pgbouncer_dsn() -> Option<String> {
+    let declared = std::env::var("PLENORA_TEST_PGBOUNCER_DSN").ok();
+    if declared.is_none() {
+        assert!(
+            std::env::var("PLENORA_REQUIRE_LIVE_PGBOUNCER").is_err(),
+            "PLENORA_REQUIRE_LIVE_PGBOUNCER e acceso ma PLENORA_TEST_PGBOUNCER_DSN manca"
+        );
+    }
+    declared
+}
+
+/// Il contratto L-DB1: `PgBouncer` >= 1.21 in modo transazione con
+/// `max_prepared_statements > 0`. Quattro client condividono due connessioni
+/// server, quindi le istruzioni nominate di `tokio-postgres` passano fra
+/// backend diversi; letture anche fuori transazione.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_borrowed_through_pgbouncer_transaction_mode() {
+    let Some(dsn) = write_visibility_live_tests::live_dsn() else {
+        return;
+    };
+    let Some(pooled) = pgbouncer_dsn() else {
+        return;
+    };
+    let _serial = write_visibility_live_tests::SERIAL.lock().await;
+    let mut admin: tokio_postgres::Config = pooled.parse().expect("dsn pgbouncer");
+    admin.dbname("pgbouncer");
+    let (console, connection) = admin.connect(tokio_postgres::NoTls).await.expect("console");
+    tokio::spawn(async move {
+        connection.await.expect("driver console");
+    });
+    let mut config = std::collections::BTreeMap::new();
+    for message in console
+        .simple_query("SHOW CONFIG")
+        .await
+        .expect("show config")
+    {
+        if let tokio_postgres::SimpleQueryMessage::Row(row) = message {
+            config.insert(
+                row.get(0).unwrap_or_default().to_owned(),
+                row.get(1).unwrap_or_default().to_owned(),
+            );
+        }
+    }
+    assert_eq!(
+        config.get("pool_mode").map(String::as_str),
+        Some("transaction")
+    );
+    let prepared: u64 = config
+        .get("max_prepared_statements")
+        .and_then(|value| value.parse().ok())
+        .expect("max_prepared_statements");
+    assert!(prepared > 0);
+    let mut version = None;
+    for message in console
+        .simple_query("SHOW VERSION")
+        .await
+        .expect("show version")
+    {
+        if let tokio_postgres::SimpleQueryMessage::Row(row) = message {
+            version = row.get(0).map(str::to_owned);
+        }
+    }
+    let version = version.expect("versione pgbouncer");
+    let numbers: Vec<u32> = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .take(2)
+        .map(|part| part.parse().expect("versione"))
+        .collect();
+    assert!(numbers >= vec![1, 21], "PgBouncer {version} sotto 1.21");
+
+    let direct = connect(&dsn).await;
+    reset(&direct).await;
+    for table in ["p0", "p1", "p2", "p3"] {
+        direct
+            .batch_execute(&format!(
+                "CREATE TABLE pln_borrowed.{table} (LIKE pln_borrowed.borrowed)"
+            ))
+            .await
+            .expect("tabelle per client");
+    }
+    let input = batch();
+    let cancellation = CancellationToken::new();
+    let work = ["p0", "p1", "p2", "p3"].map(|table| {
+        let pooled = pooled.clone();
+        let input = input.clone();
+        let cancellation = cancellation.clone();
+        async move {
+            let mut client = connect(&pooled).await;
+            for round in 0..3 {
+                let mut plan = WritePlan::new(operation(table), input.schema()).expect("plan");
+                plan.insert_mode = if round % 2 == 0 {
+                    PostgresInsertMode::CopyBinary
+                } else {
+                    PostgresInsertMode::CopyText
+                };
+                let tx = client.transaction().await.expect("begin");
+                let before = settings(&tx).await;
+                let result = scrivi_arrow(
+                    &tx,
+                    &plan,
+                    stream::iter([input.clone()]),
+                    &budget(),
+                    &cancellation,
+                )
+                .await
+                .expect("scrittura prestata tramite pgbouncer");
+                assert_eq!((result.received, result.applied), (3, 3));
+                result.loss_report.validate().expect("rapporto provvisorio");
+                assert_eq!(settings(&tx).await, before);
+                if round == 1 {
+                    tx.rollback().await.expect("rollback chiamante");
+                } else {
+                    tx.commit().await.expect("commit chiamante");
+                }
+            }
+            // Fuori transazione: ogni istruzione puo cambiare backend.
+            let read: Vec<_> = leggi_arrow(&client, &read_plan(table), &budget(), &cancellation)
+                .await
+                .expect("lettura prestata tramite pgbouncer")
+                .try_collect()
+                .await
+                .expect("batch tramite pgbouncer");
+            (table, read)
+        }
+    });
+    for (table, read) in futures_util::future::join_all(work).await {
+        let rows: usize = read.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(rows, 6, "{table}: due commit da tre righe");
+        let expected: Vec<_> = leggi_arrow(&direct, &read_plan(table), &budget(), &cancellation)
+            .await
+            .expect("lettura diretta")
+            .try_collect()
+            .await
+            .expect("batch diretti");
+        assert_eq!(
+            read, expected,
+            "{table}: stessi batch con e senza pgbouncer"
+        );
+    }
+    direct
+        .batch_execute("DROP SCHEMA pln_borrowed CASCADE")
+        .await
+        .expect("cleanup");
+}

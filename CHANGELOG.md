@@ -9,9 +9,14 @@
   `InvalidConfiguration` con identificatore `PG_PREPARED_STATEMENTS_REQUIRED`,
   senza riportare il messaggio del server. I due percorsi COPY completano
   Parse prima di costruire il sink.
-- La major L-DB1 resta in lavorazione: le API di connessione prestata e i
-  relativi cambiamenti incompatibili non sono ancora disponibili. Il requisito
-  e raccolto in [connessione prestata](docs/connessione-prestata.md).
+- Connessione prestata (L-DB1): `scrivi_arrow` sulla `Transaction` del
+  chiamante e `leggi_arrow` sul suo `Client`, con i codec, i limiti e il
+  rapporto delle perdite del provider. Nessuna transazione aperta o chiusa e
+  nessun `SET`; `search_path` che oscura `pg_catalog` e
+  `session_replication_role` diverso da `origin` si rifiutano prima di ogni
+  effetto. Prova live anche tramite PgBouncer 1.26 in modo transazione nel
+  gate del riferimento. Dettagli in
+  [connessione prestata](docs/connessione-prestata.md).
 
 ## 12.0.0 — 2026-11-15
 

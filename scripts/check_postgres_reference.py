@@ -31,6 +31,10 @@ DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
     "password=dataflow_test_2026 dbname=dataflow_test"
 )
+PGBOUNCER_DSN = (
+    "host=dataflow-pgbouncer port=6432 user=dataflow "
+    "password=dataflow_test_2026 dbname=dataflow_test"
+)
 # Test live che il gate non può dichiarare senza averli visti passare. Saltano
 # con un early-return quando la DSN non è impostata, quindi un `test result: ok`
 # non prova che siano stati eseguiti: solo il nome lo prova.
@@ -51,6 +55,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_parameter_values_bind_exactly_or_are_refused",
         "live_audit900_nul",
         "live_generated_values_bind_exactly_or_are_refused",
+        "live_borrowed_through_pgbouncer_transaction_mode",
     }
 )
 
@@ -129,6 +134,9 @@ def cargo(
             # invece che in produzione.
             "-e", f"PLENORA_TEST_POSTGRES_DSN={dsn}",
             "-e", "PLENORA_REQUIRE_LIVE_POSTGRES=1",
+            # Il PgBouncer del compose (contratto L-DB1, docker/pgbouncer/).
+            "-e", f"PLENORA_TEST_PGBOUNCER_DSN={PGBOUNCER_DSN}",
+            "-e", "PLENORA_REQUIRE_LIVE_PGBOUNCER=1",
         ]
     return [*command, IMAGE, "cargo", *arguments]
 
