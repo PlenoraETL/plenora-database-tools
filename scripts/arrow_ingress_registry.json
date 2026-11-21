@@ -10378,7 +10378,7 @@
       "reason": "write applica validated_input allo stream del resolver prima di prepare/write_with_consent; gli output passano da validated_batch."
     },
     "crates/plenora-db-postgres/src/write.rs": {
-      "review_sha256": "d3bee9cde55569af0b7d783d9401841bb3de9b913049f91ae6cb88dd3383dd07",
+      "review_sha256": "77c459584fd327428fb4be4c12b8ff650aad0889d002112a0e422ed6d96c1517",
       "reason": "Review P5 e fondazione P2-P4: consumer validano i batch prima dei codec, adapter effective e cache privati; replay conserva batch gia validati. Nessuna nuova superficie pubblica Arrow."
     },
     "crates/plenora-db-postgres/src/write/dry_run.rs": {

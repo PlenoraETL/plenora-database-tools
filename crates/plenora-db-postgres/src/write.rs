@@ -1525,12 +1525,18 @@ async fn copy_binary_batch(
                 .map_err(|_| mapping_error())?;
         }
     }
-    let sink = transaction
-        .copy_in(&format!(
+    // Parse viene concluso prima di costruire il sink: il rifiuto delle
+    // istruzioni preparate resta un errore tipizzato, senza avviare COPY.
+    let copy_statement = transaction
+        .prepare(&format!(
             "COPY {} ({}) FROM STDIN BINARY",
             quote_object(target)?,
             columns.join(", ")
         ))
+        .await
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
+    let sink = transaction
+        .copy_in(&copy_statement)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     let writer = BinaryCopyInWriter::new(sink, &types);
@@ -1590,8 +1596,12 @@ async fn copy_batch(
     // successivo fallisce con `UnexpectedMessage`. Il rifiuto del server ha
     // gia abortito la transazione (`BatchFailure::ServerAborted`).
     let buffer = Bytes::from(copy_buffer(batch, plans)?);
+    let copy_statement = transaction
+        .prepare(&sql)
+        .await
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     let sink = transaction
-        .copy_in(&sql)
+        .copy_in(&copy_statement)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     futures_util::pin_mut!(sink);

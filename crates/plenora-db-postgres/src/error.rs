@@ -117,6 +117,28 @@ pub fn proven_commit_rollback(error: &tokio_postgres::Error) -> Option<DatabaseE
 
 pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> DatabaseError {
     let sqlstate = error.code().map(tokio_postgres::error::SqlState::code);
+    if prepared_statement_rejected(
+        sqlstate,
+        error
+            .as_db_error()
+            .map(tokio_postgres::error::DbError::message),
+    ) {
+        return public_error_envelope(
+            ErrorCategory::InvalidConfiguration,
+            phase,
+            if phase_is_state_mutating(phase) {
+                RemoteEffect::Unknown
+            } else {
+                RemoteEffect::None
+            },
+            if phase_is_state_mutating(phase) {
+                RetryDisposition::RequiresRecovery
+            } else {
+                RetryDisposition::Never
+            },
+            "PG_PREPARED_STATEMENTS_REQUIRED: richiesto supporto protocollo prepared statements; PgBouncer >= 1.21 in transaction mode richiede max_prepared_statements > 0",
+        );
+    }
     let transport_closed = error.is_closed();
     if sqlstate == Some("XX000")
         && error
@@ -140,6 +162,20 @@ pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> Datab
         mapping.retry,
         mapping.message,
     )
+}
+
+// Il messaggio vendor serve solo a riconoscere il rifiuto, mai a costruire
+// l'errore pubblico. Non classificare ogni 0A000 come problema del pooler.
+fn prepared_statement_rejected(sqlstate: Option<&str>, message: Option<&str>) -> bool {
+    matches!(sqlstate, Some("26000" | "42P05"))
+        || (matches!(sqlstate, Some("0A000" | "08P01"))
+            && message.is_some_and(|message| {
+                let message = message.to_ascii_lowercase();
+                message.contains("prepared statement")
+                    && (message.contains("not supported")
+                        || message.contains("disabled")
+                        || message.contains("max_prepared_statements"))
+            }))
 }
 
 /// Il rifiuto `PostGIS` di due geometrie in sistemi diversi.
@@ -618,6 +654,10 @@ fn mapping_for_sqlstate(code: &str) -> Option<Mapping> {
 #[cfg(test)]
 #[path = "error_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "prepared_rejection_tests.rs"]
+mod prepared_rejection_tests;
 
 /// Test di integrazione live: forzano ciascun SQLSTATE reale contro un
 /// `PostgreSQL` raggiungibile all'hostname `dataflow-postgres`, poi verificano
