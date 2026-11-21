@@ -26,21 +26,26 @@ pub async fn write(
     Vec<RuleInstance>,
     Option<crate::catalog::CatalogSchemaToken>,
 )> {
-    let mut client = provider.connect_session(secret).await?;
-    let tx = client
-        .client_mut()?
-        .transaction()
+    let client = provider.connect_session(secret).await?;
+    let session = client.client()?;
+    // Una transazione annullata alla fine: le letture e la tabella temporanea
+    // dell'ammissione non lasciano effetti. BEGIN esplicito perche la cache
+    // dello schema vuole la connessione del provider insieme alla sessione.
+    session
+        .batch_execute("BEGIN")
         .await
         .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
     let result = write_on(
-        &tx,
+        session,
+        Some((provider, &client)),
         provider.schema_evolution,
         operation,
         input_schema,
         metadata_plan,
     )
     .await;
-    tx.rollback()
+    session
+        .batch_execute("ROLLBACK")
         .await
         .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
     drop(client);
@@ -48,8 +53,11 @@ pub async fn write(
 }
 
 #[allow(clippy::too_many_lines)]
+/// `cache` e la connessione del provider: le colonne del target vengono dalla
+/// cache dello schema. Una connessione prestata (`None`) legge il catalogo.
 pub async fn write_on<C: tokio_postgres::GenericClient + Sync>(
     client: &C,
+    cache: Option<(&crate::PostgresProvider, &crate::PooledClient)>,
     schema_evolution: PostgresSchemaEvolution,
     operation: &WriteOperation,
     input_schema: &SchemaRef,
@@ -175,8 +183,14 @@ pub async fn write_on<C: tokio_postgres::GenericClient + Sync>(
         losses.extend(metadata_plan.rules()?);
     }
     if exists && operation.mode != WriteMode::Create {
-        let (target_columns, _schema_token) =
-            crate::catalog::load_columns_and_token(client, &operation.target).await?;
+        let target_columns = match cache {
+            Some((provider, pooled)) => provider.cached_columns(pooled, &operation.target).await?.0,
+            None => {
+                crate::catalog::load_columns_and_token(client, &operation.target)
+                    .await?
+                    .0
+            }
+        };
         for (field_id, source) in input_schema.fields().iter().enumerate() {
             let Some(target) = target_columns
                 .iter()

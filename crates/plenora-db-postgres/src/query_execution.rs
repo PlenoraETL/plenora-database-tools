@@ -122,6 +122,7 @@ pub async fn read_stream(
         read_on(
             provider,
             client.client()?,
+            Some(&client),
             operation,
             parameters,
             budget,
@@ -146,9 +147,12 @@ pub async fn read_stream(
     }
 }
 
+/// `pooled` is the provider's own connection: its columns come from the
+/// schema cache. A borrowed connection (`None`) reads the catalog each time.
 pub async fn read_on(
     provider: &PostgresProvider,
     client: &tokio_postgres::Client,
+    pooled: Option<&PooledClient>,
     operation: &ReadOperation,
     parameters: &ParameterBag,
     budget: &ResourceBudget,
@@ -172,8 +176,14 @@ pub async fn read_on(
         ..operation.clone()
     };
     let operation = &resolved;
-    let (available, _schema_token) =
-        crate::catalog::load_columns_and_token(client, &operation.source).await?;
+    let available = match pooled {
+        Some(pooled) => provider.cached_columns(pooled, &operation.source).await?.0,
+        None => {
+            crate::catalog::load_columns_and_token(client, &operation.source)
+                .await?
+                .0
+        }
+    };
     // La regola degli operandi geometrici sul tipo che contiene una
     // geometria (array, dominio, composito, range), non soltanto sul tipo
     // descritto: `geometry[]` si descrive come testo.

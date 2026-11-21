@@ -57,6 +57,7 @@ pub async fn leggi_arrow<'c>(
     let opening = crate::query_execution::read_on(
         &provider,
         client,
+        None,
         &lettura.operation,
         &lettura.parameters,
         budget,

@@ -124,6 +124,7 @@ pub async fn scrivi_arrow(
         let mut state = prepare_state(&piano.schema, &operation)?;
         let (report, admitted, instances, snapshot) = crate::preflight::write_on(
             tx,
+            None,
             PostgresSchemaEvolution::Disabled,
             &operation,
             &piano.schema,
