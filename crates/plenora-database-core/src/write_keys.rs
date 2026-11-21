@@ -511,13 +511,13 @@ fn encode(array: &dyn Array, row: usize, out: &mut Vec<u8>) -> Result<()> {
 
 /// Lo stream dell'ingresso con la condizione 2: ogni batch passa da
 /// [`UniqueInputKeys::admit`] prima di arrivare alla scrittura.
-pub struct UniqueKeyStream {
-    inner: Box<dyn BatchStream>,
+pub struct UniqueKeyStream<'a> {
+    inner: Box<dyn BatchStream + 'a>,
     keys: UniqueInputKeys,
     budget: ResourceBudget,
 }
 
-impl BatchStream for UniqueKeyStream {
+impl BatchStream for UniqueKeyStream<'_> {
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
@@ -572,13 +572,13 @@ pub fn validate_input_keys(mode: WriteMode, keys: &[String], schema: &SchemaRef)
 /// # Errors
 ///
 /// Gli errori di [`UniqueInputKeys::new`].
-pub fn guard_input_keys(
+pub fn guard_input_keys<'a>(
     mode: WriteMode,
     keys: &[String],
-    input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream + 'a>,
     budget: &ResourceBudget,
     nulls: NullKeys,
-) -> Result<Box<dyn BatchStream>> {
+) -> Result<Box<dyn BatchStream + 'a>> {
     if !keyed_mode(mode) || keys.is_empty() {
         return Ok(input);
     }

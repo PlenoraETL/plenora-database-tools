@@ -22,7 +22,7 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 pub type BudgetCancellation = DeadlineGuard;
 
 pub struct PostgresBatchStream {
-    client: PooledClient,
+    client: Option<PooledClient>,
     cancel_token: CancelToken,
     tls_mode: PostgresTlsMode,
     tls_connector: MakeRustlsConnect,
@@ -52,7 +52,7 @@ pub type PostgresRows =
     Pin<Box<dyn Stream<Item = std::result::Result<Row, tokio_postgres::Error>> + Send>>;
 
 pub struct ReadStreamSource {
-    client: PooledClient,
+    client: Option<PooledClient>,
     cancel_token: CancelToken,
     rows: PostgresRows,
     columns: Vec<ColumnSpec>,
@@ -68,8 +68,22 @@ impl ReadStreamSource {
         schema: SchemaRef,
     ) -> Self {
         Self {
-            client,
+            client: Some(client),
             cancel_token,
+            rows,
+            columns,
+            schema,
+        }
+    }
+    pub fn borrowed(
+        client: &tokio_postgres::Client,
+        rows: PostgresRows,
+        columns: Vec<ColumnSpec>,
+        schema: SchemaRef,
+    ) -> Self {
+        Self {
+            client: None,
+            cancel_token: client.cancel_token(),
             rows,
             columns,
             schema,
@@ -135,10 +149,23 @@ impl PostgresBatchStream {
             read_diagnostics: ReadDiagnosticsTracker::default(),
         }
     }
+    pub fn attach(&mut self, client: PooledClient) {
+        self.client = Some(client);
+    }
+
+    const fn invalidate(&mut self) {
+        if let Some(client) = &mut self.client {
+            client.invalidate();
+        }
+    }
+
     async fn cancelled<T>(&mut self, cancellation: &CancellationToken) -> Result<T> {
         self.metrics.cancellation();
-        self.client.invalidate();
+        self.invalidate();
         self.finished = true;
+        if self.client.is_none() {
+            return Err(cancelled_read_error(cancellation));
+        }
         let _cancel_result = tokio::time::timeout_at(
             plenora_database_core::temporal::deadline(
                 plenora_database_core::temporal::timeout_ms(self.cancel_timeout_ms)?,
@@ -151,8 +178,11 @@ impl PostgresBatchStream {
     }
 
     async fn deadline_exceeded<T>(&mut self) -> Result<T> {
-        self.client.invalidate();
+        self.invalidate();
         self.finished = true;
+        if self.client.is_none() {
+            return Err(deadline_read_error());
+        }
         let _cancel_result = tokio::time::timeout_at(
             plenora_database_core::temporal::deadline(
                 plenora_database_core::temporal::timeout_ms(self.cancel_timeout_ms)?,
@@ -255,7 +285,7 @@ impl PostgresBatchStream {
                                 }
                                 Ok(_) => {}
                                 Err(error) => {
-                                    self.client.invalidate();
+                                    self.invalidate();
                                     return Err(attribute_conversion_defect(
                                         &self.read_diagnostics,
                                         &self.columns,
@@ -279,7 +309,7 @@ impl PostgresBatchStream {
                         }
                     }
                     Some(Err(error)) => {
-                        self.client.invalidate();
+                        self.invalidate();
                         return Err(classify_error(ErrorPhase::Read, &error));
                     }
                     None => {
@@ -298,7 +328,7 @@ impl PostgresBatchStream {
             let batch = match RecordBatch::try_new(Arc::clone(&self.schema), arrays) {
                 Ok(batch) => batch,
                 Err(error) => {
-                    self.client.invalidate();
+                    self.invalidate();
                     return Err(DatabaseError::from(error));
                 }
             };
@@ -313,7 +343,7 @@ impl PostgresBatchStream {
             ) {
                 Ok(components) => components,
                 Err(error) => {
-                    self.client.invalidate();
+                    self.invalidate();
                     return Err(error);
                 }
             };
@@ -405,7 +435,7 @@ impl BatchStream for PostgresBatchStream {
 impl Drop for PostgresBatchStream {
     fn drop(&mut self) {
         if !self.finished {
-            self.client.invalidate();
+            self.invalidate();
         }
     }
 }

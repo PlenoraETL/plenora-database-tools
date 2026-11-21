@@ -4,11 +4,11 @@ use crate::types::ColumnSpec;
 use plenora_database_core::plan::ObjectRef;
 use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use std::sync::Arc;
-use tokio_postgres::Client;
+use tokio_postgres::GenericClient;
 
 #[allow(clippy::too_many_lines)]
-pub async fn load_columns_and_token(
-    client: &Client,
+pub async fn load_columns_and_token<C: GenericClient + Sync>(
+    client: &C,
     source: &ObjectRef,
 ) -> Result<(Arc<Vec<ColumnSpec>>, CatalogSchemaToken)> {
     let schema = crate::target_schema::schema_of(source)?;

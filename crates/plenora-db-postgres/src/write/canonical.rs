@@ -571,8 +571,8 @@ fn shape_of(shape: &str) -> SessionShape {
 /// # Errors
 ///
 /// L'errore classificato della lettura, in `phase`.
-pub(super) async fn type_rules(
-    client: &tokio_postgres::Client,
+pub(super) async fn type_rules<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     declarations: &[(String, String)],
     strict: bool,
     phase: ErrorPhase,

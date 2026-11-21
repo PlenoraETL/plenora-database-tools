@@ -27,11 +27,32 @@ pub async fn write(
     Option<crate::catalog::CatalogSchemaToken>,
 )> {
     let client = provider.connect_session(secret).await?;
-    crate::geometry_properties::validate_resolved_crs_against_postgis(&client, input_schema)
-        .await?;
+    write_on(
+        client.client()?,
+        provider.schema_evolution,
+        operation,
+        input_schema,
+        metadata_plan,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn write_on<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    schema_evolution: PostgresSchemaEvolution,
+    operation: &WriteOperation,
+    input_schema: &SchemaRef,
+    metadata_plan: &crate::geometry_properties::SchemaPlan,
+) -> Result<(
+    LossReport,
+    Vec<ColumnRewrites>,
+    Vec<RuleInstance>,
+    Option<crate::catalog::CatalogSchemaToken>,
+)> {
+    crate::geometry_properties::validate_resolved_crs_against_postgis(client, input_schema).await?;
     let schema_name = crate::target_schema::schema_of(&operation.target)?;
     let exists: bool = client
-        .client()?
         .query_one(
             "SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
@@ -108,20 +129,19 @@ pub async fn write(
         }
     }
     let snapshot = if exists {
-        Some(crate::catalog::schema_token(client.client()?, &operation.target).await?)
+        Some(crate::catalog::schema_token(client, &operation.target).await?)
     } else {
         None
     };
     // La regola A (`write::admission`): ogni colonna cerca la chiave
     // d'ammissione della propria foglia nel fixture della major del server;
     // una coppia non misurata rifiuta la scrittura con ogni politica.
-    let admitted =
-        crate::write::admission::preflight(client.client()?, operation, input_schema).await?;
+    let admitted = crate::write::admission::preflight(client, operation, input_schema).await?;
     // La regola K sotto collation: una chiave con una collation non
     // deterministica si rifiuta prima di ogni effetto.
     if exists && operation.mode != WriteMode::Create {
         crate::write::visibility::refuse_nondeterministic_keys(
-            client.client()?,
+            client,
             operation,
             ErrorPhase::Prepare,
         )
@@ -131,7 +151,7 @@ pub async fn write(
     // multirange, composti), lo stesso cammino con cui `Strict` rifiuta i
     // valori nella scrittura (`write::leaf_losses`): con le altre politiche
     // il valore passa e la perdita si dichiara qui.
-    let leaves = crate::write::leaf_losses(client.client()?, operation, input_schema).await?;
+    let leaves = crate::write::leaf_losses(client, operation, input_schema).await?;
     let leaf = |name: &str, loss: LeafLoss| {
         leaves
             .get(name)
@@ -146,19 +166,19 @@ pub async fn write(
     }
     if exists && operation.mode != WriteMode::Create {
         let (target_columns, _schema_token) =
-            provider.cached_columns(&client, &operation.target).await?;
+            crate::catalog::load_columns_and_token(client, &operation.target).await?;
         for (field_id, source) in input_schema.fields().iter().enumerate() {
             let Some(target) = target_columns
                 .iter()
                 .find(|column| column.name == source.name().as_str())
             else {
-                if provider.schema_evolution == PostgresSchemaEvolution::AddNullableColumns
+                if schema_evolution == PostgresSchemaEvolution::AddNullableColumns
                     && supports_additive_evolution(operation.mode)
                 {
                     let mut create = operation.clone();
                     create.mode = WriteMode::Create;
                     let added_leaves =
-                        crate::write::leaf_losses(client.client()?, &create, input_schema).await?;
+                        crate::write::leaf_losses(client, &create, input_schema).await?;
                     if let Some(leaves) = added_leaves.get(source.name()) {
                         for rule in select_leaf_rules(
                             operation.mapping_policy,
@@ -417,13 +437,12 @@ pub async fn write(
         ));
     }
     if let Some(expected) = &snapshot {
-        if &crate::catalog::schema_token(client.client()?, &operation.target).await? != expected {
+        if &crate::catalog::schema_token(client, &operation.target).await? != expected {
             return Err(DatabaseError::invalid_plan(
                 "contratto PostgreSQL cambiato durante il preflight",
             ));
         }
     }
-    drop(client);
     Ok((report, admitted, instances, snapshot))
 }
 

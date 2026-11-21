@@ -39,14 +39,14 @@ impl BatchStream for Buffered {
     }
 }
 
-pub(super) async fn input(
-    mut source: Box<dyn BatchStream>,
+pub(super) async fn input<'a>(
+    mut source: Box<dyn BatchStream + 'a>,
     plans: &[WriteColumnPlan],
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     max_batch_bytes: u64,
     max_cell_bytes: u64,
-) -> Result<Box<dyn BatchStream>> {
+) -> Result<Box<dyn BatchStream + 'a>> {
     if !plans.iter().any(|p| p.needs_complete_prevalidation()) {
         return Ok(source);
     }

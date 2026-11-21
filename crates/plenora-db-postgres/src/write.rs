@@ -44,6 +44,8 @@ use tokio_postgres::types::{IsNull, Type};
 use tokio_postgres::Transaction;
 
 pub mod admission;
+mod borrowed;
+pub use borrowed::{scrivi_arrow, WriteOutcome as BorrowedWriteOutcome, WritePlan};
 pub mod binary_codec;
 mod canonical;
 pub use canonical::{reduced_temporal, LeafLoss};
@@ -513,210 +515,35 @@ async fn execute_inner(
         drop(client);
         return result;
     }
-    // Le colonne che `COPY` scrive, se il percorso e `COPY`: la regola W1 le
-    // legge prima di ogni effetto (`prepare_target`) e dopo ogni `COPY`.
-    let copied = visibility::copied_columns(
+    let (received, confirmed) = match write_prepared(
+        &transaction,
+        operation,
         &schema,
-        target::WritePath::of(operation, false, runtime.insert_mode),
-    );
-    if let Some(result) = select_with_cancellation(
-        evolve_target_schema(
-            &transaction,
-            operation,
-            &schema,
-            &column_plans,
-            runtime.schema_evolution,
-            &paths,
-        ),
-        cancellation,
-    )
-    .await
-    {
-        if let Err(error) = result {
-            return Err(recovery.rollback_error(transaction, error).await);
-        }
-    } else {
-        return Err(recovery.rollback_cancellation(transaction).await);
-    }
-    if let Some(result) = select_with_cancellation(
-        async {
-            prepare_target(
-                &transaction,
-                operation,
-                &schema,
-                &column_plans,
-                &copied,
-                &paths,
-            )
-            .await?;
-            crate::field_identity::register(&transaction, operation, &registrations, evaluation)
-                .await
-        },
-        cancellation,
-    )
-    .await
-    {
-        if let Err(error) = result {
-            return Err(recovery.rollback_error(transaction, error).await);
-        }
-    } else {
-        return Err(recovery.rollback_cancellation(transaction).await);
-    }
-    // La regola V sulle colonne del target (per Create, quelle appena
-    // create), prima del primo valore; la regola K2, l'uguaglianza con cui
-    // Update e `DeleteByKeys` confrontano le chiavi; e la condizione 2 della
-    // regola K, con i `NULL` come li tratta l'indice che prova le chiavi.
-    let null_keys = match select_with_cancellation(
-        async {
-            assign_session_rules(&transaction, operation, &schema, &mut column_plans).await?;
-            if matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) {
-                let equalities = visibility::key_equality(&transaction, operation).await?;
-                for (field, plan) in schema.fields().iter().zip(column_plans.iter_mut()) {
-                    plan.key_equality = equalities.get(field.name()).cloned();
-                }
-            }
-            key_facts(&transaction, operation).await
-        },
-        cancellation,
-    )
-    .await
-    {
-        Some(Ok(null_keys)) => null_keys,
-        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
-        None => return Err(recovery.rollback_cancellation(transaction).await),
-    };
-    if let Err(error) = evaluation.bind(&column_plans) {
-        return Err(recovery.rollback_error(transaction, error).await);
-    }
-    let mut input = match plenora_database_core::write_keys::guard_input_keys(
-        operation.mode,
-        &operation.keys,
+        &mut column_plans,
+        &registrations,
         input,
         budget,
-        null_keys,
-    ) {
-        Ok(input) => input,
-        Err(error) => return Err(recovery.rollback_error(transaction, error).await),
-    };
-    let mut received = 0_u64;
-    let mut confirmed = 0_u64;
-    loop {
-        let batch = if let Some(result) = select_with_cancellation(
-            plenora_database_core::arrow_validation::validated_batch(
-                input.next_batch(cancellation),
-                plenora_database_core::ErrorPhase::Write,
-            ),
-            cancellation,
-        )
-        .await
-        {
-            match result {
-                Ok(batch) => batch,
-                Err(error) => {
-                    return Err(recovery.rollback_error(transaction, error).await);
-                }
+        cancellation,
+        &runtime,
+        &paths,
+        evaluation,
+    )
+    .await
+    {
+        Ok(counts) => counts,
+        Err(BatchFailure::ServerAborted(error)) => {
+            return Err(recovery.rollback_aborted(transaction, error).await)
+        }
+        Err(BatchFailure::Other(error)) => {
+            if cancellation.is_cancelled() {
+                return Err(recovery.rollback_cancellation(transaction).await);
             }
-        } else {
-            return Err(recovery.rollback_cancellation(transaction).await);
-        };
-        let Some(batch) = batch else {
-            break;
-        };
-        if let Err(error) = validate_batch_schema(&batch, &schema) {
-            return Err(recovery.rollback_error(transaction, error).await);
-        }
-        if cancellation.is_cancelled() {
-            return Err(recovery.rollback_cancellation(transaction).await);
-        }
-        let resources = match reserve_write_batch(&batch, &column_plans, &runtime, budget) {
-            Ok(resources) => resources,
-            Err(error) => {
+            if error.category == ErrorCategory::ResourceLimit {
                 return Err(recovery.rollback_resource_error(transaction, &error).await);
             }
-        };
-        let changes = match evaluation.batch(&batch, &column_plans, operation) {
-            Ok(changes) => changes,
-            Err(error) => return Err(recovery.rollback_error(transaction, error).await),
-        };
-        let batch = match stamp_declared_srid(&batch, &column_plans, budget.limits().nesting_depth)
-        {
-            Ok(batch) => batch,
-            Err(error) => return Err(recovery.rollback_error(transaction, error).await),
-        };
-        let batch_rows = resources.rows;
-        if batch_rows == 0 {
-            continue;
+            return Err(recovery.rollback_error(transaction, error).await);
         }
-        let insert_mode = if changes && runtime.insert_mode != PostgresInsertMode::Prepared {
-            match copy_identity(&transaction, operation).await {
-                Ok(true) => runtime.insert_mode,
-                Ok(false) => PostgresInsertMode::Prepared,
-                Err(error) => return Err(recovery.rollback_error(transaction, error).await),
-            }
-        } else {
-            runtime.insert_mode
-        };
-        let written = if let Some(result) = select_with_cancellation(
-            write_batch(
-                &transaction,
-                operation,
-                &operation.target,
-                &batch,
-                &column_plans,
-                insert_mode,
-                &paths,
-                evaluation,
-            ),
-            cancellation,
-        )
-        .await
-        {
-            match result {
-                Ok(written) => written,
-                Err(BatchFailure::ServerAborted(error)) => {
-                    return Err(recovery.rollback_aborted(transaction, error).await);
-                }
-                Err(BatchFailure::Other(error)) => {
-                    return Err(recovery.rollback_error(transaction, error).await);
-                }
-            }
-        } else {
-            return Err(recovery.rollback_cancellation(transaction).await);
-        };
-        let accounting = resources.commit().and_then(|()| {
-            received = received.checked_add(batch_rows).ok_or_else(|| {
-                DatabaseError::resource_limit("overflow nel conteggio righe ricevute")
-            })?;
-            confirmed = confirmed.checked_add(written).ok_or_else(|| {
-                DatabaseError::resource_limit("overflow nel conteggio righe confermate")
-            })?;
-            Ok(())
-        });
-        if let Err(error) = accounting {
-            return Err(recovery.rollback_resource_error(transaction, &error).await);
-        }
-    }
-    evaluation.ledger.complete();
-    // Solo Create fabbrica la tabella, quindi solo Create puo aggiungerle un
-    // indice: per ogni altra mode gli indici del target sono quelli che il
-    // target aveva, e la scrittura non li tocca.
-    if operation.create_spatial_index && operation.mode == WriteMode::Create {
-        if let Some(result) = select_with_cancellation(
-            paths.on_target(
-                &transaction,
-                create_spatial_indexes(&transaction, &operation.target, &schema, &column_plans),
-            ),
-            cancellation,
-        )
-        .await
-        {
-            if let Err(error) = result {
-                return Err(recovery.rollback_error(transaction, error).await);
-            }
-        } else {
-            return Err(recovery.rollback_cancellation(transaction).await);
-        }
-    }
+    };
     // Il documento si costruisce e si valida **prima** del commit, mentre il
     // rollback e ancora possibile. Un `Update` su chiavi non univoche puo
     // confermare piu righe di quante ne ha ricevute — una riga in ingresso ne
@@ -924,8 +751,8 @@ pub async fn assign_dry_run_session_rules(
 /// # Errors
 ///
 /// L'errore classificato della lettura del catalogo, in `Prepare`.
-pub async fn leaf_losses(
-    client: &tokio_postgres::Client,
+pub async fn leaf_losses<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     operation: &WriteOperation,
     schema: &SchemaRef,
 ) -> Result<std::collections::BTreeMap<String, std::collections::BTreeSet<LeafLoss>>> {
@@ -1800,3 +1627,211 @@ fn temporal_range_error() -> DatabaseError {
 #[cfg(test)]
 #[path = "write_tests.rs"]
 mod tests;
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn write_prepared(
+    transaction: &Transaction<'_>,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    column_plans: &mut [WriteColumnPlan],
+    registrations: &[crate::geometry_properties::Registration],
+    input: Box<dyn BatchStream + '_>,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    runtime: &WriteRuntime,
+    paths: &SessionPath,
+    evaluation: &mut effective::Evaluation,
+) -> std::result::Result<(u64, u64), BatchFailure> {
+    // Le colonne che `COPY` scrive, se il percorso e `COPY`: la regola W1 le
+    // legge prima di ogni effetto (`prepare_target`) e dopo ogni `COPY`.
+    let copied = visibility::copied_columns(
+        schema,
+        target::WritePath::of(operation, false, runtime.insert_mode),
+    );
+    if let Some(result) = select_with_cancellation(
+        evolve_target_schema(
+            transaction,
+            operation,
+            schema,
+            column_plans,
+            runtime.schema_evolution,
+            paths,
+        ),
+        cancellation,
+    )
+    .await
+    {
+        result?;
+    } else {
+        return Err(borrowed_cancelled(cancellation).into());
+    }
+    if let Some(result) = select_with_cancellation(
+        async {
+            prepare_target(transaction, operation, schema, column_plans, &copied, paths).await?;
+            crate::field_identity::register(transaction, operation, registrations, evaluation).await
+        },
+        cancellation,
+    )
+    .await
+    {
+        result?;
+    } else {
+        return Err(borrowed_cancelled(cancellation).into());
+    }
+    // La regola V sulle colonne del target (per Create, quelle appena
+    // create), prima del primo valore; la regola K2, l'uguaglianza con cui
+    // Update e `DeleteByKeys` confrontano le chiavi; e la condizione 2 della
+    // regola K, con i `NULL` come li tratta l'indice che prova le chiavi.
+    let null_keys = match select_with_cancellation(
+        async {
+            assign_session_rules(transaction, operation, schema, column_plans).await?;
+            if matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) {
+                let equalities = visibility::key_equality(transaction, operation).await?;
+                for (field, plan) in schema.fields().iter().zip(column_plans.iter_mut()) {
+                    plan.key_equality = equalities.get(field.name()).cloned();
+                }
+            }
+            key_facts(transaction, operation).await
+        },
+        cancellation,
+    )
+    .await
+    {
+        Some(Ok(null_keys)) => null_keys,
+        Some(Err(error)) => return Err(error.into()),
+        None => return Err(borrowed_cancelled(cancellation).into()),
+    };
+    evaluation.bind(column_plans)?;
+    let mut input = match plenora_database_core::write_keys::guard_input_keys(
+        operation.mode,
+        &operation.keys,
+        input,
+        budget,
+        null_keys,
+    ) {
+        Ok(input) => input,
+        Err(error) => return Err(error.into()),
+    };
+    let mut received = 0_u64;
+    let mut confirmed = 0_u64;
+    loop {
+        let batch = if let Some(result) = select_with_cancellation(
+            plenora_database_core::arrow_validation::validated_batch(
+                input.next_batch(cancellation),
+                plenora_database_core::ErrorPhase::Write,
+            ),
+            cancellation,
+        )
+        .await
+        {
+            match result {
+                Ok(batch) => batch,
+                Err(error) => {
+                    return Err(error.into());
+                }
+            }
+        } else {
+            return Err(borrowed_cancelled(cancellation).into());
+        };
+        let Some(batch) = batch else {
+            break;
+        };
+        validate_batch_schema(&batch, schema)?;
+        if cancellation.is_cancelled() {
+            return Err(borrowed_cancelled(cancellation).into());
+        }
+        let resources = match reserve_write_batch(&batch, column_plans, runtime, budget) {
+            Ok(resources) => resources,
+            Err(error) => {
+                return Err(error.into());
+            }
+        };
+        let changes = match evaluation.batch(&batch, column_plans, operation) {
+            Ok(changes) => changes,
+            Err(error) => return Err(error.into()),
+        };
+        let batch = match stamp_declared_srid(&batch, column_plans, budget.limits().nesting_depth) {
+            Ok(batch) => batch,
+            Err(error) => return Err(error.into()),
+        };
+        let batch_rows = resources.rows;
+        if batch_rows == 0 {
+            continue;
+        }
+        let insert_mode = if changes && runtime.insert_mode != PostgresInsertMode::Prepared {
+            match copy_identity(transaction, operation).await {
+                Ok(true) => runtime.insert_mode,
+                Ok(false) => PostgresInsertMode::Prepared,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            runtime.insert_mode
+        };
+        let written = if let Some(result) = select_with_cancellation(
+            write_batch(
+                transaction,
+                operation,
+                &operation.target,
+                &batch,
+                column_plans,
+                insert_mode,
+                paths,
+                evaluation,
+            ),
+            cancellation,
+        )
+        .await
+        {
+            match result {
+                Ok(written) => written,
+                Err(BatchFailure::ServerAborted(error)) => {
+                    return Err(BatchFailure::ServerAborted(error));
+                }
+                Err(BatchFailure::Other(error)) => {
+                    return Err(error.into());
+                }
+            }
+        } else {
+            return Err(borrowed_cancelled(cancellation).into());
+        };
+        let accounting = resources.commit().and_then(|()| {
+            received = received.checked_add(batch_rows).ok_or_else(|| {
+                DatabaseError::resource_limit("overflow nel conteggio righe ricevute")
+            })?;
+            confirmed = confirmed.checked_add(written).ok_or_else(|| {
+                DatabaseError::resource_limit("overflow nel conteggio righe confermate")
+            })?;
+            Ok(())
+        });
+        accounting?;
+    }
+    evaluation.ledger.complete();
+    // Solo Create fabbrica la tabella, quindi solo Create puo aggiungerle un
+    // indice: per ogni altra mode gli indici del target sono quelli che il
+    // target aveva, e la scrittura non li tocca.
+    if operation.create_spatial_index && operation.mode == WriteMode::Create {
+        if let Some(result) = select_with_cancellation(
+            paths.on_target(
+                transaction,
+                create_spatial_indexes(transaction, &operation.target, schema, column_plans),
+            ),
+            cancellation,
+        )
+        .await
+        {
+            result?;
+        } else {
+            return Err(borrowed_cancelled(cancellation).into());
+        }
+    }
+    Ok((received, confirmed))
+}
+
+fn borrowed_cancelled(cancellation: &CancellationToken) -> DatabaseError {
+    public_error(
+        interruption_category(cancellation),
+        ErrorPhase::Write,
+        false,
+        interruption_message(cancellation),
+    )
+}

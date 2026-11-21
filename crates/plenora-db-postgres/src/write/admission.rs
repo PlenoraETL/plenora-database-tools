@@ -405,8 +405,8 @@ pub async fn target_keys(
 /// misurata come rifiutata; l'errore classificato della lettura, o della
 /// creazione della tabella temporanea (una dichiarazione che il server non
 /// risolve, che `CREATE TABLE` rifiuterebbe allo stesso modo).
-pub async fn preflight(
-    client: &tokio_postgres::Client,
+pub async fn preflight<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     operation: &WriteOperation,
     schema: &SchemaRef,
 ) -> Result<Vec<ColumnRewrites>> {
